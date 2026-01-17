@@ -23,7 +23,7 @@ This is a pipeline with interactive graphics to automate the workflow of AI pape
 - if each category is getting crowded (>10), when add the new paper node, we need to review the classification to determine how shall we further branch out the current category into new sub-classes (using LLM to do this sub class creation and sub-classification), and then migrate the leave nodes under it into the new sub-classes 
 - udpate the tree with the latest results of classification
 
-4. paper_qa
+4. git_repo
 for each paper, the 1st option (from right-click dropdown menu) will be to obtain its open-source repo (if available), if no official one is available, identify if open-source replication is available as well. 
 
 5. explain_references
@@ -41,6 +41,7 @@ for each paper, the 3rd option required is to "find similar papers". Once clicke
 ## vllm endpoint that you may need to use
 LLM: OPENAI_API_BASE="http://localhost:8001"
 VLM: OPENAI_API_BASE2="http://localhost:8002"
+Embed: OPENAI_API_BASE3="http://localhost:8004"
 
 ## OSS tools
 
@@ -59,6 +60,7 @@ modularize the implementation, let's start bottomeup
 - first install each of the OSS tools, test if the are working
 - if so, then package each as a local MCP server, and then an agent skill, add such agent skill in cursor
 - then let the cursor agent run the "Scope" as defined here, with such skills
+- standardize runtime in the **single GROBID-based container** (no local uv/venv)
 
 ---
 
@@ -67,28 +69,31 @@ This follows your ordering: **(1) package OSS as FastAPI services**, **(2) build
 
 ### Milestone 1 — package OSS tools as local FastAPI services (with scripts)
 - **Goal**: each OSS tool is callable locally via HTTP, with runnable scripts and known failure modes.
-- Deliverables (merged services):
-  - `ingest-parse-service`: arXiv resolve + download (PDF/LaTeX) + GROBID extract (sections/references)
-  - `paperqa-service`: summarize + embed + optional QA (backed by your LLM endpoint)
+- Deliverables (single service):
+  - `paper-curator-service`: arXiv resolve + download + GROBID extract + summarize + embed + optional QA
 - **Local GROBID setup** (Docker):
   - Pull: `docker pull lfoppiano/grobid:0.8.0`
-  - Run: `docker run --rm -p 9070:8070 --name grobid lfoppiano/grobid:0.8.0`
-  - Health: `GET http://localhost:9070/api/isalive`
+  - Build (unified container): `bash scripts/docker_mod.sh`
+  - Run (unified container): `bash scripts/docker_run.sh`
+  - Health: `GET ${service_base_url}/api/isalive`
 - **Endpoint list**
-  - `ingest-parse-service`
+  - `paper-curator-service`
     - `GET /health`
     - `POST /arxiv/resolve`
     - `POST /arxiv/download`
     - `POST /pdf/extract` (GROBID-backed)
-  - `paperqa-service`
-    - `GET /health`
     - `POST /summarize`
     - `POST /embed`
     - `POST /qa` (optional)
 - **Scripts (replace unit tests)**:
-  - `scripts/test_ingest_parse.sh`: resolve + download + extract for a real arXiv ID
-  - `scripts/test_paperqa.sh`: summarize + embed using extracted text from a real paper
+  - One script per endpoint under `scripts/` (see `scripts/README.md`)
 - **Exit criteria**: services run locally, `/health` passes, scripts succeed end-to-end for 2–3 representative papers.
+
+Can we further unify the dependency and port utilization to:
+- build all additional dependencies into the base GROBID docker,
+- merging all other FastAPI endpoints into existing GROBID port, so we only need to use one port, i.e. all current API ports (other than the 3openai_api_base) will be merged into that port
+- let's remove the need of uv and venv (and delete both), then keep track of the steps of extending the GROBID docker into `scripts/docker_mod.sh` and running it via `scripts/docker_run.sh`
+- this port will be set in config/paperqa.yaml, its content will be read and used in this whole repo as a single point of truth
 
 ### Milestone 2 — internal building blocks (no DB yet)
 - **Interactive UI** (React + `react-d3-tree`)

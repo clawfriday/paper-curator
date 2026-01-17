@@ -1,29 +1,43 @@
 # Scripts
 
 ## Prerequisites
-- `ingest-parse-service` running on `http://localhost:9002`
-- `paperqa-service` running on `http://localhost:9003`
-- GROBID running on `http://localhost:9070`
+- `paper-curator-service` and GROBID running on `service_base_url` in `config/paperqa.yaml`
 
 ## Start GROBID
 ```bash
-bash scripts/start_grobid.sh
+bash scripts/docker_mod.sh
+bash scripts/docker_run.sh
 ```
 
-## Ingest + Parse test
+## Endpoint demos (one endpoint per script)
 ```bash
-bash scripts/test_ingest_parse.sh \
-  --base-url http://localhost:9002 \
-  --arxiv-id 1706.03762 \
-  --output-dir storage/downloads \
-  --output-json storage/outputs/extract.json
-```
+# Health check (defaults to config service_base_url)
+bash scripts/health.sh
 
-## PaperQA test (summary + embedding)
-```bash
-bash scripts/test_paperqa.sh \
-  --base-url http://localhost:9003 \
-  --extract-json storage/outputs/extract.json \
-  --summary-json storage/outputs/paperqa_summary.json \
-  --embed-json storage/outputs/paperqa_embed.json
+# Resolve metadata for a single arXiv ID
+bash scripts/arxiv_resolve.sh --arxiv-id 1706.03762
+
+# Download PDF/LaTeX for a single arXiv ID
+bash scripts/arxiv_download.sh --arxiv-id 1706.03762
+
+# Extract PDF text (pass pdf_path from the download response)
+bash scripts/pdf_extract.sh --pdf-path storage/downloads/1706.03762v7.Attention_Is_All_You_Need.pdf
+
+# If you need the pdf_path from the download JSON:
+python services/scripts/extract_pdf_path.py --download-json storage/outputs/arxiv_download.json
+
+# Summarize (uses storage/outputs/extract.json as input)
+bash scripts/summarize.sh
+
+# Embed (uses storage/outputs/extract.json as input)
+bash scripts/embed.sh
+
+# QA (prepare a plain-text context file first)
+docker exec paper-curator-grobid \
+  python /app/services/scripts/extract_text.py \
+  --extract-json /app/storage/outputs/extract.json \
+  --output-file /app/storage/outputs/qa_context.txt
+
+bash scripts/qa.sh --context-file storage/outputs/qa_context.txt \
+  --question "What is the main contribution?"
 ```
