@@ -13,12 +13,15 @@ def main() -> None:
     args = parser.parse_args()
 
     data = json.loads(Path(args.extract_json).read_text(encoding="utf-8"))
-    abstract = data.get("abstract") or ""
-    sections = data.get("sections") or []
-    section_texts = [section.get("text") for section in sections if section.get("text")]
-    full_text = "\n\n".join([abstract] + section_texts).strip()
+    if data.get("text"):
+        full_text = str(data.get("text") or "").strip()
+    else:
+        abstract = data.get("abstract") or ""
+        sections = data.get("sections") or []
+        section_texts = [section.get("text") for section in sections if section.get("text")]
+        full_text = "\n\n".join([abstract] + section_texts).strip()
     if not full_text:
-        raise SystemExit("No text extracted from GROBID output.")
+        raise SystemExit("No text extracted from PDF output.")
 
     Path(args.output_file).write_text(full_text, encoding="utf-8")
 

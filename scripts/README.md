@@ -26,18 +26,13 @@ bash scripts/pdf_extract.sh --pdf-path storage/downloads/1706.03762v7.Attention_
 # If you need the pdf_path from the download JSON:
 python services/scripts/extract_pdf_path.py --download-json storage/outputs/arxiv_download.json
 
-# Summarize (uses storage/outputs/extract.json as input)
-bash scripts/summarize.sh
+# Summarize (PDF-first; falls back to extract.json if no --pdf-path)
+bash scripts/summarize.sh --pdf-path storage/downloads/1706.03762v7.Attention_Is_All_You_Need.pdf
 
 # Embed (uses storage/outputs/extract.json as input)
 bash scripts/embed.sh
 
-# QA (prepare a plain-text context file first)
-docker exec paper-curator-grobid \
-  python /app/services/scripts/extract_text.py \
-  --extract-json /app/storage/outputs/extract.json \
-  --output-file /app/storage/outputs/qa_context.txt
-
-bash scripts/qa.sh --context-file storage/outputs/qa_context.txt \
+# QA (PDF-first; context file still supported)
+bash scripts/qa.sh --pdf-path storage/downloads/1706.03762v7.Attention_Is_All_You_Need.pdf \
   --question "What is the main contribution?"
 ```

@@ -16,14 +16,24 @@ from pydantic import BaseModel, Field
 
 try:
     from paperqa import Docs
-    from paperqa.settings import Settings, make_default_litellm_model_list_settings
-    from paperqa.types import Doc, Text
+    from paperqa.readers import read_doc
+    from paperqa.settings import (
+        AnswerSettings,
+        ParsingSettings,
+        Settings,
+        make_default_litellm_model_list_settings,
+        MultimodalOptions,
+    )
+    from paperqa.types import Doc
 except Exception:  # noqa: BLE001
     Docs = None
+    read_doc = None
+    AnswerSettings = None
+    ParsingSettings = None
     Settings = None
     make_default_litellm_model_list_settings = None
+    MultimodalOptions = None
     Doc = None
-    Text = None
 
 
 app = FastAPI(title="paper-curator-service")
@@ -43,10 +53,12 @@ class ArxivDownloadRequest(BaseModel):
 class PdfExtractRequest(BaseModel):
     pdf_path: str = Field(description="Local PDF file path")
     grobid_url: Optional[str] = Field(default=None, description="Override GROBID URL")
+    force_grobid: bool = Field(default=False, description="Force GROBID extraction instead of PaperQA2")
 
 
 class SummarizeRequest(BaseModel):
-    text: str = Field(description="Full paper text or extracted sections")
+    text: Optional[str] = Field(default=None, description="Full paper text or extracted sections")
+    pdf_path: Optional[str] = Field(default=None, description="Local PDF file path")
 
 
 class EmbedRequest(BaseModel):
@@ -54,8 +66,9 @@ class EmbedRequest(BaseModel):
 
 
 class QaRequest(BaseModel):
-    context: str = Field(description="Context text to answer from")
+    context: Optional[str] = Field(default=None, description="Context text to answer from")
     question: str = Field(description="Question to answer")
+    pdf_path: Optional[str] = Field(default=None, description="Local PDF file path")
 
 
 def _require_identifier(arxiv_id: Optional[str], url: Optional[str]) -> str:
@@ -123,29 +136,9 @@ def _resolve_model(base_url: str, api_key: str) -> str:
     return model_ids[0]
 
 
-def _chunk_text(text: str, max_chars: int = 1500) -> list[str]:
-    paragraphs = [p.strip() for p in text.split("\n\n") if p.strip()]
-    if not paragraphs:
-        return [text[:max_chars]]
-    chunks: list[str] = []
-    current: list[str] = []
-    length = 0
-    for paragraph in paragraphs:
-        candidate_len = length + len(paragraph) + (2 if current else 0)
-        if candidate_len > max_chars and current:
-            chunks.append("\n\n".join(current))
-            current = [paragraph]
-            length = len(paragraph)
-        else:
-            current.append(paragraph)
-            length = candidate_len
-    if current:
-        chunks.append("\n\n".join(current))
-    return chunks
-
-
 def _paperqa_answer(
-    text: str,
+    text: Optional[str],
+    pdf_path: Optional[str],
     question: str,
     llm_base_url: str,
     embed_base_url: str,
@@ -155,16 +148,33 @@ def _paperqa_answer(
 ) -> str:
     if Docs is None:
         raise HTTPException(status_code=500, detail="paper-qa is not installed.")
-    if Doc is None or Text is None or Settings is None or make_default_litellm_model_list_settings is None:
+    if (
+        Doc is None
+        or Settings is None
+        or ParsingSettings is None
+        or AnswerSettings is None
+        or make_default_litellm_model_list_settings is None
+        or MultimodalOptions is None
+    ):
         raise HTTPException(status_code=500, detail="paper-qa types are not available.")
+    if not text and not pdf_path:
+        raise HTTPException(status_code=400, detail="Provide text or pdf_path.")
     os.environ["OPENAI_API_BASE"] = llm_base_url
     os.environ["OPENAI_API_KEY"] = api_key
 
     async def _run() -> Any:
         docs = Docs()
-        chunks = _chunk_text(text)
-        doc = Doc(docname="paper", dockey="paper", citation="Local text")
-        texts = [Text(text=chunk, name=f"chunk-{idx}", doc=doc) for idx, chunk in enumerate(chunks)]
+        content_path: Optional[pathlib.Path] = None
+        if pdf_path:
+            content_path = pathlib.Path(pdf_path)
+        elif text is not None:
+            inputs_dir = pathlib.Path("storage/inputs")
+            inputs_dir.mkdir(parents=True, exist_ok=True)
+            text_hash = hashlib.sha256(text.encode("utf-8")).hexdigest()
+            content_path = inputs_dir / f"paperqa_{text_hash}.txt"
+            content_path.write_text(text, encoding="utf-8")
+        if content_path is None or not content_path.exists():
+            raise HTTPException(status_code=404, detail="Content path not found.")
         llm_config = make_default_litellm_model_list_settings(llm_model)
         llm_config["model_list"][0]["litellm_params"].update(
             {"api_base": llm_base_url, "api_key": api_key}
@@ -173,21 +183,60 @@ def _paperqa_answer(
         summary_llm_config["model_list"][0]["litellm_params"].update(
             {"api_base": llm_base_url, "api_key": api_key}
         )
-        settings = Settings(
-            llm=llm_model,
-            llm_config=llm_config,
-            summary_llm=llm_model,
-            summary_llm_config=summary_llm_config,
-            embedding=embed_model,
-            embedding_config={
-                "kwargs": {
-                    "api_base": embed_base_url,
-                    "api_key": api_key,
-                    "encoding_format": "float",
+        config = _load_config()
+        reader_config = {
+            "chunk_chars": int(config.get("paperqa_chunk_chars", 5000)),
+            "overlap": int(config.get("paperqa_chunk_overlap", 250)),
+        }
+        def _build_settings(use_doc_details: bool) -> Settings:
+            parsing_settings = ParsingSettings(
+                reader_config=reader_config,
+                use_doc_details=use_doc_details,
+                multimodal=MultimodalOptions.ON_WITHOUT_ENRICHMENT,
+                enrichment_llm=llm_model,
+                enrichment_llm_config=llm_config,
+            )
+            answer_settings = AnswerSettings(
+                evidence_k=int(config.get("paperqa_evidence_k", 10)),
+                evidence_summary_length=str(
+                    config.get("paperqa_evidence_summary_length", "about 100 words")
+                ),
+                evidence_skip_summary=bool(
+                    config.get("paperqa_evidence_skip_summary", False)
+                ),
+                evidence_relevance_score_cutoff=float(
+                    config.get("paperqa_evidence_relevance_score_cutoff", 1)
+                ),
+            )
+            return Settings(
+                llm=llm_model,
+                llm_config=llm_config,
+                summary_llm=llm_model,
+                summary_llm_config=summary_llm_config,
+                embedding=embed_model,
+                embedding_config={
+                    "kwargs": {
+                        "api_base": embed_base_url,
+                        "api_key": api_key,
+                        "encoding_format": "float",
+                    },
                 },
-            },
-        )
-        await docs.aadd_texts(texts=texts, doc=doc, settings=settings)
+                parsing=parsing_settings,
+                answer=answer_settings,
+            )
+        use_doc_details = bool(config.get("paperqa_use_doc_details", True))
+        settings = _build_settings(use_doc_details)
+        try:
+            await docs.aadd(str(content_path), settings=settings)
+        except Exception as exc:  # noqa: BLE001
+            message = str(exc)
+            if use_doc_details and "semanticscholar" in message.lower() and "429" in message:
+                print("WARNING: Semantic Scholar rate limit hit; retrying without doc details.")
+                settings = _build_settings(False)
+                docs = Docs()
+                await docs.aadd(str(content_path), settings=settings)
+            else:
+                raise
         return await docs.aquery(question, settings=settings)
 
     try:
@@ -198,6 +247,51 @@ def _paperqa_answer(
     if hasattr(result, "answer"):
         return str(result.answer)
     return str(result)
+
+
+def _paperqa_extract_pdf(pdf_path: pathlib.Path) -> dict[str, Any]:
+    if (
+        Docs is None
+        or Settings is None
+        or ParsingSettings is None
+        or AnswerSettings is None
+        or read_doc is None
+        or MultimodalOptions is None
+    ):
+        raise HTTPException(status_code=500, detail="paper-qa is not installed.")
+    if Doc is None:
+        raise HTTPException(status_code=500, detail="paper-qa types are not available.")
+    config = _load_config()
+    reader_config = {
+        "chunk_chars": int(config.get("paperqa_chunk_chars", 5000)),
+        "overlap": int(config.get("paperqa_chunk_overlap", 250)),
+    }
+    parsing_settings = ParsingSettings(
+        reader_config=reader_config,
+        use_doc_details=bool(config.get("paperqa_use_doc_details", True)),
+        multimodal=MultimodalOptions.ON_WITHOUT_ENRICHMENT,
+    )
+    settings = Settings(parsing=parsing_settings)
+
+    async def _run() -> dict[str, Any]:
+        doc = Doc(docname=pdf_path.stem, dockey=pdf_path.stem, citation="Local PDF")
+        parsed_text = await read_doc(
+            str(pdf_path),
+            doc,
+            parsed_text_only=True,
+            parse_pdf=settings.parsing.parse_pdf,
+            **settings.parsing.reader_config,
+        )
+        text = parsed_text.reduce_content()
+        return {
+            "text": text,
+            "parser": "paperqa",
+        }
+
+    try:
+        return asyncio.run(_run())
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(status_code=502, detail=f"PaperQA2 parse failed: {exc}") from exc
 
 
 @app.get("/health")
@@ -260,6 +354,13 @@ def pdf_extract(payload: PdfExtractRequest) -> dict[str, Any]:
     pdf_path = pathlib.Path(payload.pdf_path)
     if not pdf_path.exists():
         raise HTTPException(status_code=404, detail="PDF not found.")
+    if not payload.force_grobid:
+        try:
+            return _paperqa_extract_pdf(pdf_path)
+        except HTTPException as exc:
+            print("WARNING: PaperQA2 parse failed; falling back to GROBID.")
+            if exc.status_code != 502:
+                raise
 
     grobid_url = _get_grobid_url(payload.grobid_url)
     endpoint = f"{grobid_url.rstrip('/')}/api/processFulltextDocument"
@@ -276,7 +377,8 @@ def pdf_extract(payload: PdfExtractRequest) -> dict[str, Any]:
 
     tei_xml = response.text
     parsed = _parse_tei(tei_xml)
-    return {"tei_xml": tei_xml, **parsed}
+    print("WARNING: Using GROBID extraction instead of PaperQA2 native parser.")
+    return {"tei_xml": tei_xml, "parser": "grobid", **parsed}
 
 
 @app.post("/summarize")
@@ -290,6 +392,7 @@ def summarize(payload: SummarizeRequest) -> dict[str, Any]:
     embed_model = f"openai/{_resolve_model(embed_base_url, api_key)}"
     summary = _paperqa_answer(
         payload.text,
+        payload.pdf_path,
         prompt_body,
         base_url,
         embed_base_url,
@@ -330,6 +433,7 @@ def qa(payload: QaRequest) -> dict[str, Any]:
     embed_model = f"openai/{_resolve_model(embed_base_url, api_key)}"
     answer = _paperqa_answer(
         payload.context,
+        payload.pdf_path,
         payload.question,
         base_url,
         embed_base_url,

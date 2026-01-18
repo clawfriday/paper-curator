@@ -89,11 +89,22 @@ This follows your ordering: **(1) package OSS as FastAPI services**, **(2) build
   - One script per endpoint under `scripts/` (see `scripts/README.md`)
 - **Exit criteria**: services run locally, `/health` passes, scripts succeed end-to-end for 2–3 representative papers.
 
-Can we further unify the dependency and port utilization to:
-- build all additional dependencies into the base GROBID docker,
-- merging all other FastAPI endpoints into existing GROBID port, so we only need to use one port, i.e. all current API ports (other than the 3openai_api_base) will be merged into that port
-- let's remove the need of uv and venv (and delete both), then keep track of the steps of extending the GROBID docker into `scripts/docker_mod.sh` and running it via `scripts/docker_run.sh`
-- this port will be set in config/paperqa.yaml, its content will be read and used in this whole repo as a single point of truth
+
+
+### PaperQA2 findings (from paper-qa/README + code)
+- **What we used naively vs built-in PaperQA2**
+  - We manually chunk text and feed `Docs.aadd_texts`; PaperQA2 already provides parsing + chunking (`Docs.aadd` / `Docs.aadd_file`) with configurable chunk size/overlap, metadata validation, and PDF parsing hooks.
+  - We run a simple summarize/QA path; PaperQA2’s `Docs.aget_evidence` + `Docs.aquery` implements retrieval, contextual summarization (summary LLM), and LLM re-ranking before answer generation.
+  - We skip metadata inference; PaperQA2 can infer/attach citations, title/DOI/authors, and uses metadata in embeddings and ranking.
+  - We bypass agentic search and evidence tooling; PaperQA2 provides agentic workflows (search → gather evidence → answer) and a “fake” deterministic path for lower token usage.
+
+- **Capabilities we can still leverage for other scope sections**
+  - Paper search + metadata aggregation across providers (Crossref, Semantic Scholar, OpenAlex, Unpaywall, retractions, journal quality).
+  - Full-text indexing + reuse (local index, cached answers, `search` over prior answers/documents).
+  - Hybrid/sparse+dense embeddings, configurable `evidence_k`, evidence relevance cutoff, and MMR settings.
+  - Multimodal parsing/enrichment for figures/tables (media-aware contextual summaries).
+  - External vector stores / caching hooks, plus settings presets and CLI profiles for reproducible runs.
+  - Code/HTML/Office document ingestion for repository or artifact QA.
 
 ### Milestone 2 — internal building blocks (no DB yet)
 - **Interactive UI** (React + `react-d3-tree`)
