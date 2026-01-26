@@ -201,11 +201,15 @@ Examined PaperQA2 source code to understand the slow operations:
 - Total: ~4-12 LLM calls per query depending on settings, with inference latency dominating
 - The gather_with_concurrency already parallelizes evidence summarization, so the bottleneck is LLM inference speed
 
-**Potential Optimizations:**
-- Reduce evidence_k setting to retrieve fewer chunks (trades accuracy for speed)
-- Set evidence_skip_summary=true to skip per-chunk summarization (significant speedup but lower quality)
-- Use faster LLM model for summary_llm while keeping stronger model for final answer
-- Pre-index documents at ingest time (PaperQA2 defers embedding to query time by default)
+**Current Inefficiency - Redundant PDF Processing:**
+Our current implementation creates a fresh PaperQA2 Docs object for EVERY call to summarize or QA. This means:
+- Summarize (during ingest): parse PDF → embed all chunks → query for summary
+- QA (user query): parse SAME PDF again → embed SAME chunks again → query for answer
+
+The chunk embeddings from summarization are discarded and never reused. The `/embed` endpoint called during ingest only embeds the abstract for pgvector similarity search, not the PDF chunks.
+
+**Recommended Fix - Persist Indexed Documents:**
+After summarization, serialize and store the PaperQA2 Docs object (contains parsed chunks + embeddings) in the database or filesystem. For subsequent QA queries, load the pre-indexed Docs instead of re-processing. This would reduce QA from ~30s to ~5-10s (just evidence retrieval + LLM calls, no parsing/embedding).
 
 ### Milestone 8 - bugfixes
 - meaningless "suma2025deepseekr1incentivizingreasoning" token from model response
