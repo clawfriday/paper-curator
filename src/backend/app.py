@@ -588,6 +588,42 @@ async def abbreviate(payload: AbbreviateRequest) -> dict[str, Any]:
     return {"abbreviation": abbrev, "model": model}
 
 
+class ReabbreviateRequest(BaseModel):
+    arxiv_id: str
+
+
+@app.post("/papers/reabbreviate")
+async def reabbreviate_paper(payload: ReabbreviateRequest) -> dict[str, Any]:
+    """Re-generate abbreviation for an existing paper and update tree node."""
+    # Get paper from DB
+    paper = db.get_paper_by_arxiv_id(payload.arxiv_id)
+    if not paper:
+        raise HTTPException(status_code=404, detail="Paper not found")
+    
+    # Generate new abbreviation
+    endpoint_config = _get_endpoint_config()
+    base_url = endpoint_config["llm_base_url"]
+    api_key = endpoint_config["api_key"]
+    model = _resolve_model(base_url, api_key)
+    client = _get_async_openai_client(base_url, api_key)
+    
+    prompt = ABBREVIATE_PROMPT.format(title=paper["title"])
+    
+    response = await client.chat.completions.create(
+        model=model,
+        messages=[{"role": "user", "content": prompt}],
+        max_tokens=20,
+        temperature=0.1,
+    )
+    abbrev = response.choices[0].message.content.strip().strip('"\'').strip()
+    
+    # Update tree node name
+    node_id = f"paper_{payload.arxiv_id.replace('.', '_')}"
+    db.update_tree_node_name(node_id, abbrev)
+    
+    return {"abbreviation": abbrev, "node_id": node_id}
+
+
 # =============================================================================
 # Database & Tree Endpoints
 # =============================================================================

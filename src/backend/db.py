@@ -213,6 +213,17 @@ def delete_tree_node(node_id: str) -> None:
             conn.commit()
 
 
+def update_tree_node_name(node_id: str, name: str) -> None:
+    """Update a tree node's display name."""
+    with get_db() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "UPDATE tree_nodes SET name = %s WHERE node_id = %s",
+                (name, node_id)
+            )
+            conn.commit()
+
+
 def get_category_paper_count(category_name: str) -> int:
     """Get number of papers in a category."""
     with get_db() as conn:

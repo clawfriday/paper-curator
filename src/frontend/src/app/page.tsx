@@ -107,8 +107,12 @@ export default function Home() {
   });
   
   // Feature panel states
-  const [activePanel, setActivePanel] = useState<"details" | "repos" | "references" | "similar">("details");
+  const [activePanel, setActivePanel] = useState<"details" | "repos" | "references" | "similar" | "query">("details");
   const [repos, setRepos] = useState<RepoResult[]>([]);
+  const [queryInput, setQueryInput] = useState("");
+  const [queryAnswer, setQueryAnswer] = useState("");
+  const [isQuerying, setIsQuerying] = useState(false);
+  const [isReabbreviating, setIsReabbreviating] = useState(false);
   const [references, setReferences] = useState<Reference[]>([]);
   const [similarPapers, setSimilarPapers] = useState<SimilarPaper[]>([]);
   const [isLoadingFeature, setIsLoadingFeature] = useState(false);
@@ -660,6 +664,74 @@ export default function Home() {
     }, 100);
   };
 
+  const handleQuery = async () => {
+    if (!selectedNode?.attributes?.arxivId || !queryInput.trim()) return;
+    setIsQuerying(true);
+    setQueryAnswer("");
+    clearFeatureLog();
+    logFeature(`Querying: "${queryInput}"`);
+    logFeature("Searching paper for answer...");
+    
+    try {
+      const res = await fetch("/api/qa", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          pdf_path: selectedNode.attributes.pdfPath || `storage/pdfs/${selectedNode.attributes.arxivId}.pdf`,
+          question: queryInput,
+          context: "",
+        }),
+      });
+      if (res.ok) {
+        const data = await res.json();
+        setQueryAnswer(data.answer || "No answer found.");
+        logFeature("✓ Answer generated");
+      } else {
+        const errText = await res.text();
+        logFeature(`✗ Error: ${res.status}`);
+        setQueryAnswer(`Error: ${errText}`);
+      }
+    } catch (e) {
+      logFeature(`✗ Error: ${e}`);
+      setQueryAnswer(`Error: ${e}`);
+    } finally {
+      setIsQuerying(false);
+      logFeature("Done");
+    }
+  };
+
+  const handleReabbreviate = async () => {
+    if (!selectedNode?.attributes?.arxivId) return;
+    setIsReabbreviating(true);
+    clearFeatureLog();
+    logFeature(`Re-generating abbreviation for ${selectedNode.attributes.arxivId}...`);
+    
+    try {
+      const res = await fetch("/api/papers/reabbreviate", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ arxiv_id: selectedNode.attributes.arxivId }),
+      });
+      if (res.ok) {
+        const data = await res.json();
+        logFeature(`✓ New abbreviation: ${data.abbreviation}`);
+        // Reload tree to reflect changes
+        const treeRes = await fetch("/api/tree");
+        if (treeRes.ok) {
+          const treeData = await treeRes.json();
+          setTaxonomy(treeData);
+        }
+      } else {
+        logFeature(`✗ Error: ${res.status}`);
+      }
+    } catch (e) {
+      logFeature(`✗ Error: ${e}`);
+    } finally {
+      setIsReabbreviating(false);
+      logFeature("Done");
+    }
+  };
+
   const getStepIcon = (status: IngestionStep["status"]) => {
     switch (status) {
       case "pending": return "○";
@@ -910,16 +982,16 @@ export default function Home() {
             <div style={{ flex: 1, display: "flex", flexDirection: "column", overflow: "hidden" }}>
               {/* Panel tabs */}
               {selectedNode && (
-                <div style={{ display: "flex", padding: "0.5rem", gap: "0.25rem", borderBottom: "1px solid #eee" }}>
-                  {["details", "repos", "references", "similar"].map((panel) => (
+                <div style={{ display: "flex", padding: "0.5rem", gap: "0.25rem", borderBottom: "1px solid #eee", flexWrap: "wrap" }}>
+                  {["details", "repos", "refs", "similar", "query"].map((panel) => (
                     <button
                       key={panel}
-                      onClick={() => setActivePanel(panel as any)}
+                      onClick={() => setActivePanel(panel === "refs" ? "references" : panel as any)}
                       style={{
                         flex: 1,
                         padding: "0.375rem",
-                        backgroundColor: activePanel === panel ? "#0070f3" : "#e5e5e5",
-                        color: activePanel === panel ? "white" : "#333",
+                        backgroundColor: (activePanel === panel || (panel === "refs" && activePanel === "references")) ? "#0070f3" : "#e5e5e5",
+                        color: (activePanel === panel || (panel === "refs" && activePanel === "references")) ? "white" : "#333",
                         border: "none",
                         borderRadius: "4px",
                         cursor: "pointer",
@@ -1007,6 +1079,23 @@ export default function Home() {
                       </p>
                     </div>
                   )}
+                  {/* Re-abbreviate button */}
+                  <button
+                    onClick={handleReabbreviate}
+                    disabled={isReabbreviating}
+                    style={{
+                      marginTop: "1rem",
+                      padding: "0.5rem 1rem",
+                      fontSize: "0.75rem",
+                      backgroundColor: isReabbreviating ? "#ccc" : "#6366f1",
+                      color: "white",
+                      border: "none",
+                      borderRadius: "4px",
+                      cursor: isReabbreviating ? "not-allowed" : "pointer",
+                    }}
+                  >
+                    {isReabbreviating ? "Updating..." : "🔄 Re-generate Abbreviation"}
+                  </button>
                 </div>
               ) : selectedNode ? (
                 <div>
@@ -1175,6 +1264,63 @@ export default function Home() {
                 </div>
               ) : (
                 <p style={{ color: "#999", fontSize: "0.875rem" }}>Right-click a paper to find similar.</p>
+              )}
+            </>
+          )}
+
+          {/* Query Panel */}
+          {activePanel === "query" && (
+            <>
+              <h2 style={{ marginTop: 0, fontSize: "1rem", fontWeight: 600 }}>Ask a Question</h2>
+              {selectedNode?.attributes?.arxivId ? (
+                <div>
+                  <p style={{ fontSize: "0.75rem", color: "#666", marginBottom: "0.75rem" }}>
+                    Ask questions about: {selectedNode.attributes.title || selectedNode.name}
+                  </p>
+                  <textarea
+                    value={queryInput}
+                    onChange={(e) => setQueryInput(e.target.value)}
+                    placeholder="e.g., What is the main contribution of this paper?"
+                    disabled={isQuerying}
+                    style={{
+                      width: "100%",
+                      height: "80px",
+                      padding: "0.5rem",
+                      fontSize: "0.875rem",
+                      border: "1px solid #ddd",
+                      borderRadius: "4px",
+                      resize: "vertical",
+                      boxSizing: "border-box",
+                    }}
+                  />
+                  <button
+                    onClick={handleQuery}
+                    disabled={isQuerying || !queryInput.trim()}
+                    style={{
+                      marginTop: "0.5rem",
+                      width: "100%",
+                      padding: "0.5rem",
+                      fontSize: "0.875rem",
+                      backgroundColor: isQuerying ? "#ccc" : "#0070f3",
+                      color: "white",
+                      border: "none",
+                      borderRadius: "4px",
+                      cursor: isQuerying ? "not-allowed" : "pointer",
+                    }}
+                  >
+                    {isQuerying ? "Searching..." : "Ask"}
+                  </button>
+                  {queryAnswer && (
+                    <div style={{ marginTop: "1rem", padding: "0.75rem", backgroundColor: "#f9f9f9", borderRadius: "4px" }}>
+                      <h4 style={{ fontSize: "0.75rem", marginTop: 0, marginBottom: "0.5rem", color: "#666" }}>Answer:</h4>
+                      <p style={{ fontSize: "0.875rem", lineHeight: 1.6, whiteSpace: "pre-wrap", margin: 0 }}>
+                        {queryAnswer}
+                      </p>
+                    </div>
+                  )}
+                </div>
+              ) : (
+                <p style={{ color: "#999", fontSize: "0.875rem" }}>Select a paper to ask questions.</p>
               )}
             </>
           )}
