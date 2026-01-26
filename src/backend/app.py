@@ -13,7 +13,7 @@ import arxiv
 import httpx
 import yaml
 from fastapi import FastAPI, HTTPException
-from openai import OpenAI
+from openai import OpenAI, AsyncOpenAI
 from paperqa import Docs
 from paperqa.readers import read_doc
 from paperqa.settings import (
@@ -82,6 +82,7 @@ class SavePaperRequest(BaseModel):
     pdf_url: Optional[str] = None
     published_at: Optional[str] = None
     category: str
+    abbreviation: Optional[str] = None  # Short display name for tree node
 
 
 class TreeNodeRequest(BaseModel):
@@ -213,6 +214,10 @@ def _load_prompt() -> tuple[str, str, str]:
 
 def _get_openai_client(base_url: str, api_key: str) -> OpenAI:
     return OpenAI(base_url=base_url, api_key=api_key)
+
+
+def _get_async_openai_client(base_url: str, api_key: str) -> AsyncOpenAI:
+    return AsyncOpenAI(base_url=base_url, api_key=api_key)
 
 
 @lru_cache(maxsize=3)
@@ -428,13 +433,13 @@ def summarize(payload: SummarizeRequest) -> dict[str, Any]:
 
 
 @app.post("/embed")
-def embed(payload: EmbedRequest) -> dict[str, Any]:
+async def embed(payload: EmbedRequest) -> dict[str, Any]:
     endpoint_config = _get_endpoint_config()
     base_url = endpoint_config["embedding_base_url"]
     api_key = endpoint_config["api_key"]
     model = _resolve_model(base_url, api_key)
-    client = _get_openai_client(base_url, api_key)
-    response = client.embeddings.create(model=model, input=payload.text)
+    client = _get_async_openai_client(base_url, api_key)
+    response = await client.embeddings.create(model=model, input=payload.text)
     vector = response.data[0].embedding
     return {"embedding": vector, "model": model}
 
@@ -489,13 +494,13 @@ Respond with ONLY the category name, nothing else. Do not include explanations o
 
 
 @app.post("/classify")
-def classify(payload: ClassifyRequest) -> dict[str, Any]:
+async def classify(payload: ClassifyRequest) -> dict[str, Any]:
     """Classify a paper into a category using LLM."""
     endpoint_config = _get_endpoint_config()
     base_url = endpoint_config["llm_base_url"]
     api_key = endpoint_config["api_key"]
     model = _resolve_model(base_url, api_key)
-    client = _get_openai_client(base_url, api_key)
+    client = _get_async_openai_client(base_url, api_key)
 
     existing_str = ", ".join(payload.existing_categories) if payload.existing_categories else "None yet"
     prompt = CLASSIFY_PROMPT.format(
@@ -504,7 +509,7 @@ def classify(payload: ClassifyRequest) -> dict[str, Any]:
         abstract=payload.abstract[:2000],
     )
 
-    response = client.chat.completions.create(
+    response = await client.chat.completions.create(
         model=model,
         messages=[{"role": "user", "content": prompt}],
         max_tokens=50,
@@ -512,6 +517,46 @@ def classify(payload: ClassifyRequest) -> dict[str, Any]:
     )
     category = response.choices[0].message.content.strip()
     return {"category": category, "model": model}
+
+
+ABBREVIATE_PROMPT = """Generate a short, memorable abbreviation for this research paper title.
+
+Rules:
+- Use the well-known abbreviation if one exists (e.g., "GPT-4", "BERT", "ViT", "CLIP")
+- If no well-known abbreviation exists, create a short one (max 12 chars)
+- Use acronyms, key terms, or author-style names (e.g., "DeepSeek-R1", "DAPO", "LLaMA")
+- Do NOT include version numbers unless critical (e.g., "v3" only if distinguishing from v2)
+
+Paper title: {title}
+
+Respond with ONLY the abbreviation, nothing else."""
+
+
+class AbbreviateRequest(BaseModel):
+    title: str
+
+
+@app.post("/abbreviate")
+async def abbreviate(payload: AbbreviateRequest) -> dict[str, Any]:
+    """Generate a short abbreviation for a paper title."""
+    endpoint_config = _get_endpoint_config()
+    base_url = endpoint_config["llm_base_url"]
+    api_key = endpoint_config["api_key"]
+    model = _resolve_model(base_url, api_key)
+    client = _get_async_openai_client(base_url, api_key)
+    
+    prompt = ABBREVIATE_PROMPT.format(title=payload.title)
+    
+    response = await client.chat.completions.create(
+        model=model,
+        messages=[{"role": "user", "content": prompt}],
+        max_tokens=20,
+        temperature=0.1,
+    )
+    abbrev = response.choices[0].message.content.strip()
+    # Clean up any quotes or extra formatting
+    abbrev = abbrev.strip('"\'').strip()
+    return {"abbreviation": abbrev, "model": model}
 
 
 # =============================================================================
@@ -549,18 +594,20 @@ def save_paper(payload: SavePaperRequest) -> dict[str, Any]:
     else:
         category_node_id = next(n["node_id"] for n in tree if n["name"] == payload.category and n["node_type"] == "category")
     
-    # Add paper node
+    # Add paper node - use abbreviation if provided, otherwise fallback to truncated title
     paper_node_id = f"paper_{payload.arxiv_id.replace('.', '_')}"
-    short_name = payload.title[:40] + "..." if len(payload.title) > 40 else payload.title
+    display_name = payload.abbreviation if payload.abbreviation else (
+        payload.title[:30] + ".." if len(payload.title) > 30 else payload.title
+    )
     db.add_tree_node(
         node_id=paper_node_id,
-        name=short_name,
+        name=display_name,
         node_type="paper",
         parent_id=category_node_id,
         paper_id=paper_id,
     )
     
-    return {"paper_id": paper_id, "node_id": paper_node_id}
+    return {"paper_id": paper_id, "node_id": paper_node_id, "display_name": display_name}
 
 
 @app.get("/tree")
@@ -832,7 +879,7 @@ Be specific and technical but accessible."""
 
 
 @app.post("/references/explain")
-def explain_reference(payload: ExplainReferenceRequest) -> dict[str, Any]:
+async def explain_reference(payload: ExplainReferenceRequest) -> dict[str, Any]:
     """Generate an explanation for a reference using LLM."""
     # Check cache
     refs = db.get_references(0)  # We need to query by ref ID
@@ -844,7 +891,7 @@ def explain_reference(payload: ExplainReferenceRequest) -> dict[str, Any]:
     base_url = endpoint_config["llm_base_url"]
     api_key = endpoint_config["api_key"]
     model = _resolve_model(base_url, api_key)
-    client = _get_openai_client(base_url, api_key)
+    client = _get_async_openai_client(base_url, api_key)
     
     context_section = ""
     if payload.citation_context:
@@ -856,7 +903,7 @@ def explain_reference(payload: ExplainReferenceRequest) -> dict[str, Any]:
         context_section=context_section,
     )
     
-    response = client.chat.completions.create(
+    response = await client.chat.completions.create(
         model=model,
         messages=[{"role": "user", "content": prompt}],
         max_tokens=200,

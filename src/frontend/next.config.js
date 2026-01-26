@@ -17,6 +17,10 @@ const nextConfig = {
         destination: "http://backend:8000/classify",
       },
       {
+        source: "/api/abbreviate",
+        destination: "http://backend:8000/abbreviate",
+      },
+      {
         source: "/api/embed",
         destination: "http://backend:8000/embed",
       },

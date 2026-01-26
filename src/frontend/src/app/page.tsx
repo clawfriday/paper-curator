@@ -116,6 +116,10 @@ export default function Home() {
   const [refExplanations, setRefExplanations] = useState<Record<number, string>>({});
   const [featureLog, setFeatureLog] = useState<string[]>([]);
   
+  // Collapsible sections
+  const [isIngestExpanded, setIsIngestExpanded] = useState(true);
+  const [isDetailsExpanded, setIsDetailsExpanded] = useState(true);
+  
   const hoverTimeoutRef = useRef<NodeJS.Timeout | null>(null);
   
   // Helper to add to feature log
@@ -181,6 +185,7 @@ export default function Home() {
       summary: string;
       pdfPath?: string;
       category: string;
+      abbreviation?: string;
     }) => {
       setTaxonomy((prev) => {
         const newTree = JSON.parse(JSON.stringify(prev)) as PaperNode;
@@ -191,8 +196,10 @@ export default function Home() {
           newTree.children.push(categoryNode);
         }
         categoryNode.children = categoryNode.children || [];
+        // Use abbreviation if provided, otherwise truncate title
+        const displayName = paper.abbreviation || (paper.title.length > 20 ? paper.title.slice(0, 18) + ".." : paper.title);
         categoryNode.children.push({
-          name: paper.title.length > 40 ? paper.title.slice(0, 40) + "..." : paper.title,
+          name: displayName,
           node_type: "paper",
           attributes: {
             arxivId: paper.arxivId,
@@ -214,12 +221,13 @@ export default function Home() {
 
     setIsIngesting(true);
     setSteps([
-      { name: "Resolve arXiv metadata", status: "pending" },
+      { name: "Resolve arXiv", status: "pending" },
       { name: "Download PDF", status: "pending" },
       { name: "Extract text", status: "pending" },
-      { name: "Classify paper (LLM)", status: "pending" },
-      { name: "Generate summary (LLM)", status: "pending" },
-      { name: "Save to database", status: "pending" },
+      { name: "Classify (LLM)", status: "pending" },
+      { name: "Abbreviate (LLM)", status: "pending" },
+      { name: "Summarize (LLM)", status: "pending" },
+      { name: "Save", status: "pending" },
     ]);
 
     let arxivId = "";
@@ -231,6 +239,7 @@ export default function Home() {
     let pdfUrl = "";
     let published = "";
     let category = "";
+    let abbreviation = "";
     let summary = "";
 
     // Step 1: Resolve
@@ -303,26 +312,43 @@ export default function Home() {
     }
     const classifyData = await classifyRes.json();
     category = classifyData.category;
-    updateStep(3, { status: "done", message: `Category: ${category}` });
+    updateStep(3, { status: "done", message: category });
 
-    // Step 5: Summarize
-    updateStep(4, { status: "running", message: "Generating summary (this may take a minute)..." });
+    // Step 5: Abbreviate (LLM)
+    updateStep(4, { status: "running", message: "Creating short name..." });
+    const abbreviateRes = await fetch("/api/abbreviate", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ title }),
+    });
+    if (abbreviateRes.ok) {
+      const abbreviateData = await abbreviateRes.json();
+      abbreviation = abbreviateData.abbreviation;
+      updateStep(4, { status: "done", message: abbreviation });
+    } else {
+      // Fallback to truncated title
+      abbreviation = title.length > 20 ? title.slice(0, 18) + ".." : title;
+      updateStep(4, { status: "done", message: abbreviation });
+    }
+
+    // Step 6: Summarize
+    updateStep(5, { status: "running", message: "May take a minute..." });
     const summarizeRes = await fetch("/api/summarize", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ pdf_path: pdfPath }),
     });
     if (!summarizeRes.ok) {
-      updateStep(4, { status: "error", message: `HTTP ${summarizeRes.status}` });
+      updateStep(5, { status: "error", message: `HTTP ${summarizeRes.status}` });
       setIsIngesting(false);
       return;
     }
     const summarizeData = await summarizeRes.json();
     summary = summarizeData.summary;
-    updateStep(4, { status: "done", message: "Summary generated" });
+    updateStep(5, { status: "done", message: "Done" });
 
-    // Step 6: Save to database
-    updateStep(5, { status: "running" });
+    // Step 7: Save to database
+    updateStep(6, { status: "running" });
     const saveRes = await fetch("/api/papers/save", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -337,12 +363,13 @@ export default function Home() {
         pdf_url: pdfUrl,
         published_at: published,
         category,
+        abbreviation,
       }),
     });
     if (!saveRes.ok) {
-      updateStep(5, { status: "error", message: `HTTP ${saveRes.status}` });
+      updateStep(6, { status: "error", message: `HTTP ${saveRes.status}` });
     } else {
-      updateStep(5, { status: "done", message: "Saved" });
+      updateStep(6, { status: "done", message: "Saved" });
     }
 
     // Add to tree
@@ -353,6 +380,7 @@ export default function Home() {
       summary,
       pdfPath,
       category,
+      abbreviation,
     });
 
     setArxivUrl("");
@@ -610,14 +638,26 @@ export default function Home() {
 
   const handleAddSimilarPaper = async (paper: SimilarPaper) => {
     if (!paper.arxiv_id) return;
+    // Auto-trigger ingestion
     setArxivUrl(paper.arxiv_id);
     setActivePanel("details");
+    // Trigger ingestion after a short delay to allow state update
+    setTimeout(() => {
+      const ingestBtn = document.getElementById("ingest-btn");
+      if (ingestBtn) ingestBtn.click();
+    }, 100);
   };
 
   const handleAddReference = async (ref: Reference) => {
     if (!ref.cited_arxiv_id) return;
+    // Auto-trigger ingestion
     setArxivUrl(ref.cited_arxiv_id);
     setActivePanel("details");
+    // Trigger ingestion after a short delay to allow state update
+    setTimeout(() => {
+      const ingestBtn = document.getElementById("ingest-btn");
+      if (ingestBtn) ingestBtn.click();
+    }, 100);
   };
 
   const getStepIcon = (status: IngestionStep["status"]) => {
@@ -638,15 +678,20 @@ export default function Home() {
     }
   };
 
-  // Custom node renderer with right-click support
+  // Custom node renderer with right-click support - compact display
   const renderCustomNode = useCallback(({ nodeDatum }: CustomNodeElementProps) => {
     const hasArxivId = nodeDatum.attributes && nodeDatum.attributes.arxivId;
     const isCategory = !nodeDatum.attributes || !nodeDatum.attributes.arxivId;
     
+    // Use compact name (already abbreviated from backend, or truncate category names)
+    const displayName = isCategory 
+      ? (nodeDatum.name.length > 20 ? nodeDatum.name.slice(0, 18) + ".." : nodeDatum.name)
+      : nodeDatum.name; // Paper names are already abbreviated
+    
     return (
       <g>
         <circle
-          r={15}
+          r={isCategory ? 12 : 10}
           fill={isCategory ? "#6366f1" : "#0070f3"}
           stroke={isCategory ? "#4f46e5" : "#0051a8"}
           strokeWidth={2}
@@ -661,9 +706,9 @@ export default function Home() {
         <text
           fill="#333"
           strokeWidth={0}
-          x={20}
-          y={5}
-          style={{ fontSize: "12px", cursor: "pointer" }}
+          x={16}
+          y={4}
+          style={{ fontSize: "11px", cursor: "pointer", fontWeight: isCategory ? 600 : 400 }}
           onClick={() => handleNodeClick(nodeDatum.name)}
           onContextMenu={(e) => {
             if (hasArxivId) {
@@ -671,19 +716,8 @@ export default function Home() {
             }
           }}
         >
-          {nodeDatum.name.length > 30 ? nodeDatum.name.slice(0, 30) + "..." : nodeDatum.name}
+          {displayName}
         </text>
-        {hasArxivId && (
-          <text
-            fill="#999"
-            strokeWidth={0}
-            x={20}
-            y={20}
-            style={{ fontSize: "10px" }}
-          >
-            Right-click for options
-          </text>
-        )}
       </g>
     );
   }, [handleNodeClick, handleNodeRightClick]);
@@ -772,135 +806,173 @@ export default function Home() {
 
       {/* Right panel: Details and ingest */}
       <div style={{ flex: 1, padding: "1.5rem", display: "flex", flexDirection: "column", backgroundColor: "#fafafa", overflowY: "auto" }}>
-        {/* Ingest section */}
-        <div style={{ marginBottom: "2rem", backgroundColor: "white", padding: "1rem", borderRadius: "8px", border: "1px solid #e5e5e5" }}>
-          <h2 style={{ marginTop: 0, fontSize: "1.125rem", fontWeight: 600 }}>Ingest Paper</h2>
-          <p style={{ fontSize: "0.75rem", color: "#666", marginBottom: "0.75rem" }}>
-            Enter an arXiv URL or ID. Right-click on papers for more options.
-          </p>
-          <input
-            type="text"
-            value={arxivUrl}
-            onChange={(e) => setArxivUrl(e.target.value)}
-            placeholder="arXiv URL or ID (e.g., 1706.03762)"
-            disabled={isIngesting}
-            style={{
-              width: "100%",
-              padding: "0.625rem",
-              marginBottom: "0.75rem",
-              boxSizing: "border-box",
-              border: "1px solid #ddd",
-              borderRadius: "4px",
-              fontSize: "0.875rem",
-            }}
-          />
-          <button
-            onClick={handleIngest}
-            disabled={isIngesting || !arxivUrl.trim()}
-            style={{
-              width: "100%",
-              padding: "0.625rem",
-              backgroundColor: isIngesting ? "#ccc" : "#0070f3",
-              color: "white",
-              border: "none",
-              borderRadius: "4px",
-              cursor: isIngesting ? "not-allowed" : "pointer",
-              fontSize: "0.875rem",
-              fontWeight: 500,
+        {/* Ingest section - Collapsible */}
+        <div style={{ marginBottom: "1rem", backgroundColor: "white", borderRadius: "8px", border: "1px solid #e5e5e5", overflow: "hidden" }}>
+          <div 
+            onClick={() => setIsIngestExpanded(!isIngestExpanded)}
+            style={{ 
+              padding: "0.75rem 1rem", 
+              display: "flex", 
+              justifyContent: "space-between", 
+              alignItems: "center",
+              cursor: "pointer",
+              backgroundColor: "#f9f9f9",
+              borderBottom: isIngestExpanded ? "1px solid #e5e5e5" : "none",
             }}
           >
-            {isIngesting ? "Ingesting..." : "Ingest Paper"}
-          </button>
+            <h2 style={{ margin: 0, fontSize: "1rem", fontWeight: 600 }}>📥 Ingest Paper</h2>
+            <span style={{ fontSize: "0.875rem", color: "#666" }}>{isIngestExpanded ? "▼" : "▶"}</span>
+          </div>
+          {isIngestExpanded && (
+            <div style={{ padding: "1rem" }}>
+              <input
+                type="text"
+                value={arxivUrl}
+                onChange={(e) => setArxivUrl(e.target.value)}
+                placeholder="arXiv URL or ID (e.g., 1706.03762)"
+                disabled={isIngesting}
+                style={{
+                  width: "100%",
+                  padding: "0.5rem",
+                  marginBottom: "0.5rem",
+                  boxSizing: "border-box",
+                  border: "1px solid #ddd",
+                  borderRadius: "4px",
+                  fontSize: "0.875rem",
+                }}
+              />
+              <button
+                id="ingest-btn"
+                onClick={handleIngest}
+                disabled={isIngesting || !arxivUrl.trim()}
+                style={{
+                  width: "100%",
+                  padding: "0.5rem",
+                  backgroundColor: isIngesting ? "#ccc" : "#0070f3",
+                  color: "white",
+                  border: "none",
+                  borderRadius: "4px",
+                  cursor: isIngesting ? "not-allowed" : "pointer",
+                  fontSize: "0.875rem",
+                  fontWeight: 500,
+                }}
+              >
+                {isIngesting ? "Ingesting..." : "Ingest"}
+              </button>
 
-          {/* Progress steps */}
-          {steps.length > 0 && (
-            <div style={{ marginTop: "1rem" }}>
-              {steps.map((step, i) => (
-                <div key={i} style={{ display: "flex", alignItems: "flex-start", marginBottom: "0.5rem" }}>
-                  <span style={{ color: getStepColor(step.status), marginRight: "0.5rem", fontSize: "0.875rem" }}>
-                    {getStepIcon(step.status)}
-                  </span>
-                  <div style={{ flex: 1 }}>
-                    <span style={{ fontSize: "0.875rem", color: step.status === "error" ? "#ef4444" : "#333" }}>
-                      {step.name}
-                    </span>
-                    {step.message && (
-                      <p style={{ margin: "0.125rem 0 0", fontSize: "0.75rem", color: step.status === "error" ? "#ef4444" : "#666" }}>
-                        {step.message}
-                      </p>
-                    )}
-                  </div>
+              {/* Progress steps */}
+              {steps.length > 0 && (
+                <div style={{ marginTop: "0.75rem" }}>
+                  {steps.map((step, i) => (
+                    <div key={i} style={{ display: "flex", alignItems: "flex-start", marginBottom: "0.25rem" }}>
+                      <span style={{ color: getStepColor(step.status), marginRight: "0.375rem", fontSize: "0.75rem" }}>
+                        {getStepIcon(step.status)}
+                      </span>
+                      <div style={{ flex: 1 }}>
+                        <span style={{ fontSize: "0.75rem", color: step.status === "error" ? "#ef4444" : "#333" }}>
+                          {step.name}
+                        </span>
+                        {step.message && (
+                          <p style={{ margin: "0.125rem 0 0", fontSize: "0.625rem", color: step.status === "error" ? "#ef4444" : "#666" }}>
+                            {step.message}
+                          </p>
+                        )}
+                      </div>
+                    </div>
+                  ))}
                 </div>
-              ))}
+              )}
             </div>
           )}
         </div>
 
-        {/* Panel tabs */}
-        {selectedNode && (
-          <div style={{ display: "flex", marginBottom: "0.5rem", gap: "0.25rem" }}>
-            {["details", "repos", "references", "similar"].map((panel) => (
-              <button
-                key={panel}
-                onClick={() => setActivePanel(panel as any)}
-                style={{
-                  flex: 1,
-                  padding: "0.5rem",
-                  backgroundColor: activePanel === panel ? "#0070f3" : "#e5e5e5",
-                  color: activePanel === panel ? "white" : "#333",
-                  border: "none",
-                  borderRadius: "4px",
-                  cursor: "pointer",
-                  fontSize: "0.75rem",
-                  textTransform: "capitalize",
-                }}
-              >
-                {panel}
-              </button>
-            ))}
+        {/* Paper Details Section - Collapsible */}
+        <div style={{ flex: 1, backgroundColor: "white", borderRadius: "8px", border: "1px solid #e5e5e5", overflow: "hidden", display: "flex", flexDirection: "column" }}>
+          <div 
+            onClick={() => setIsDetailsExpanded(!isDetailsExpanded)}
+            style={{ 
+              padding: "0.75rem 1rem", 
+              display: "flex", 
+              justifyContent: "space-between", 
+              alignItems: "center",
+              cursor: "pointer",
+              backgroundColor: "#f9f9f9",
+              borderBottom: isDetailsExpanded ? "1px solid #e5e5e5" : "none",
+            }}
+          >
+            <h2 style={{ margin: 0, fontSize: "1rem", fontWeight: 600 }}>
+              📄 {selectedNode ? (selectedNode.attributes?.title ? selectedNode.name : selectedNode.name) : "Paper Details"}
+            </h2>
+            <span style={{ fontSize: "0.875rem", color: "#666" }}>{isDetailsExpanded ? "▼" : "▶"}</span>
           </div>
-        )}
+          
+          {isDetailsExpanded && (
+            <div style={{ flex: 1, display: "flex", flexDirection: "column", overflow: "hidden" }}>
+              {/* Panel tabs */}
+              {selectedNode && (
+                <div style={{ display: "flex", padding: "0.5rem", gap: "0.25rem", borderBottom: "1px solid #eee" }}>
+                  {["details", "repos", "references", "similar"].map((panel) => (
+                    <button
+                      key={panel}
+                      onClick={() => setActivePanel(panel as any)}
+                      style={{
+                        flex: 1,
+                        padding: "0.375rem",
+                        backgroundColor: activePanel === panel ? "#0070f3" : "#e5e5e5",
+                        color: activePanel === panel ? "white" : "#333",
+                        border: "none",
+                        borderRadius: "4px",
+                        cursor: "pointer",
+                        fontSize: "0.625rem",
+                        textTransform: "capitalize",
+                      }}
+                    >
+                      {panel}
+                    </button>
+                  ))}
+                </div>
+              )}
 
-        {/* Feature Progress Log */}
-        {featureLog.length > 0 && (
-          <div style={{ 
-            marginBottom: "1rem", 
-            backgroundColor: "#1a1a2e", 
-            padding: "0.75rem", 
-            borderRadius: "8px", 
-            fontFamily: "monospace",
-            fontSize: "0.75rem",
-            maxHeight: "150px",
-            overflowY: "auto",
-          }}>
-            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "0.5rem" }}>
-              <span style={{ color: "#10b981", fontWeight: 600 }}>Feature Log</span>
-              <button 
-                onClick={clearFeatureLog}
-                style={{ 
-                  background: "none", 
-                  border: "none", 
-                  color: "#666", 
-                  cursor: "pointer",
+              {/* Feature Progress Log */}
+              {featureLog.length > 0 && (
+                <div style={{ 
+                  margin: "0.5rem", 
+                  backgroundColor: "#1a1a2e", 
+                  padding: "0.5rem", 
+                  borderRadius: "6px", 
+                  fontFamily: "monospace",
                   fontSize: "0.625rem",
-                }}
-              >
-                Clear
-              </button>
-            </div>
-            {featureLog.map((log, i) => (
-              <div key={i} style={{ 
-                color: log.includes("✓") ? "#10b981" : log.includes("✗") ? "#ef4444" : log.includes("Error") ? "#ef4444" : "#e5e5e5",
-                lineHeight: 1.5,
-              }}>
-                {log}
-              </div>
-            ))}
-          </div>
-        )}
+                  maxHeight: "100px",
+                  overflowY: "auto",
+                }}>
+                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "0.25rem" }}>
+                    <span style={{ color: "#10b981", fontWeight: 600 }}>Log</span>
+                    <button 
+                      onClick={clearFeatureLog}
+                      style={{ 
+                        background: "none", 
+                        border: "none", 
+                        color: "#666", 
+                        cursor: "pointer",
+                        fontSize: "0.5rem",
+                      }}
+                    >
+                      Clear
+                    </button>
+                  </div>
+                  {featureLog.map((log, i) => (
+                    <div key={i} style={{ 
+                      color: log.includes("✓") ? "#10b981" : log.includes("✗") ? "#ef4444" : log.includes("Error") ? "#ef4444" : "#e5e5e5",
+                      lineHeight: 1.4,
+                    }}>
+                      {log}
+                    </div>
+                  ))}
+                </div>
+              )}
 
-        {/* Dynamic panel content */}
-        <div style={{ flex: 1, backgroundColor: "white", padding: "1rem", borderRadius: "8px", border: "1px solid #e5e5e5", overflowY: "auto" }}>
+              {/* Dynamic panel content */}
+              <div style={{ flex: 1, padding: "0.75rem", overflowY: "auto" }}>
           {/* Details Panel */}
           {activePanel === "details" && (
             <>
@@ -1102,9 +1174,12 @@ export default function Home() {
                   ))}
                 </div>
               ) : (
-                <p style={{ color: "#999", fontSize: "0.875rem" }}>No similar papers found. Right-click on a paper and select "Find Similar Papers".</p>
+                <p style={{ color: "#999", fontSize: "0.875rem" }}>Right-click a paper to find similar.</p>
               )}
             </>
+          )}
+              </div>
+            </div>
           )}
         </div>
       </div>
