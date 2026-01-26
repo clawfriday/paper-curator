@@ -162,7 +162,7 @@ def get_tree() -> list[dict[str, Any]]:
         with conn.cursor(cursor_factory=RealDictCursor) as cur:
             cur.execute(
                 """
-                SELECT tn.*, p.arxiv_id, p.title as paper_title, p.authors, p.summary
+                SELECT tn.*, p.arxiv_id, p.title as paper_title, p.authors, p.summary, p.pdf_path
                 FROM tree_nodes tn
                 LEFT JOIN papers p ON tn.paper_id = p.id
                 ORDER BY tn.parent_id NULLS FIRST, tn.position

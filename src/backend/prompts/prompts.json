@@ -1,0 +1,25 @@
+{
+  "paper_summary": {
+    "id": "paper_summary_v1",
+    "description": "Summarize an AI paper",
+    "template": "You are summarizing an AI paper. Produce a concise markdown summary with:\n- What it does concretely as a logical chain of steps, plain language, no figurative speech.\n- The main area it benefits (model performance / training efficiency / inference throughput / etc.).\n- The rationale behind this benefit.\n- Quantifiable results in the main area it improves.\n- No duplication across the above."
+  },
+  "classify": {
+    "id": "classify_v1",
+    "description": "Classify a paper into a category",
+    "template": "You are a research paper classifier. Given a paper's title and abstract, determine the most appropriate category for it.\n\nPrimary AI research categories:\n- Model Architecture (transformer variants, attention mechanisms, novel neural network designs)\n- Training Efficiency (optimization, distributed training, memory efficiency)\n- Inference Optimization (quantization, pruning, distillation, serving)\n- Reinforcement Learning (RL algorithms, RLHF, reward modeling)\n- Vision (image classification, object detection, segmentation, generation)\n- Speech (ASR, TTS, audio processing)\n- Natural Language Processing (text understanding, generation, translation)\n- Multimodal (vision-language, audio-visual, cross-modal)\n- Datasets & Benchmarks (new datasets, evaluation frameworks)\n- Applications (specific use cases, deployments)\n\nExisting categories in the tree: {existing_categories}\n\nInstructions:\n1. If the paper fits well into an existing category, use that exact category name.\n2. If it doesn't fit existing categories, suggest the most appropriate category from the primary list.\n3. If it's a very specific sub-topic and there are already many papers in a category, suggest a more specific sub-category.\n\nPaper Title: {title}\n\nPaper Abstract: {abstract}\n\nRespond with ONLY the category name, nothing else. Do not include explanations or punctuation.",
+    "variables": ["existing_categories", "title", "abstract"]
+  },
+  "abbreviate": {
+    "id": "abbreviate_v1",
+    "description": "Generate a short abbreviation for a paper title",
+    "template": "Generate a short, memorable abbreviation for this research paper title.\n\nRules:\n- Use the well-known abbreviation if one exists (e.g., \"GPT-4\", \"BERT\", \"ViT\", \"CLIP\")\n- If no well-known abbreviation exists, create a short one (max 12 chars)\n- Use acronyms, key terms, or author-style names (e.g., \"DeepSeek-R1\", \"DAPO\", \"LLaMA\")\n- Do NOT include version numbers unless critical (e.g., \"v3\" only if distinguishing from v2)\n\nPaper title: {title}\n\nRespond with ONLY the abbreviation, nothing else.",
+    "variables": ["title"]
+  },
+  "explain_reference": {
+    "id": "explain_reference_v1",
+    "description": "Explain how a cited paper relates to the source paper",
+    "template": "You are a research paper analyst. Explain how a cited paper relates to the source paper.\n\nSource paper: {source_title}\nCited paper: {cited_title}\n{context_section}\n\nProvide a concise 2-3 sentence explanation of:\n1. What the cited paper is about\n2. How it relates to or contributes to the source paper\n\nBe specific and technical but accessible.",
+    "variables": ["source_title", "cited_title", "context_section"]
+  }
+}

@@ -24,7 +24,6 @@ services:
     volumes:
       - ../storage:/app/storage
       - ../config:/app/config
-      - ../prompts:/app/prompts
     ports:
       - "8000:8000"
     environment:

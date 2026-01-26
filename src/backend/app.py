@@ -9,6 +9,8 @@ import uuid
 from functools import lru_cache
 from typing import Any, Optional
 
+import json
+
 import arxiv
 import httpx
 import yaml
@@ -129,6 +131,42 @@ def _load_config() -> dict[str, Any]:
     config_path = pathlib.Path("config/paperqa.yaml")
     if not config_path.exists():
         raise HTTPException(status_code=500, detail="Config file not found: config/paperqa.yaml")
+    mtime = config_path.stat().st_mtime
+    return _load_config_cached(mtime)
+
+
+# =============================================================================
+# Prompt Management
+# =============================================================================
+
+_prompts_cache: dict[str, Any] | None = None
+_prompts_mtime: float = 0
+
+
+def _load_prompts() -> dict[str, Any]:
+    """Load prompts from JSON file with caching based on file modification time."""
+    global _prompts_cache, _prompts_mtime
+    
+    prompts_path = pathlib.Path(__file__).parent / "prompts" / "prompts.json"
+    if not prompts_path.exists():
+        raise HTTPException(status_code=500, detail="Prompts file not found: prompts/prompts.json")
+    
+    current_mtime = prompts_path.stat().st_mtime
+    if _prompts_cache is None or current_mtime > _prompts_mtime:
+        _prompts_cache = json.loads(prompts_path.read_text(encoding="utf-8"))
+        _prompts_mtime = current_mtime
+    
+    return _prompts_cache
+
+
+def get_prompt(prompt_id: str, **kwargs: Any) -> str:
+    """Get a prompt by ID and format it with the provided variables."""
+    prompts = _load_prompts()
+    if prompt_id not in prompts:
+        raise HTTPException(status_code=500, detail=f"Prompt not found: {prompt_id}")
+    
+    template = prompts[prompt_id]["template"]
+    return template.format(**kwargs)
     return _load_config_cached(config_path.stat().st_mtime)
 
 
@@ -218,15 +256,14 @@ def _require_identifier(arxiv_id: Optional[str], url: Optional[str]) -> str:
 
 
 def _load_prompt() -> tuple[str, str, str]:
-    prompt_path = pathlib.Path("prompts/paper_summary.md")
-    if not prompt_path.exists():
-        raise HTTPException(status_code=500, detail="Prompt file not found.")
-    content = prompt_path.read_text(encoding="utf-8").strip()
-    first_line, _, rest = content.partition("\n")
-    if not first_line.startswith("ID: "):
-        raise HTTPException(status_code=500, detail="Prompt ID missing.")
-    prompt_id = first_line.replace("ID: ", "").strip()
-    prompt_body = rest.strip()
+    """Load paper_summary prompt from JSON prompts file."""
+    prompts = _load_prompts()
+    if "paper_summary" not in prompts:
+        raise HTTPException(status_code=500, detail="Prompt 'paper_summary' not found in prompts.json")
+    
+    prompt_data = prompts["paper_summary"]
+    prompt_id = prompt_data.get("id", "paper_summary_v1")
+    prompt_body = prompt_data["template"]
     prompt_hash = hashlib.sha256(prompt_body.encode("utf-8")).hexdigest()
     return prompt_id, prompt_hash, prompt_body
 
@@ -494,34 +531,6 @@ def qa(payload: QaRequest) -> dict[str, Any]:
     return {"answer": answer}
 
 
-CLASSIFY_PROMPT = """You are a research paper classifier. Given a paper's title and abstract, determine the most appropriate category for it.
-
-Primary AI research categories:
-- Model Architecture (transformer variants, attention mechanisms, novel neural network designs)
-- Training Efficiency (optimization, distributed training, memory efficiency)
-- Inference Optimization (quantization, pruning, distillation, serving)
-- Reinforcement Learning (RL algorithms, RLHF, reward modeling)
-- Vision (image classification, object detection, segmentation, generation)
-- Speech (ASR, TTS, audio processing)
-- Natural Language Processing (text understanding, generation, translation)
-- Multimodal (vision-language, audio-visual, cross-modal)
-- Datasets & Benchmarks (new datasets, evaluation frameworks)
-- Applications (specific use cases, deployments)
-
-Existing categories in the tree: {existing_categories}
-
-Instructions:
-1. If the paper fits well into an existing category, use that exact category name.
-2. If it doesn't fit existing categories, suggest the most appropriate category from the primary list.
-3. If it's a very specific sub-topic and there are already many papers in a category, suggest a more specific sub-category.
-
-Paper Title: {title}
-
-Paper Abstract: {abstract}
-
-Respond with ONLY the category name, nothing else. Do not include explanations or punctuation."""
-
-
 @app.post("/classify")
 async def classify(payload: ClassifyRequest) -> dict[str, Any]:
     """Classify a paper into a category using LLM."""
@@ -532,7 +541,8 @@ async def classify(payload: ClassifyRequest) -> dict[str, Any]:
     client = _get_async_openai_client(base_url, api_key)
 
     existing_str = ", ".join(payload.existing_categories) if payload.existing_categories else "None yet"
-    prompt = CLASSIFY_PROMPT.format(
+    prompt = get_prompt(
+        "classify",
         existing_categories=existing_str,
         title=payload.title,
         abstract=payload.abstract[:2000],
@@ -548,19 +558,6 @@ async def classify(payload: ClassifyRequest) -> dict[str, Any]:
     return {"category": category, "model": model}
 
 
-ABBREVIATE_PROMPT = """Generate a short, memorable abbreviation for this research paper title.
-
-Rules:
-- Use the well-known abbreviation if one exists (e.g., "GPT-4", "BERT", "ViT", "CLIP")
-- If no well-known abbreviation exists, create a short one (max 12 chars)
-- Use acronyms, key terms, or author-style names (e.g., "DeepSeek-R1", "DAPO", "LLaMA")
-- Do NOT include version numbers unless critical (e.g., "v3" only if distinguishing from v2)
-
-Paper title: {title}
-
-Respond with ONLY the abbreviation, nothing else."""
-
-
 class AbbreviateRequest(BaseModel):
     title: str
 
@@ -574,7 +571,7 @@ async def abbreviate(payload: AbbreviateRequest) -> dict[str, Any]:
     model = _resolve_model(base_url, api_key)
     client = _get_async_openai_client(base_url, api_key)
     
-    prompt = ABBREVIATE_PROMPT.format(title=payload.title)
+    prompt = get_prompt("abbreviate", title=payload.title)
     
     response = await client.chat.completions.create(
         model=model,
@@ -607,7 +604,7 @@ async def reabbreviate_paper(payload: ReabbreviateRequest) -> dict[str, Any]:
     model = _resolve_model(base_url, api_key)
     client = _get_async_openai_client(base_url, api_key)
     
-    prompt = ABBREVIATE_PROMPT.format(title=paper["title"])
+    prompt = get_prompt("abbreviate", title=paper["title"])
     
     response = await client.chat.completions.create(
         model=model,
@@ -696,6 +693,7 @@ def get_tree() -> dict[str, Any]:
                         "title": node.get("paper_title"),
                         "authors": node.get("authors") or [],
                         "summary": node.get("summary"),
+                        "pdfPath": node.get("pdf_path"),
                     }
                 grandchildren = build_tree(node["node_id"])
                 if grandchildren:
@@ -930,19 +928,6 @@ async def fetch_references(payload: ReferencesRequest) -> dict[str, Any]:
     return {"references": references, "from_cache": False}
 
 
-EXPLAIN_REFERENCE_PROMPT = """You are a research paper analyst. Explain how a cited paper relates to the source paper.
-
-Source paper: {source_title}
-Cited paper: {cited_title}
-{context_section}
-
-Provide a concise 2-3 sentence explanation of:
-1. What the cited paper is about
-2. How it relates to or contributes to the source paper
-
-Be specific and technical but accessible."""
-
-
 @app.post("/references/explain")
 async def explain_reference(payload: ExplainReferenceRequest) -> dict[str, Any]:
     """Generate an explanation for a reference using LLM."""
@@ -962,7 +947,8 @@ async def explain_reference(payload: ExplainReferenceRequest) -> dict[str, Any]:
     if payload.citation_context:
         context_section = f"\nCitation context: \"{payload.citation_context}\""
     
-    prompt = EXPLAIN_REFERENCE_PROMPT.format(
+    prompt = get_prompt(
+        "explain_reference",
         source_title=payload.source_paper_title,
         cited_title=payload.cited_title,
         context_section=context_section,
