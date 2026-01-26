@@ -136,7 +136,7 @@ This follows your ordering: **(1) package OSS as FastAPI services**, **(2) build
 ### Mileston 5 - refactor
 - using split Docker for frontend and backend, docker-bridge for comm via compose.yml
 - using venv for dev
-- 
+- use Makefile to simplify the dev endpoint
 
 
 ### Mileston 6 - UI improvement
@@ -145,9 +145,51 @@ This follows your ordering: **(1) package OSS as FastAPI services**, **(2) build
   - the node names to be displayed inside the node circle
   - use curved lines instead of straight lines
   - the spacing betwween nodes are closer
+  - horizontal and vertical scroll bars
 
 ### Mileston 7 - Speedup
-- using async for parallelism as much as possible
+
+#### Current Step Timings (measured averages)
+| Step | Avg Time | Type | Bottleneck |
+|------|----------|------|------------|
+| ArXiv Resolve | 0.08s | Network (arXiv API) | External API latency |
+| ArXiv Download | 0.4s | Network + I/O | PDF download, cached after first |
+| PDF Extract | 0.46s | CPU | PaperQA2 PDF parsing |
+| Classify (LLM) | 0.4s | Network (LLM) | Sequential LLM call |
+| Abbreviate (LLM) | 0.3s | Network (LLM) | Sequential LLM call |
+| Embed | 0.07s | Network (Embed) | Embedding model call |
+| Summarize | 30s | Network (LLM+Embed) | PaperQA2 multi-step pipeline |
+| QA Query | 30s | Network (LLM+Embed) | PaperQA2 RAG pipeline |
+| References Fetch | 0.04s | Network (Semantic Scholar) | Cached after first call |
+| Similar Papers | 0.04s | Network (Semantic Scholar) | Cached after first call |
+| Repos Search | 0.04s | Network (PWC + GitHub) | Cached after first call |
+| DB Operations | <0.04s | I/O | PostgreSQL queries |
+
+#### Parallelization Opportunities
+
+**1. Ingest Pipeline: Classify + Abbreviate in parallel**
+Currently sequential. Both are independent LLM calls using only title/abstract. Run with asyncio.gather to save ~0.3s per ingest.
+
+**2. Ingest Pipeline: Extract + Classify + Abbreviate in parallel**
+PDF extraction doesn't depend on classify/abbreviate. All three can start after download completes. Saves ~0.5s.
+
+**3. Batch LLM calls for multi-paper operations**
+When re-abbreviating all papers or bulk operations, batch multiple LLM requests into a single API call if the model supports it, or run concurrent async requests.
+
+**4. Prefetch references and repos after ingest**
+After save completes, trigger background fetches for references, similar papers, and repos. Cache results in DB so they're instant when user clicks.
+
+**5. Parallel embedding for multiple chunks**
+PaperQA2's summarize splits PDF into chunks. If using custom embedding, batch all chunks into one API call instead of sequential calls.
+
+**6. Frontend parallel API calls**
+When loading paper details panel, fetch repos, references, and similar papers in parallel using Promise.all instead of waiting for tab click.
+
+**7. Connection pooling for external APIs**
+Reuse httpx.AsyncClient with connection pooling for Semantic Scholar, GitHub, Papers With Code to reduce TLS handshake overhead.
+
+**8. Streaming responses for Summarize/QA**
+Use SSE or WebSocket to stream LLM responses to frontend, improving perceived latency even if total time unchanged
 
 ### Milestone 8 - bugfixes
 - meaningless "suma2025deepseekr1incentivizingreasoning" token from model response
