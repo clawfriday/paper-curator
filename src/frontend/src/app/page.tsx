@@ -768,38 +768,53 @@ export default function Home() {
   const renderCustomNode = useCallback(({ nodeDatum }: CustomNodeElementProps) => {
     const hasArxivId = nodeDatum.attributes && nodeDatum.attributes.arxivId;
     const isCategory = !nodeDatum.attributes || !nodeDatum.attributes.arxivId;
+    const isRoot = nodeDatum.name === "AI Papers";
     
-    // Use compact name (already abbreviated from backend, or truncate category names)
-    const displayName = isCategory 
-      ? (nodeDatum.name.length > 20 ? nodeDatum.name.slice(0, 18) + ".." : nodeDatum.name)
-      : nodeDatum.name; // Paper names are already abbreviated
+    // Use compact name (already abbreviated from backend, or truncate names)
+    const displayName = nodeDatum.name.length > 12 
+      ? nodeDatum.name.slice(0, 10) + ".." 
+      : nodeDatum.name;
+    
+    // Node sizing
+    const nodeWidth = isRoot ? 90 : (isCategory ? 80 : 70);
+    const nodeHeight = isRoot ? 36 : (isCategory ? 32 : 28);
+    const fontSize = isRoot ? 11 : (isCategory ? 10 : 9);
+    
+    // Colors
+    const fillColor = isRoot ? "#1e293b" : (isCategory ? "#6366f1" : "#0070f3");
+    const strokeColor = isRoot ? "#0f172a" : (isCategory ? "#4f46e5" : "#0051a8");
     
     return (
-      <g>
-        <circle
-          r={isCategory ? 12 : 10}
-          fill={isCategory ? "#6366f1" : "#0070f3"}
-          stroke={isCategory ? "#4f46e5" : "#0051a8"}
+      <g
+        style={{ cursor: "pointer" }}
+        onClick={() => handleNodeClick(nodeDatum.name)}
+        onContextMenu={(e) => {
+          if (hasArxivId) {
+            handleNodeRightClick(e, nodeDatum.name);
+          }
+        }}
+      >
+        {/* Rounded rectangle node */}
+        <rect
+          x={-nodeWidth / 2}
+          y={-nodeHeight / 2}
+          width={nodeWidth}
+          height={nodeHeight}
+          rx={nodeHeight / 2}
+          ry={nodeHeight / 2}
+          fill={fillColor}
+          stroke={strokeColor}
           strokeWidth={2}
-          style={{ cursor: "pointer" }}
-          onClick={() => handleNodeClick(nodeDatum.name)}
-          onContextMenu={(e) => {
-            if (hasArxivId) {
-              handleNodeRightClick(e, nodeDatum.name);
-            }
-          }}
         />
+        {/* Centered text */}
         <text
-          fill="#333"
-          strokeWidth={0}
-          x={16}
-          y={4}
-          style={{ fontSize: "11px", cursor: "pointer", fontWeight: isCategory ? 600 : 400 }}
-          onClick={() => handleNodeClick(nodeDatum.name)}
-          onContextMenu={(e) => {
-            if (hasArxivId) {
-              handleNodeRightClick(e, nodeDatum.name);
-            }
+          fill="white"
+          textAnchor="middle"
+          dominantBaseline="central"
+          style={{ 
+            fontSize: `${fontSize}px`, 
+            fontWeight: isCategory ? 600 : 500,
+            pointerEvents: "none",
           }}
         >
           {displayName}
@@ -812,6 +827,16 @@ export default function Home() {
     <div style={{ display: "flex", height: "100vh" }}>
       {/* Left panel: Tree visualization */}
       <div style={{ flex: 2, borderRight: "1px solid #e5e5e5", display: "flex", flexDirection: "column" }}>
+        <style>{`
+          .tree-link {
+            stroke: #94a3b8 !important;
+            stroke-width: 1.5px !important;
+            fill: none !important;
+          }
+          .rd3t-tree-container {
+            background: linear-gradient(180deg, #fafbfc 0%, #f1f5f9 100%);
+          }
+        `}</style>
         <div style={{ padding: "1rem", borderBottom: "1px solid #e5e5e5", backgroundColor: "#fafafa" }}>
           <h1 style={{ margin: 0, fontSize: "1.5rem", fontWeight: 600 }}>Paper Curator</h1>
           <p style={{ margin: "0.25rem 0 0", fontSize: "0.875rem", color: "#666" }}>
@@ -820,18 +845,19 @@ export default function Home() {
           </p>
         </div>
         <div 
-          style={{ flex: 1, position: "relative" }}
+          style={{ flex: 1, position: "relative", overflow: "auto" }}
           onContextMenu={(e) => e.preventDefault()}
         >
           {taxonomy.children && taxonomy.children.length > 0 ? (
             <Tree
               data={treeData}
               orientation="vertical"
-              pathFunc="step"
-              translate={{ x: 300, y: 50 }}
-              nodeSize={{ x: 220, y: 80 }}
-              separation={{ siblings: 1.2, nonSiblings: 1.5 }}
+              pathFunc="diagonal"
+              translate={{ x: 300, y: 40 }}
+              nodeSize={{ x: 100, y: 60 }}
+              separation={{ siblings: 1.0, nonSiblings: 1.2 }}
               renderCustomNodeElement={renderCustomNode}
+              pathClassFunc={() => "tree-link"}
             />
           ) : (
             <div style={{ display: "flex", alignItems: "center", justifyContent: "center", height: "100%", color: "#999" }}>
