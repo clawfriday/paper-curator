@@ -34,6 +34,36 @@ app = FastAPI(title="paper-curator-backend")
 
 
 # =============================================================================
+# Shared HTTP Client Pool (connection reuse for external APIs)
+# =============================================================================
+
+# Shared clients for external APIs - reuse connections instead of creating new ones
+_http_clients: dict[str, httpx.AsyncClient] = {}
+
+
+def _get_http_client(name: str, timeout: float = 10.0, headers: dict | None = None) -> httpx.AsyncClient:
+    """Get or create a shared httpx.AsyncClient for an external API.
+    
+    Reuses connections to eliminate TLS handshake overhead on repeated calls.
+    """
+    if name not in _http_clients:
+        _http_clients[name] = httpx.AsyncClient(
+            timeout=timeout,
+            headers=headers or {},
+            limits=httpx.Limits(max_keepalive_connections=5, max_connections=10),
+        )
+    return _http_clients[name]
+
+
+@app.on_event("shutdown")
+async def shutdown_http_clients():
+    """Close all shared HTTP clients on shutdown."""
+    for client in _http_clients.values():
+        await client.aclose()
+    _http_clients.clear()
+
+
+# =============================================================================
 # Request/Response Models
 # =============================================================================
 
@@ -1004,38 +1034,38 @@ async def _prefetch_repos(arxiv_id: str, title: str, apis_config: dict) -> list[
 
 async def _search_papers_with_code(title: str) -> list[dict[str, Any]]:
     """Search Papers With Code for repositories."""
-    async with httpx.AsyncClient(timeout=10.0) as client:
-        # Search for paper
-        search_url = "https://paperswithcode.com/api/v1/papers/"
-        response = await client.get(search_url, params={"q": title[:100]})
-        if response.status_code != 200:
-            return []
+    client = _get_http_client("paperswithcode", timeout=10.0)
+    # Search for paper
+    search_url = "https://paperswithcode.com/api/v1/papers/"
+    response = await client.get(search_url, params={"q": title[:100]})
+    if response.status_code != 200:
+        return []
+    
+    data = response.json()
+    results = data.get("results", [])
+    if not results:
+        return []
+    
+    repos = []
+    for paper in results[:3]:  # Check top 3 matches
+        paper_id = paper.get("id")
+        if not paper_id:
+            continue
         
-        data = response.json()
-        results = data.get("results", [])
-        if not results:
-            return []
-        
-        repos = []
-        for paper in results[:3]:  # Check top 3 matches
-            paper_id = paper.get("id")
-            if not paper_id:
-                continue
-            
-            # Get repos for this paper
-            repos_url = f"https://paperswithcode.com/api/v1/papers/{paper_id}/repositories/"
-            repos_response = await client.get(repos_url)
-            if repos_response.status_code == 200:
-                repos_data = repos_response.json()
-                for repo in repos_data.get("results", []):
-                    repos.append({
-                        "source": "paperswithcode",
-                        "repo_url": repo.get("url"),
-                        "repo_name": repo.get("url", "").split("/")[-1] if repo.get("url") else None,
-                        "stars": repo.get("stars"),
-                        "is_official": repo.get("is_official", False),
-                    })
-        return repos
+        # Get repos for this paper
+        repos_url = f"https://paperswithcode.com/api/v1/papers/{paper_id}/repositories/"
+        repos_response = await client.get(repos_url)
+        if repos_response.status_code == 200:
+            repos_data = repos_response.json()
+            for repo in repos_data.get("results", []):
+                repos.append({
+                    "source": "paperswithcode",
+                    "repo_url": repo.get("url"),
+                    "repo_name": repo.get("url", "").split("/")[-1] if repo.get("url") else None,
+                    "stars": repo.get("stars"),
+                    "is_official": repo.get("is_official", False),
+                })
+    return repos
 
 
 async def _search_github(title: str, github_token: Optional[str] = None) -> list[dict[str, Any]]:
@@ -1044,29 +1074,29 @@ async def _search_github(title: str, github_token: Optional[str] = None) -> list
     if github_token:
         headers["Authorization"] = f"token {github_token}"
     
-    async with httpx.AsyncClient(timeout=10.0) as client:
-        # Clean title for search
-        clean_title = re.sub(r'[^\w\s]', '', title)[:50]
-        search_url = "https://api.github.com/search/repositories"
-        response = await client.get(
-            search_url,
-            params={"q": clean_title, "sort": "stars", "order": "desc", "per_page": 5},
-            headers=headers,
-        )
-        if response.status_code != 200:
-            return []
-        
-        data = response.json()
-        repos = []
-        for item in data.get("items", []):
-            repos.append({
-                "source": "github",
-                "repo_url": item.get("html_url"),
-                "repo_name": item.get("full_name"),
-                "stars": item.get("stargazers_count"),
-                "is_official": False,
-            })
-        return repos
+    client = _get_http_client("github", timeout=10.0, headers={"Accept": "application/vnd.github.v3+json"})
+    # Clean title for search
+    clean_title = re.sub(r'[^\w\s]', '', title)[:50]
+    search_url = "https://api.github.com/search/repositories"
+    response = await client.get(
+        search_url,
+        params={"q": clean_title, "sort": "stars", "order": "desc", "per_page": 5},
+        headers=headers,  # Override with auth if provided
+    )
+    if response.status_code != 200:
+        return []
+    
+    data = response.json()
+    repos = []
+    for item in data.get("items", []):
+        repos.append({
+            "source": "github",
+            "repo_url": item.get("html_url"),
+            "repo_name": item.get("full_name"),
+            "stars": item.get("stargazers_count"),
+            "is_official": False,
+        })
+    return repos
 
 
 @app.post("/repos/search")
@@ -1123,36 +1153,36 @@ async def _get_semantic_scholar_references(arxiv_id: str, api_key: Optional[str]
     if api_key:
         headers["x-api-key"] = api_key
     
-    async with httpx.AsyncClient(timeout=15.0, headers=headers) as client:
-        # First get the paper ID
-        paper_url = f"https://api.semanticscholar.org/graph/v1/paper/arXiv:{clean_id}"
-        params = {"fields": "references.title,references.authors,references.year,references.externalIds"}
-        response = await client.get(paper_url, params=params)
+    client = _get_http_client("semantic_scholar", timeout=15.0)
+    # First get the paper ID
+    paper_url = f"https://api.semanticscholar.org/graph/v1/paper/arXiv:{clean_id}"
+    params = {"fields": "references.title,references.authors,references.year,references.externalIds"}
+    response = await client.get(paper_url, params=params, headers=headers)
+    
+    if response.status_code == 429:
+        print("Semantic Scholar rate limited. Consider adding an API key to config/paperqa.yaml")
+        return []
+    
+    if response.status_code != 200:
+        print(f"Semantic Scholar returned {response.status_code}: {response.text[:200]}")
+        return []
+    
+    data = response.json()
+    references = []
+    for ref in data.get("references", []):
+        arxiv_ref_id = None
+        external_ids = ref.get("externalIds", {})
+        if external_ids and "ArXiv" in external_ids:
+            arxiv_ref_id = external_ids["ArXiv"]
         
-        if response.status_code == 429:
-            print("Semantic Scholar rate limited. Consider adding an API key to config/paperqa.yaml")
-            return []
-        
-        if response.status_code != 200:
-            print(f"Semantic Scholar returned {response.status_code}: {response.text[:200]}")
-            return []
-        
-        data = response.json()
-        references = []
-        for ref in data.get("references", []):
-            arxiv_ref_id = None
-            external_ids = ref.get("externalIds", {})
-            if external_ids and "ArXiv" in external_ids:
-                arxiv_ref_id = external_ids["ArXiv"]
-            
-            authors = [a.get("name", "") for a in ref.get("authors", [])]
-            references.append({
-                "cited_title": ref.get("title", "Unknown"),
-                "cited_arxiv_id": arxiv_ref_id,
-                "cited_authors": authors,
-                "cited_year": ref.get("year"),
-            })
-        return references
+        authors = [a.get("name", "") for a in ref.get("authors", [])]
+        references.append({
+            "cited_title": ref.get("title", "Unknown"),
+            "cited_arxiv_id": arxiv_ref_id,
+            "cited_authors": authors,
+            "cited_year": ref.get("year"),
+        })
+    return references
 
 
 @app.post("/references/fetch")
@@ -1247,43 +1277,43 @@ async def _get_semantic_scholar_recommendations(arxiv_id: str, limit: int = 10, 
     if api_key:
         headers["x-api-key"] = api_key
     
-    async with httpx.AsyncClient(timeout=15.0, headers=headers) as client:
-        # Use the Recommendations API to find similar papers from Semantic Scholar's 200M+ paper database
-        rec_url = f"https://api.semanticscholar.org/recommendations/v1/papers/forpaper/arXiv:{clean_id}"
-        params = {
-            "fields": "title,abstract,authors,year,externalIds,citationCount,url",
-            "limit": limit,
-            "from": "all-cs",  # Search all CS papers, use "recent" for recent papers only
-        }
+    client = _get_http_client("semantic_scholar", timeout=15.0)
+    # Use the Recommendations API to find similar papers from Semantic Scholar's 200M+ paper database
+    rec_url = f"https://api.semanticscholar.org/recommendations/v1/papers/forpaper/arXiv:{clean_id}"
+    params = {
+        "fields": "title,abstract,authors,year,externalIds,citationCount,url",
+        "limit": limit,
+        "from": "all-cs",  # Search all CS papers, use "recent" for recent papers only
+    }
+    
+    response = await client.get(rec_url, params=params, headers=headers)
+    
+    if response.status_code != 200:
+        print(f"Semantic Scholar Recommendations API returned {response.status_code}: {response.text}")
+        return []
+    
+    data = response.json()
+    recommendations = []
+    
+    for paper in data.get("recommendedPapers", []):
+        arxiv_ref_id = None
+        external_ids = paper.get("externalIds", {})
+        if external_ids and "ArXiv" in external_ids:
+            arxiv_ref_id = external_ids["ArXiv"]
         
-        response = await client.get(rec_url, params=params)
-        
-        if response.status_code != 200:
-            print(f"Semantic Scholar Recommendations API returned {response.status_code}: {response.text}")
-            return []
-        
-        data = response.json()
-        recommendations = []
-        
-        for paper in data.get("recommendedPapers", []):
-            arxiv_ref_id = None
-            external_ids = paper.get("externalIds", {})
-            if external_ids and "ArXiv" in external_ids:
-                arxiv_ref_id = external_ids["ArXiv"]
-            
-            authors = [a.get("name", "") for a in paper.get("authors", [])]
-            recommendations.append({
-                "arxiv_id": arxiv_ref_id,
-                "title": paper.get("title", "Unknown"),
-                "abstract": paper.get("abstract", ""),
-                "authors": authors,
-                "year": paper.get("year"),
-                "citation_count": paper.get("citationCount", 0),
-                "url": paper.get("url", ""),
-                "source": "semantic_scholar",
-            })
-        
-        return recommendations
+        authors = [a.get("name", "") for a in paper.get("authors", [])]
+        recommendations.append({
+            "arxiv_id": arxiv_ref_id,
+            "title": paper.get("title", "Unknown"),
+            "abstract": paper.get("abstract", ""),
+            "authors": authors,
+            "year": paper.get("year"),
+            "citation_count": paper.get("citationCount", 0),
+            "url": paper.get("url", ""),
+            "source": "semantic_scholar",
+        })
+    
+    return recommendations
 
 
 @app.post("/papers/similar")
