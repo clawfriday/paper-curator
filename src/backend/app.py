@@ -785,6 +785,39 @@ async def reabbreviate_paper(payload: ReabbreviateRequest) -> dict[str, Any]:
     return {"abbreviation": abbrev, "node_id": node_id}
 
 
+@app.post("/papers/reabbreviate-all")
+async def reabbreviate_all_papers() -> dict[str, Any]:
+    """Re-generate abbreviations for ALL papers in parallel."""
+    # Get all papers
+    papers = db.get_all_papers()
+    if not papers:
+        return {"updated": 0, "results": []}
+    
+    endpoint_config = _get_endpoint_config()
+    base_url = endpoint_config["llm_base_url"]
+    api_key = endpoint_config["api_key"]
+    model = _resolve_model(base_url, api_key)
+    client = _get_async_openai_client(base_url, api_key)
+    
+    async def abbreviate_one(paper: dict) -> dict[str, Any]:
+        prompt = get_prompt("abbreviate", title=paper["title"])
+        response = await client.chat.completions.create(
+            model=model,
+            messages=[{"role": "user", "content": prompt}],
+            max_tokens=20,
+            temperature=0.1,
+        )
+        abbrev = response.choices[0].message.content.strip().strip('"\'').strip()
+        node_id = f"paper_{paper['arxiv_id'].replace('.', '_')}"
+        db.update_tree_node_name(node_id, abbrev)
+        return {"arxiv_id": paper["arxiv_id"], "abbreviation": abbrev}
+    
+    # Run all abbreviations in parallel
+    results = await asyncio.gather(*[abbreviate_one(p) for p in papers])
+    
+    return {"updated": len(results), "results": results}
+
+
 # =============================================================================
 # Database & Tree Endpoints
 # =============================================================================

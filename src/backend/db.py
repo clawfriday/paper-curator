@@ -92,6 +92,14 @@ def get_paper_by_id(paper_id: int) -> Optional[dict[str, Any]]:
             return dict(row) if row else None
 
 
+def get_all_papers() -> list[dict[str, Any]]:
+    """Get all papers."""
+    with get_db() as conn:
+        with conn.cursor(cursor_factory=RealDictCursor) as cur:
+            cur.execute("SELECT * FROM papers ORDER BY created_at DESC")
+            return [dict(row) for row in cur.fetchall()]
+
+
 def update_paper_embedding(paper_id: int, embedding: list[float]) -> None:
     """Update paper embedding."""
     import numpy as np
