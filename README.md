@@ -36,7 +36,11 @@ for each paper, the 3rd option required is to "find similar papers". Once clicke
 
 7. all above info will be persisted in a locally structured database. please help me evaluate if such plan is feasible, and what are the key steps I need to take in n8n to implement such
 
-8. 
+8. move the prompts
+- move the prompts from 'prompts' to 'src/backend/prompts', 
+- change it from yaml to json. 
+- move all existing prompts that are hardcoded into the python script into the json
+- load it only when we need to use the prompt
 
 # Resource
 

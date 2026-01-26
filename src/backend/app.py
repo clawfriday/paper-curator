@@ -412,8 +412,18 @@ def summarize(payload: SummarizeRequest) -> dict[str, Any]:
     base_url = endpoint_config["llm_base_url"]
     embed_base_url = endpoint_config["embedding_base_url"]
     api_key = endpoint_config["api_key"]
-    model = f"openai/{_resolve_model(base_url, api_key)}"
-    embed_model = f"openai/{_resolve_model(embed_base_url, api_key)}"
+    
+    # Check LLM endpoint
+    try:
+        model = f"openai/{_resolve_model(base_url, api_key)}"
+    except Exception as e:
+        raise HTTPException(status_code=503, detail=f"LLM endpoint not available at {base_url}: {e}")
+    
+    # Check embedding endpoint
+    try:
+        embed_model = f"openai/{_resolve_model(embed_base_url, api_key)}"
+    except Exception as e:
+        raise HTTPException(status_code=503, detail=f"Embedding endpoint not available at {embed_base_url}. Please start your embedding service on port 8004.")
     summary = _paperqa_answer(
         payload.text,
         payload.pdf_path,
