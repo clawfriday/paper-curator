@@ -2,14 +2,14 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import json
 import os
 import pathlib
+import pickle
 import re
 import uuid
 from functools import lru_cache
 from typing import Any, Optional
-
-import json
 
 import arxiv
 import httpx
@@ -55,13 +55,20 @@ class PdfExtractRequest(BaseModel):
 class SummarizeRequest(BaseModel):
     text: Optional[str] = Field(default=None, description="Full paper text or extracted sections")
     pdf_path: Optional[str] = Field(default=None, description="Local PDF file path")
+    arxiv_id: Optional[str] = Field(default=None, description="arXiv ID for persisting index")
 
 
-class EmbedRequest(BaseModel):
-    text: str = Field(description="Text to embed")
+class EmbedAbstractRequest(BaseModel):
+    text: str = Field(description="Abstract text to embed for similarity search")
+
+
+class EmbedFulltextRequest(BaseModel):
+    arxiv_id: str = Field(description="arXiv ID of paper")
+    pdf_path: str = Field(description="Path to PDF file")
 
 
 class QaRequest(BaseModel):
+    arxiv_id: Optional[str] = Field(default=None, description="arXiv ID for cached index lookup")
     context: Optional[str] = Field(default=None, description="Context text to answer from")
     question: str = Field(description="Question to answer")
     pdf_path: Optional[str] = Field(default=None, description="Local PDF file path")
@@ -285,6 +292,111 @@ def _resolve_model(base_url: str, api_key: str) -> str:
     return model_ids[0]
 
 
+def _get_paperqa_index_path(arxiv_id: str) -> pathlib.Path:
+    """Get path to stored PaperQA2 index for a paper."""
+    index_dir = pathlib.Path("storage/paperqa_index")
+    index_dir.mkdir(parents=True, exist_ok=True)
+    # Sanitize arxiv_id for filename
+    safe_id = arxiv_id.replace("/", "_").replace(".", "_")
+    return index_dir / f"{safe_id}.pkl"
+
+
+def _build_paperqa_settings(
+    llm_model: str,
+    embed_model: str,
+    llm_base_url: str,
+    embed_base_url: str,
+    api_key: str,
+) -> Settings:
+    """Build PaperQA2 Settings with given models and endpoints."""
+    pqa_config = _get_paperqa_config()
+    
+    llm_config = make_default_litellm_model_list_settings(llm_model)
+    llm_config["model_list"][0]["litellm_params"].update(
+        {"api_base": llm_base_url, "api_key": api_key}
+    )
+    summary_llm_config = make_default_litellm_model_list_settings(llm_model)
+    summary_llm_config["model_list"][0]["litellm_params"].update(
+        {"api_base": llm_base_url, "api_key": api_key}
+    )
+    
+    reader_config = {
+        "chunk_chars": pqa_config["chunk_chars"],
+        "overlap": pqa_config["chunk_overlap"],
+    }
+    parsing_settings = ParsingSettings(
+        reader_config=reader_config,
+        use_doc_details=pqa_config["use_doc_details"],
+        multimodal=MultimodalOptions.OFF,
+    )
+    answer_settings = AnswerSettings(
+        evidence_k=pqa_config["evidence_k"],
+        evidence_summary_length=pqa_config["evidence_summary_length"],
+        evidence_skip_summary=pqa_config["evidence_skip_summary"],
+        evidence_relevance_score_cutoff=pqa_config["evidence_relevance_score_cutoff"],
+    )
+    return Settings(
+        llm=llm_model,
+        llm_config=llm_config,
+        summary_llm=llm_model,
+        summary_llm_config=summary_llm_config,
+        embedding=embed_model,
+        embedding_config={
+            "kwargs": {
+                "api_base": embed_base_url,
+                "api_key": api_key,
+                "encoding_format": "float",
+            },
+        },
+        parsing=parsing_settings,
+        answer=answer_settings,
+    )
+
+
+def _index_pdf_for_paperqa(
+    pdf_path: str,
+    arxiv_id: str,
+    llm_base_url: str,
+    embed_base_url: str,
+    api_key: str,
+    llm_model: str,
+    embed_model: str,
+) -> Docs:
+    """Index a PDF and persist the Docs object for later QA queries."""
+    os.environ["OPENAI_API_BASE"] = llm_base_url
+    os.environ["OPENAI_API_KEY"] = api_key
+    
+    async def _run() -> Docs:
+        docs = Docs()
+        settings = _build_paperqa_settings(
+            llm_model, embed_model, llm_base_url, embed_base_url, api_key
+        )
+        await docs.aadd(pdf_path, settings=settings)
+        return docs
+    
+    docs = asyncio.run(_run())
+    
+    # Persist to filesystem using pickle (JSON doesn't work with VectorStore)
+    index_path = _get_paperqa_index_path(arxiv_id)
+    with open(index_path, "wb") as f:
+        pickle.dump(docs, f)
+    
+    return docs
+
+
+def _load_paperqa_index(arxiv_id: str) -> Optional[Docs]:
+    """Load persisted PaperQA2 Docs if exists."""
+    index_path = _get_paperqa_index_path(arxiv_id)
+    if not index_path.exists():
+        return None
+    try:
+        with open(index_path, "rb") as f:
+            return pickle.load(f)
+    except Exception:
+        # If loading fails, return None to trigger re-indexing
+        return None
+
+
 def _paperqa_answer(
     text: Optional[str],
     pdf_path: Optional[str],
@@ -294,71 +406,49 @@ def _paperqa_answer(
     api_key: str,
     llm_model: str,
     embed_model: str,
+    arxiv_id: Optional[str] = None,
 ) -> str:
+    """Query PaperQA2 for an answer. Uses cached index if available."""
     assert text or pdf_path, "Provide text or pdf_path."
     os.environ["OPENAI_API_BASE"] = llm_base_url
     os.environ["OPENAI_API_KEY"] = api_key
 
     async def _run() -> Any:
-        docs = Docs()
-        content_path: Optional[pathlib.Path] = None
-        if pdf_path:
-            content_path = pathlib.Path(pdf_path)
-        elif text is not None:
-            inputs_dir = pathlib.Path("storage/inputs")
-            inputs_dir.mkdir(parents=True, exist_ok=True)
-            text_hash = hashlib.sha256(text.encode("utf-8")).hexdigest()
-            content_path = inputs_dir / f"paperqa_{text_hash}.txt"
-            content_path.write_text(text, encoding="utf-8")
-        if content_path is None or not content_path.exists():
-            raise HTTPException(status_code=404, detail="Content path not found.")
+        docs: Optional[Docs] = None
         
-        llm_config = make_default_litellm_model_list_settings(llm_model)
-        llm_config["model_list"][0]["litellm_params"].update(
-            {"api_base": llm_base_url, "api_key": api_key}
-        )
-        summary_llm_config = make_default_litellm_model_list_settings(llm_model)
-        summary_llm_config["model_list"][0]["litellm_params"].update(
-            {"api_base": llm_base_url, "api_key": api_key}
-        )
+        # Try to load cached index if arxiv_id provided
+        if arxiv_id:
+            docs = _load_paperqa_index(arxiv_id)
         
-        pqa_config = _get_paperqa_config()
-        reader_config = {
-            "chunk_chars": pqa_config["chunk_chars"],
-            "overlap": pqa_config["chunk_overlap"],
-        }
-
-        def _build_settings(use_doc_details: bool) -> Settings:
-            parsing_settings = ParsingSettings(
-                reader_config=reader_config,
-                use_doc_details=use_doc_details,
-                multimodal=MultimodalOptions.OFF,
+        # If no cached index, create new one
+        if docs is None:
+            docs = Docs()
+            content_path: Optional[pathlib.Path] = None
+            if pdf_path:
+                content_path = pathlib.Path(pdf_path)
+            elif text is not None:
+                inputs_dir = pathlib.Path("storage/inputs")
+                inputs_dir.mkdir(parents=True, exist_ok=True)
+                text_hash = hashlib.sha256(text.encode("utf-8")).hexdigest()
+                content_path = inputs_dir / f"paperqa_{text_hash}.txt"
+                content_path.write_text(text, encoding="utf-8")
+            if content_path is None or not content_path.exists():
+                raise HTTPException(status_code=404, detail="Content path not found.")
+            
+            settings = _build_paperqa_settings(
+                llm_model, embed_model, llm_base_url, embed_base_url, api_key
             )
-            answer_settings = AnswerSettings(
-                evidence_k=pqa_config["evidence_k"],
-                evidence_summary_length=pqa_config["evidence_summary_length"],
-                evidence_skip_summary=pqa_config["evidence_skip_summary"],
-                evidence_relevance_score_cutoff=pqa_config["evidence_relevance_score_cutoff"],
-            )
-            return Settings(
-                llm=llm_model,
-                llm_config=llm_config,
-                summary_llm=llm_model,
-                summary_llm_config=summary_llm_config,
-                embedding=embed_model,
-                embedding_config={
-                    "kwargs": {
-                        "api_base": embed_base_url,
-                        "api_key": api_key,
-                        "encoding_format": "float",
-                    },
-                },
-                parsing=parsing_settings,
-                answer=answer_settings,
-            )
-
-        settings = _build_settings(pqa_config["use_doc_details"])
-        await docs.aadd(str(content_path), settings=settings)
+            await docs.aadd(str(content_path), settings=settings)
+            
+            # Persist if arxiv_id provided
+            if arxiv_id:
+                index_path = _get_paperqa_index_path(arxiv_id)
+                with open(index_path, "wb") as f:
+                    pickle.dump(docs, f)
+        
+        settings = _build_paperqa_settings(
+            llm_model, embed_model, llm_base_url, embed_base_url, api_key
+        )
         return await docs.aquery(question, settings=settings)
 
     result = asyncio.run(_run())
@@ -484,6 +574,7 @@ def pdf_extract(payload: PdfExtractRequest) -> dict[str, Any]:
 
 @app.post("/summarize")
 def summarize(payload: SummarizeRequest) -> dict[str, Any]:
+    """Summarize a paper. Also indexes PDF for faster QA queries if arxiv_id provided."""
     prompt_id, prompt_hash, prompt_body = _load_prompt()
     endpoint_config = _get_endpoint_config()
     base_url = endpoint_config["llm_base_url"]
@@ -501,6 +592,7 @@ def summarize(payload: SummarizeRequest) -> dict[str, Any]:
         embed_model = f"openai/{_resolve_model(embed_base_url, api_key)}"
     except Exception as e:
         raise HTTPException(status_code=503, detail=f"Embedding endpoint not available at {embed_base_url}. Please start your embedding service on port 8004.")
+    
     summary = _paperqa_answer(
         payload.text,
         payload.pdf_path,
@@ -510,17 +602,20 @@ def summarize(payload: SummarizeRequest) -> dict[str, Any]:
         api_key,
         model,
         embed_model,
+        arxiv_id=payload.arxiv_id,  # Persist index for QA reuse
     )
     return {
         "summary": summary.strip(),
         "prompt_id": prompt_id,
         "prompt_hash": prompt_hash,
         "model": model,
+        "indexed": payload.arxiv_id is not None,
     }
 
 
-@app.post("/embed")
-async def embed(payload: EmbedRequest) -> dict[str, Any]:
+@app.post("/embed/abstract")
+async def embed_abstract(payload: EmbedAbstractRequest) -> dict[str, Any]:
+    """Embed abstract text for pgvector similarity search."""
     endpoint_config = _get_endpoint_config()
     base_url = endpoint_config["embedding_base_url"]
     api_key = endpoint_config["api_key"]
@@ -531,14 +626,61 @@ async def embed(payload: EmbedRequest) -> dict[str, Any]:
     return {"embedding": vector, "model": model}
 
 
+@app.post("/embed/fulltext")
+def embed_fulltext(payload: EmbedFulltextRequest) -> dict[str, Any]:
+    """Index full PDF for PaperQA2 queries. Persists index for reuse."""
+    endpoint_config = _get_endpoint_config()
+    llm_base_url = endpoint_config["llm_base_url"]
+    embed_base_url = endpoint_config["embedding_base_url"]
+    api_key = endpoint_config["api_key"]
+    
+    # Check if already indexed
+    index_path = _get_paperqa_index_path(payload.arxiv_id)
+    if index_path.exists():
+        return {"indexed": True, "cached": True, "arxiv_id": payload.arxiv_id}
+    
+    try:
+        llm_model = f"openai/{_resolve_model(llm_base_url, api_key)}"
+    except Exception as e:
+        raise HTTPException(status_code=503, detail=f"LLM endpoint not available: {e}")
+    
+    try:
+        embed_model = f"openai/{_resolve_model(embed_base_url, api_key)}"
+    except Exception as e:
+        raise HTTPException(status_code=503, detail=f"Embedding endpoint not available: {e}")
+    
+    _index_pdf_for_paperqa(
+        payload.pdf_path,
+        payload.arxiv_id,
+        llm_base_url,
+        embed_base_url,
+        api_key,
+        llm_model,
+        embed_model,
+    )
+    return {"indexed": True, "cached": False, "arxiv_id": payload.arxiv_id}
+
+
+# Keep old endpoint for backwards compatibility
+@app.post("/embed")
+async def embed(payload: EmbedAbstractRequest) -> dict[str, Any]:
+    """Embed text (backwards compatible, use /embed/abstract instead)."""
+    return await embed_abstract(payload)
+
+
 @app.post("/qa")
 def qa(payload: QaRequest) -> dict[str, Any]:
+    """Answer a question about a paper. Uses cached index if arxiv_id provided."""
     endpoint_config = _get_endpoint_config()
     base_url = endpoint_config["llm_base_url"]
     embed_base_url = endpoint_config["embedding_base_url"]
     api_key = endpoint_config["api_key"]
     model = f"openai/{_resolve_model(base_url, api_key)}"
     embed_model = f"openai/{_resolve_model(embed_base_url, api_key)}"
+    
+    # Check if we have a cached index
+    has_cache = payload.arxiv_id and _get_paperqa_index_path(payload.arxiv_id).exists()
+    
     answer = _paperqa_answer(
         payload.context,
         payload.pdf_path,
@@ -548,8 +690,9 @@ def qa(payload: QaRequest) -> dict[str, Any]:
         api_key,
         model,
         embed_model,
+        arxiv_id=payload.arxiv_id,
     )
-    return {"answer": answer}
+    return {"answer": answer, "used_cache": has_cache}
 
 
 @app.post("/classify")

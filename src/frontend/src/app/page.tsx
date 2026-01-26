@@ -335,12 +335,12 @@ export default function Home() {
       updateStep(4, { status: "done", message: abbreviation });
     }
 
-    // Step 6: Summarize
+    // Step 6: Summarize (also indexes PDF for faster QA)
     updateStep(5, { status: "running", message: "May take a minute..." });
     const summarizeRes = await fetch("/api/summarize", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ pdf_path: pdfPath }),
+      body: JSON.stringify({ pdf_path: pdfPath, arxiv_id: arxivId }),
     });
     if (!summarizeRes.ok) {
       updateStep(5, { status: "error", message: `HTTP ${summarizeRes.status}` });
@@ -677,7 +677,8 @@ export default function Home() {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          pdf_path: selectedNode.attributes.pdfPath || `storage/pdfs/${selectedNode.attributes.arxivId}.pdf`,
+          arxiv_id: selectedNode.attributes.arxivId,
+          pdf_path: selectedNode.attributes.pdfPath || `storage/downloads/${selectedNode.attributes.arxivId}.pdf`,
           question: queryInput,
           context: "",
         }),
@@ -685,7 +686,7 @@ export default function Home() {
       if (res.ok) {
         const data = await res.json();
         setQueryAnswer(data.answer || "No answer found.");
-        logFeature("✓ Answer generated");
+        logFeature(`✓ Answer generated${data.used_cache ? " (cached index)" : ""}`);
       } else {
         const errText = await res.text();
         logFeature(`✗ Error: ${res.status}`);
