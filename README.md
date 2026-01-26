@@ -167,29 +167,45 @@ This follows your ordering: **(1) package OSS as FastAPI services**, **(2) build
 
 #### Parallelization Opportunities
 
-**1. Ingest Pipeline: Classify + Abbreviate in parallel**
-Currently sequential. Both are independent LLM calls using only title/abstract. Run with asyncio.gather to save ~0.3s per ingest.
+**1. Ingest Pipeline: Extract + Classify + Abbreviate in parallel**
+After download completes, run PDF extraction, classification, and abbreviation concurrently using asyncio.gather. All three are independent - extraction uses only the PDF file, while classify and abbreviate use only title/abstract from the resolve step. Saves ~0.7s per ingest.
 
-**2. Ingest Pipeline: Extract + Classify + Abbreviate in parallel**
-PDF extraction doesn't depend on classify/abbreviate. All three can start after download completes. Saves ~0.5s.
+**2. Async LLM calls for bulk operations**
+For multi-paper operations like re-abbreviating all papers, run concurrent async HTTP requests to the LLM endpoint. vLLM backend handles request batching internally, so we just need to fire multiple async requests simultaneously.
 
-**3. Batch LLM calls for multi-paper operations**
-When re-abbreviating all papers or bulk operations, batch multiple LLM requests into a single API call if the model supports it, or run concurrent async requests.
+**3. Prefetch and cache auxiliary data after ingest**
+After paper save completes, trigger background async fetches for references, similar papers, and repos in parallel. Store results in PostgreSQL cache so they load instantly when user clicks the tabs. Frontend should also use Promise.all to fetch all panel data concurrently when selecting a paper.
 
-**4. Prefetch references and repos after ingest**
-After save completes, trigger background fetches for references, similar papers, and repos. Cache results in DB so they're instant when user clicks.
+**4. Async embedding requests for PDF chunks**
+When PaperQA2 embeds multiple text chunks, use async HTTP requests rather than sequential calls. The vLLM/embedding backend handles batching automatically, so concurrent requests will be grouped efficiently server-side.
 
-**5. Parallel embedding for multiple chunks**
-PaperQA2's summarize splits PDF into chunks. If using custom embedding, batch all chunks into one API call instead of sequential calls.
+**5. Connection pooling for external APIs**
+Currently each httpx request creates a new connection. Reuse a shared httpx.AsyncClient instance with keep-alive for Semantic Scholar, GitHub, and Papers With Code APIs. This eliminates repeated TLS handshakes and DNS lookups, reducing per-request overhead from ~40ms to ~10ms for cached endpoints.
 
-**6. Frontend parallel API calls**
-When loading paper details panel, fetch repos, references, and similar papers in parallel using Promise.all instead of waiting for tab click.
+#### Why Summarize and QA Take ~30 Seconds (PaperQA2 Analysis)
 
-**7. Connection pooling for external APIs**
-Reuse httpx.AsyncClient with connection pooling for Semantic Scholar, GitHub, Papers With Code to reduce TLS handshake overhead.
+Examined PaperQA2 source code to understand the slow operations:
 
-**8. Streaming responses for Summarize/QA**
-Use SSE or WebSocket to stream LLM responses to frontend, improving perceived latency even if total time unchanged
+**Summarize/QA Pipeline Steps:**
+1. **Document parsing** (~0.5s): read_doc parses PDF into text chunks with configurable chunk_chars and overlap
+2. **Citation extraction** (1 LLM call): If no citation provided, LLM extracts citation from first chunk
+3. **Metadata extraction** (1 LLM call): Extracts title/DOI/authors as structured JSON
+4. **Chunk embedding** (N embedding calls): Each text chunk embedded via embedding_model.embed_documents, done as a single batch call internally
+5. **Evidence retrieval** (vector search): Finds top-k relevant chunks via cosine similarity
+6. **Evidence summarization** (K LLM calls): For each retrieved chunk, LLM summarizes relevance to the question using gather_with_concurrency with max_concurrent_requests limit
+7. **Answer generation** (1 LLM call): Final LLM call synthesizes answer from summarized evidence
+
+**Why It's Slow:**
+- Steps 2, 3, 6, 7 are sequential LLM calls that cannot be parallelized further
+- Step 6 runs K concurrent summarization calls (default K=10), but each requires full LLM inference
+- Total: ~4-12 LLM calls per query depending on settings, with inference latency dominating
+- The gather_with_concurrency already parallelizes evidence summarization, so the bottleneck is LLM inference speed
+
+**Potential Optimizations:**
+- Reduce evidence_k setting to retrieve fewer chunks (trades accuracy for speed)
+- Set evidence_skip_summary=true to skip per-chunk summarization (significant speedup but lower quality)
+- Use faster LLM model for summary_llm while keeping stronger model for final answer
+- Pre-index documents at ingest time (PaperQA2 defers embedding to query time by default)
 
 ### Milestone 8 - bugfixes
 - meaningless "suma2025deepseekr1incentivizingreasoning" token from model response
