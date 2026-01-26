@@ -2,7 +2,7 @@
 
 import { useState, useCallback, useMemo, useEffect, useRef } from "react";
 import dynamic from "next/dynamic";
-import type { RawNodeDatum } from "react-d3-tree";
+import type { RawNodeDatum, CustomNodeElementProps } from "react-d3-tree";
 
 const Tree = dynamic(() => import("react-d3-tree"), { ssr: false });
 
@@ -327,7 +327,6 @@ export default function Home() {
     });
     if (!saveRes.ok) {
       updateStep(5, { status: "error", message: `HTTP ${saveRes.status}` });
-      // Still add to local tree even if DB save fails
     } else {
       updateStep(5, { status: "done", message: "Saved" });
     }
@@ -359,18 +358,19 @@ export default function Home() {
     return null;
   }, []);
 
-  const handleNodeClick = (nodeData: any) => {
-    const node = findNode(taxonomy, nodeData.data.name);
+  const handleNodeClick = useCallback((nodeName: string) => {
+    const node = findNode(taxonomy, nodeName);
     setSelectedNode(node);
     setActivePanel("details");
     setRepos([]);
     setReferences([]);
     setSimilarPapers([]);
-  };
+  }, [taxonomy, findNode]);
 
-  const handleNodeRightClick = (event: React.MouseEvent, nodeData: any) => {
+  const handleNodeRightClick = useCallback((event: React.MouseEvent, nodeName: string) => {
     event.preventDefault();
-    const node = findNode(taxonomy, nodeData.data.name);
+    event.stopPropagation();
+    const node = findNode(taxonomy, nodeName);
     if (node?.attributes?.arxivId) {
       setContextMenu({
         visible: true,
@@ -379,7 +379,7 @@ export default function Home() {
         node,
       });
     }
-  };
+  }, [taxonomy, findNode]);
 
   // Feature handlers
   const handleFindRepos = async (node: PaperNode) => {
@@ -387,6 +387,7 @@ export default function Home() {
     setSelectedNode(node);
     setActivePanel("repos");
     setIsLoadingFeature(true);
+    setRepos([]);
     
     try {
       const res = await fetch("/api/repos/search", {
@@ -413,6 +414,7 @@ export default function Home() {
     setSelectedNode(node);
     setActivePanel("references");
     setIsLoadingFeature(true);
+    setReferences([]);
     setRefExplanations({});
     
     try {
@@ -445,6 +447,7 @@ export default function Home() {
     setSelectedNode(node);
     setActivePanel("similar");
     setIsLoadingFeature(true);
+    setSimilarPapers([]);
     
     try {
       const res = await fetch("/api/papers/similar", {
@@ -536,6 +539,56 @@ export default function Home() {
     }
   };
 
+  // Custom node renderer with right-click support
+  const renderCustomNode = useCallback(({ nodeDatum }: CustomNodeElementProps) => {
+    const hasArxivId = nodeDatum.attributes && nodeDatum.attributes.arxivId;
+    const isCategory = !nodeDatum.attributes || !nodeDatum.attributes.arxivId;
+    
+    return (
+      <g>
+        <circle
+          r={15}
+          fill={isCategory ? "#6366f1" : "#0070f3"}
+          stroke={isCategory ? "#4f46e5" : "#0051a8"}
+          strokeWidth={2}
+          style={{ cursor: "pointer" }}
+          onClick={() => handleNodeClick(nodeDatum.name)}
+          onContextMenu={(e) => {
+            if (hasArxivId) {
+              handleNodeRightClick(e, nodeDatum.name);
+            }
+          }}
+        />
+        <text
+          fill="#333"
+          strokeWidth={0}
+          x={20}
+          y={5}
+          style={{ fontSize: "12px", cursor: "pointer" }}
+          onClick={() => handleNodeClick(nodeDatum.name)}
+          onContextMenu={(e) => {
+            if (hasArxivId) {
+              handleNodeRightClick(e, nodeDatum.name);
+            }
+          }}
+        >
+          {nodeDatum.name.length > 30 ? nodeDatum.name.slice(0, 30) + "..." : nodeDatum.name}
+        </text>
+        {hasArxivId && (
+          <text
+            fill="#999"
+            strokeWidth={0}
+            x={20}
+            y={20}
+            style={{ fontSize: "10px" }}
+          >
+            Right-click for options
+          </text>
+        )}
+      </g>
+    );
+  }, [handleNodeClick, handleNodeRightClick]);
+
   return (
     <div style={{ display: "flex", height: "100vh" }}>
       {/* Left panel: Tree visualization */}
@@ -547,16 +600,19 @@ export default function Home() {
             {taxonomy.children?.reduce((acc, c) => acc + (c.children?.length || 0), 0) || 0} papers
           </p>
         </div>
-        <div style={{ flex: 1, position: "relative" }}>
+        <div 
+          style={{ flex: 1, position: "relative" }}
+          onContextMenu={(e) => e.preventDefault()}
+        >
           {taxonomy.children && taxonomy.children.length > 0 ? (
             <Tree
               data={treeData}
               orientation="vertical"
               pathFunc="step"
-              onNodeClick={handleNodeClick}
               translate={{ x: 300, y: 50 }}
               nodeSize={{ x: 220, y: 80 }}
               separation={{ siblings: 1.2, nonSiblings: 1.5 }}
+              renderCustomNodeElement={renderCustomNode}
             />
           ) : (
             <div style={{ display: "flex", alignItems: "center", justifyContent: "center", height: "100%", color: "#999" }}>
@@ -575,36 +631,42 @@ export default function Home() {
             left: contextMenu.x,
             backgroundColor: "white",
             border: "1px solid #e5e5e5",
-            borderRadius: "4px",
-            boxShadow: "0 2px 8px rgba(0,0,0,0.15)",
+            borderRadius: "8px",
+            boxShadow: "0 4px 12px rgba(0,0,0,0.15)",
             zIndex: 1000,
-            minWidth: "180px",
+            minWidth: "200px",
+            overflow: "hidden",
           }}
           onClick={(e) => e.stopPropagation()}
         >
+          <div style={{ padding: "0.5rem 1rem", borderBottom: "1px solid #eee", backgroundColor: "#f9f9f9" }}>
+            <strong style={{ fontSize: "0.75rem", color: "#666" }}>
+              {contextMenu.node.attributes?.arxivId}
+            </strong>
+          </div>
           <div
-            style={{ padding: "0.5rem 1rem", cursor: "pointer", borderBottom: "1px solid #eee" }}
+            style={{ padding: "0.75rem 1rem", cursor: "pointer", display: "flex", alignItems: "center", gap: "0.5rem" }}
             onClick={() => { handleFindRepos(contextMenu.node!); setContextMenu({ ...contextMenu, visible: false }); }}
             onMouseEnter={(e) => (e.currentTarget.style.backgroundColor = "#f5f5f5")}
             onMouseLeave={(e) => (e.currentTarget.style.backgroundColor = "white")}
           >
-            🔗 Find GitHub Repo
+            <span>🔗</span> Find GitHub Repo
           </div>
           <div
-            style={{ padding: "0.5rem 1rem", cursor: "pointer", borderBottom: "1px solid #eee" }}
+            style={{ padding: "0.75rem 1rem", cursor: "pointer", display: "flex", alignItems: "center", gap: "0.5rem" }}
             onClick={() => { handleFetchReferences(contextMenu.node!); setContextMenu({ ...contextMenu, visible: false }); }}
             onMouseEnter={(e) => (e.currentTarget.style.backgroundColor = "#f5f5f5")}
             onMouseLeave={(e) => (e.currentTarget.style.backgroundColor = "white")}
           >
-            📚 Explain References
+            <span>📚</span> Explain References
           </div>
           <div
-            style={{ padding: "0.5rem 1rem", cursor: "pointer" }}
+            style={{ padding: "0.75rem 1rem", cursor: "pointer", display: "flex", alignItems: "center", gap: "0.5rem" }}
             onClick={() => { handleFindSimilar(contextMenu.node!); setContextMenu({ ...contextMenu, visible: false }); }}
             onMouseEnter={(e) => (e.currentTarget.style.backgroundColor = "#f5f5f5")}
             onMouseLeave={(e) => (e.currentTarget.style.backgroundColor = "white")}
           >
-            🔍 Find Similar Papers
+            <span>🔍</span> Find Similar Papers
           </div>
         </div>
       )}
@@ -774,7 +836,7 @@ export default function Home() {
                   ))}
                 </div>
               ) : (
-                <p style={{ color: "#999", fontSize: "0.875rem" }}>No repositories found. Click "Find GitHub Repo" from the right-click menu.</p>
+                <p style={{ color: "#999", fontSize: "0.875rem" }}>No repositories found. Right-click on a paper and select "Find GitHub Repo".</p>
               )}
             </>
           )}
@@ -843,7 +905,7 @@ export default function Home() {
                   ))}
                 </div>
               ) : (
-                <p style={{ color: "#999", fontSize: "0.875rem" }}>No references loaded. Click "Explain References" from the right-click menu.</p>
+                <p style={{ color: "#999", fontSize: "0.875rem" }}>No references loaded. Right-click on a paper and select "Explain References".</p>
               )}
             </>
           )}
@@ -882,7 +944,7 @@ export default function Home() {
                   ))}
                 </div>
               ) : (
-                <p style={{ color: "#999", fontSize: "0.875rem" }}>No similar papers found. Click "Find Similar Papers" from the right-click menu.</p>
+                <p style={{ color: "#999", fontSize: "0.875rem" }}>No similar papers found. Right-click on a paper and select "Find Similar Papers".</p>
               )}
             </>
           )}
