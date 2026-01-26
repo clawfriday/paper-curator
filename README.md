@@ -121,24 +121,34 @@ This follows your ordering: **(1) package OSS as FastAPI services**, **(2) build
   - Hover caching + debouncing policy for reference explanations
   - Reference resolution + dedupe policy (canonical IDs, fuzzy title match)
 
-### Milestone 3 — LangGraph orchestration (drop n8n for now)
+### Milestone 3 — LangGraph orchestration
 - Build LangGraph graphs for Flows A–F:
   - `ingest_paper_graph`, `parse_and_summarize_graph`, `classify_and_update_tree_graph`
   - UI action graphs: `repo_lookup_graph`, `explain_reference_graph`, `find_similar_graph`
 - **Exit criteria**: UI triggers a LangGraph run and receives structured results; failures are surfaced with clear errors + partial outputs where possible.
 
-### Milestone 4 — database (last)
+### Milestone 4 — database
 - Introduce PostgreSQL + `pgvector` for durability + search once the behaviors stabilize:
   - Persist papers/artifacts/embeddings
   - Persist taxonomy nodes/edges + rationales
   - Cache hover explanations + similarity results
 
-### Milestone 5 — MCP servers + Cursor agent skills (optional/when ready)
-- Wrap the internal backend endpoints (LangGraph + services) as MCP tools and add them as Cursor agent skills.
+### Mileston 5 - refactor
+- using split Docker for frontend and backend, docker-bridge for comm via compose.yml
+- using venv for dev
+- 
 
-## Practical notes (to avoid common failure modes)
-- **Debounce + cache** hover explanations (otherwise you’ll DDoS your own LLM).
-- **Deduplicate papers** aggressively (canonical arXiv ID, DOI, title+authors fuzzy match).
-- **Store rationales** (classification + subclass splits) so tree changes are explainable and reversible.
-- **Version outputs** (summary, embedding model) to avoid silent drift when you change prompts/models.
 
+### Mileston 6 - UI improvement
+- (commplete) collapsable sections
+- more friendly tree diagram, potentially using 3rd party dependencies, which allows 
+  - the node names to be displayed inside the node circle
+  - use curved lines instead of straight lines
+  - the spacing betwween nodes are closer
+
+### Mileston 7 - Speedup
+- using async for parallelism as much as possible
+
+### Milestone 8 - bugfixes
+- meaningless "suma2025deepseekr1incentivizingreasoning" token from model response
+- 

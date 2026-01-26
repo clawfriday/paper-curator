@@ -362,7 +362,28 @@ def _paperqa_answer(
         return await docs.aquery(question, settings=settings)
 
     result = asyncio.run(_run())
-    return str(result.answer) if hasattr(result, "answer") else str(result)
+    answer = str(result.answer) if hasattr(result, "answer") else str(result)
+    # Clean up PaperQA2 citation markers (e.g., "(suma2025deepseekr1... pages 1-2)")
+    answer = _clean_paperqa_citations(answer)
+    return answer
+
+
+def _clean_paperqa_citations(text: str) -> str:
+    """Remove PaperQA2 citation markers from text.
+    
+    PaperQA2 adds citations like:
+    - "(docname pages 1-2)"
+    - "(docname page 5)"
+    - "(An2025 pages 1-2, An2025 pages 9-12)"
+    which are not useful for end users.
+    """
+    # Pattern matches parentheses containing citation-like content
+    # e.g., (An2025 pages 1-2) or (An2025 pages 1-2, An2025 pages 9-12)
+    pattern = r'\s*\([A-Za-z0-9_]+\s+pages?\s+[\d,\-–\s]+(?:,\s*[A-Za-z0-9_]+\s+pages?\s+[\d,\-–\s]+)*\)'
+    cleaned = re.sub(pattern, '', text)
+    # Also clean up any double spaces left behind
+    cleaned = re.sub(r'  +', ' ', cleaned)
+    return cleaned.strip()
 
 
 def _paperqa_extract_pdf(pdf_path: pathlib.Path) -> dict[str, Any]:

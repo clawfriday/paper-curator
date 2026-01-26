@@ -24,10 +24,7 @@ const nextConfig = {
         source: "/api/embed",
         destination: "http://backend:8000/embed",
       },
-      {
-        source: "/api/qa",
-        destination: "http://backend:8000/qa",
-      },
+      // Note: /api/qa is handled by custom API route with extended timeout
       {
         source: "/api/health",
         destination: "http://backend:8000/health",
