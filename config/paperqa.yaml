@@ -1,9 +1,10 @@
 # =============================================================================
 # OpenAI-compatible API endpoints
+# NOTE: You can use localhost URLs - they auto-convert to host.docker.internal in Docker
 # =============================================================================
 endpoints:
   llm_base_url: "https://transmissively-conidial-fredrick.ngrok-free.dev/v1"
-  embedding_base_url: "http://host.docker.internal:8004/v1"
+  embedding_base_url: "http://localhost:8004/v1"  # Auto-converts in Docker
   api_key: "local-key"
 
 # =============================================================================

@@ -132,14 +132,33 @@ def _load_config() -> dict[str, Any]:
     return _load_config_cached(config_path.stat().st_mtime)
 
 
+def _convert_localhost_for_docker(url: str) -> str:
+    """Convert localhost URLs to host.docker.internal when running in Docker.
+    
+    This allows users to always write 'localhost' in config, and it will
+    automatically work both locally and inside Docker containers.
+    """
+    if not url:
+        return url
+    # Check if running in Docker (DATABASE_URL is set by compose.yml)
+    in_docker = os.environ.get("DATABASE_URL", "").startswith("postgresql://")
+    if in_docker:
+        # Replace localhost variants with host.docker.internal
+        url = url.replace("://localhost:", "://host.docker.internal:")
+        url = url.replace("://127.0.0.1:", "://host.docker.internal:")
+    return url
+
+
 def _get_endpoint_config() -> dict[str, str]:
     """Get endpoint configuration."""
     config = _load_config()
     endpoints = config.get("endpoints", {})
     # Support both new and legacy config format
+    llm_url = endpoints.get("llm_base_url", config.get("openai_api_base", ""))
+    embed_url = endpoints.get("embedding_base_url", config.get("openai_api_base3", ""))
     return {
-        "llm_base_url": endpoints.get("llm_base_url", config.get("openai_api_base", "")),
-        "embedding_base_url": endpoints.get("embedding_base_url", config.get("openai_api_base3", "")),
+        "llm_base_url": _convert_localhost_for_docker(llm_url),
+        "embedding_base_url": _convert_localhost_for_docker(embed_url),
         "api_key": endpoints.get("api_key", config.get("openai_api_key", "local-key")),
     }
 
