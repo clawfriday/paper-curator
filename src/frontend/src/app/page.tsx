@@ -284,13 +284,35 @@ export default function Home() {
     latexPath = downloadData.latex_path;
     updateStep(1, { status: "done", message: "PDF downloaded" });
 
-    // Step 3: Extract
+    // Steps 3-5: Extract + Classify + Abbreviate in PARALLEL
+    // These are independent: extract uses PDF, classify/abbreviate use title/abstract
     updateStep(2, { status: "running" });
-    const extractRes = await fetch("/api/pdf/extract", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ pdf_path: pdfPath }),
-    });
+    updateStep(3, { status: "running", message: "Determining category..." });
+    updateStep(4, { status: "running", message: "Creating short name..." });
+
+    const [extractRes, classifyRes, abbreviateRes] = await Promise.all([
+      fetch("/api/pdf/extract", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ pdf_path: pdfPath }),
+      }),
+      fetch("/api/classify", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          title,
+          abstract,
+          existing_categories: existingCategories,
+        }),
+      }),
+      fetch("/api/abbreviate", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ title }),
+      }),
+    ]);
+
+    // Handle Extract result
     if (!extractRes.ok) {
       updateStep(2, { status: "error", message: `HTTP ${extractRes.status}` });
       setIsIngesting(false);
@@ -298,17 +320,7 @@ export default function Home() {
     }
     updateStep(2, { status: "done", message: "Text extracted" });
 
-    // Step 4: Classify (LLM)
-    updateStep(3, { status: "running", message: "Determining category..." });
-    const classifyRes = await fetch("/api/classify", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        title,
-        abstract,
-        existing_categories: existingCategories,
-      }),
-    });
+    // Handle Classify result
     if (!classifyRes.ok) {
       updateStep(3, { status: "error", message: `HTTP ${classifyRes.status}` });
       setIsIngesting(false);
@@ -318,13 +330,7 @@ export default function Home() {
     category = classifyData.category;
     updateStep(3, { status: "done", message: category });
 
-    // Step 5: Abbreviate (LLM)
-    updateStep(4, { status: "running", message: "Creating short name..." });
-    const abbreviateRes = await fetch("/api/abbreviate", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ title }),
-    });
+    // Handle Abbreviate result
     if (abbreviateRes.ok) {
       const abbreviateData = await abbreviateRes.json();
       abbreviation = abbreviateData.abbreviation;
