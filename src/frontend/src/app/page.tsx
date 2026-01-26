@@ -393,6 +393,13 @@ export default function Home() {
       abbreviation,
     });
 
+    // Prefetch auxiliary data in background (don't wait)
+    fetch("/api/papers/prefetch", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ arxiv_id: arxivId, title }),
+    }).catch(() => {}); // Ignore errors, this is optional
+
     setArxivUrl("");
     setIsIngesting(false);
   };

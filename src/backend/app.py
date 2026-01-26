@@ -930,6 +930,74 @@ def delete_tree_node(node_id: str) -> dict[str, str]:
     return {"status": "ok"}
 
 
+class PrefetchRequest(BaseModel):
+    arxiv_id: str
+    title: str
+
+
+@app.post("/papers/prefetch")
+async def prefetch_paper_data(payload: PrefetchRequest) -> dict[str, Any]:
+    """Prefetch repos, references, and similar papers in parallel.
+    
+    Call this after paper ingest to cache auxiliary data for faster UI loading.
+    """
+    apis_config = _get_external_apis_config()
+    api_key = apis_config.get("semantic_scholar_api_key")
+    
+    # Run all three fetches in parallel
+    repos_task = _prefetch_repos(payload.arxiv_id, payload.title, apis_config)
+    refs_task = _get_semantic_scholar_references(payload.arxiv_id, api_key)
+    similar_task = _get_semantic_scholar_recommendations(payload.arxiv_id, 10, api_key)
+    
+    repos, refs, similar = await asyncio.gather(
+        repos_task, refs_task, similar_task,
+        return_exceptions=True
+    )
+    
+    return {
+        "repos": repos if not isinstance(repos, Exception) else [],
+        "references": refs if not isinstance(refs, Exception) else [],
+        "similar": similar if not isinstance(similar, Exception) else [],
+        "repos_error": str(repos) if isinstance(repos, Exception) else None,
+        "refs_error": str(refs) if isinstance(refs, Exception) else None,
+        "similar_error": str(similar) if isinstance(similar, Exception) else None,
+    }
+
+
+async def _prefetch_repos(arxiv_id: str, title: str, apis_config: dict) -> list[dict]:
+    """Helper to prefetch repos for prefetch endpoint."""
+    paper = db.get_paper_by_arxiv_id(arxiv_id)
+    if paper:
+        cached = db.get_cached_repos(paper["id"])
+        if cached:
+            return cached
+    
+    repos = []
+    if apis_config["papers_with_code_enabled"]:
+        pwc_repos = await _search_papers_with_code(title)
+        repos.extend(pwc_repos)
+    
+    if apis_config["github_search_enabled"]:
+        has_official = any(r.get("is_official") for r in repos)
+        if not has_official:
+            github_repos = await _search_github(title, apis_config.get("github_token"))
+            repos.extend(github_repos)
+    
+    # Cache results
+    if paper and repos:
+        for repo in repos:
+            db.cache_repo(
+                paper_id=paper["id"],
+                source=repo.get("source", "unknown"),
+                repo_url=repo.get("url"),
+                repo_name=repo.get("name"),
+                stars=repo.get("stars"),
+                is_official=repo.get("is_official", False),
+            )
+    
+    return repos
+
+
 # =============================================================================
 # Repository Search (Feature 4)
 # =============================================================================
