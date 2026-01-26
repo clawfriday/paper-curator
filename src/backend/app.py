@@ -113,13 +113,9 @@ def _get_openai_client(base_url: str, api_key: str) -> OpenAI:
 @lru_cache(maxsize=3)
 def _resolve_model(base_url: str, api_key: str) -> str:
     client = _get_openai_client(base_url, api_key)
-    try:
-        models = client.models.list()
-    except Exception as exc:  # noqa: BLE001
-        raise HTTPException(status_code=502, detail=f"Model list failed: {exc}") from exc
+    models = client.models.list()
     model_ids = sorted([model.id for model in models.data if getattr(model, "id", None)])
-    if not model_ids:
-        raise HTTPException(status_code=502, detail="No models returned by OpenAI-compatible endpoint.")
+    assert model_ids, "No models returned by OpenAI-compatible endpoint."
     return model_ids[0]
 
 
@@ -201,27 +197,11 @@ def _paperqa_answer(
 
         use_doc_details = bool(config.get("paperqa_use_doc_details", True))
         settings = _build_settings(use_doc_details)
-        try:
-            await docs.aadd(str(content_path), settings=settings)
-        except Exception as exc:  # noqa: BLE001
-            message = str(exc)
-            if use_doc_details and "semanticscholar" in message.lower() and "429" in message:
-                print("WARNING: Semantic Scholar rate limit hit; retrying without doc details.")
-                settings = _build_settings(False)
-                docs = Docs()
-                await docs.aadd(str(content_path), settings=settings)
-            else:
-                raise
+        await docs.aadd(str(content_path), settings=settings)
         return await docs.aquery(question, settings=settings)
 
-    try:
-        result = asyncio.run(_run())
-    except Exception as exc:  # noqa: BLE001
-        raise HTTPException(status_code=502, detail=f"PaperQA request failed: {exc}") from exc
-
-    if hasattr(result, "answer"):
-        return str(result.answer)
-    return str(result)
+    result = asyncio.run(_run())
+    return str(result.answer) if hasattr(result, "answer") else str(result)
 
 
 def _paperqa_extract_pdf(pdf_path: pathlib.Path) -> dict[str, Any]:
@@ -253,10 +233,7 @@ def _paperqa_extract_pdf(pdf_path: pathlib.Path) -> dict[str, Any]:
             "parser": "paperqa",
         }
 
-    try:
-        return asyncio.run(_run())
-    except Exception as exc:  # noqa: BLE001
-        raise HTTPException(status_code=502, detail=f"PaperQA2 parse failed: {exc}") from exc
+    return asyncio.run(_run())
 
 
 @app.get("/health")
@@ -269,12 +246,8 @@ def arxiv_resolve(payload: ArxivResolveRequest) -> dict[str, Any]:
     identifier = _require_identifier(payload.arxiv_id, payload.url)
     client = arxiv.Client()
     search = arxiv.Search(id_list=[identifier])
-    try:
-        results = list(client.results(search))
-    except arxiv.HTTPError:
-        raise HTTPException(status_code=404, detail="No arXiv result found.")
-    if not results:
-        raise HTTPException(status_code=404, detail="No arXiv result found.")
+    results = list(client.results(search))
+    assert results, f"No arXiv result found for: {identifier}"
     result = results[0]
     return {
         "arxiv_id": result.get_short_id(),
@@ -302,18 +275,13 @@ def arxiv_download(payload: ArxivDownloadRequest) -> dict[str, Any]:
     result = results[0]
 
     pdf_path = result.download_pdf(dirpath=output_dir)
-    latex_path = None
-    source_error = None
-    try:
-        latex_path = result.download_source(dirpath=output_dir)
-    except Exception as exc:  # noqa: BLE001
-        source_error = str(exc)
+    # LaTeX source download is optional - not all papers have source available
+    latex_path = result.download_source(dirpath=output_dir) if result.source_url() else None
 
     return {
         "arxiv_id": result.get_short_id(),
         "pdf_path": pdf_path,
         "latex_path": latex_path,
-        "latex_error": source_error,
     }
 
 
@@ -360,11 +328,8 @@ def embed(payload: EmbedRequest) -> dict[str, Any]:
     api_key = config["openai_api_key"]
     model = _resolve_model(base_url, api_key)
     client = _get_openai_client(base_url, api_key)
-    try:
-        response = client.embeddings.create(model=model, input=payload.text)
-        vector = response.data[0].embedding
-    except Exception as exc:  # noqa: BLE001
-        raise HTTPException(status_code=502, detail=f"Embedding request failed: {exc}") from exc
+    response = client.embeddings.create(model=model, input=payload.text)
+    vector = response.data[0].embedding
     return {"embedding": vector, "model": model}
 
 

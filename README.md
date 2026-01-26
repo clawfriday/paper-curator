@@ -135,3 +135,4 @@ This follows your ordering: **(1) package OSS as FastAPI services**, **(2) build
 - **Deduplicate papers** aggressively (canonical arXiv ID, DOI, title+authors fuzzy match).
 - **Store rationales** (classification + subclass splits) so tree changes are explainable and reversible.
 - **Version outputs** (summary, embedding model) to avoid silent drift when you change prompts/models.
+
