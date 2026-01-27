@@ -770,19 +770,42 @@ export default function Home() {
     const isCategory = !nodeDatum.attributes || !nodeDatum.attributes.arxivId;
     const isRoot = nodeDatum.name === "AI Papers";
     
-    // Use compact name (already abbreviated from backend, or truncate names)
-    const displayName = nodeDatum.name.length > 12 
-      ? nodeDatum.name.slice(0, 10) + ".." 
-      : nodeDatum.name;
+    // Show full name, wrap into multiple lines if needed
+    const name = nodeDatum.name;
+    const maxCharsPerLine = 14;
+    const lines: string[] = [];
     
-    // Node sizing
-    const nodeWidth = isRoot ? 90 : (isCategory ? 80 : 70);
-    const nodeHeight = isRoot ? 36 : (isCategory ? 32 : 28);
-    const fontSize = isRoot ? 11 : (isCategory ? 10 : 9);
+    // Simple word wrap
+    const words = name.split(/\s+/);
+    let currentLine = "";
+    for (const word of words) {
+      if ((currentLine + " " + word).trim().length <= maxCharsPerLine) {
+        currentLine = (currentLine + " " + word).trim();
+      } else {
+        if (currentLine) lines.push(currentLine);
+        currentLine = word.length > maxCharsPerLine ? word.slice(0, maxCharsPerLine - 2) + ".." : word;
+      }
+    }
+    if (currentLine) lines.push(currentLine);
     
-    // Colors
-    const fillColor = isRoot ? "#1e293b" : (isCategory ? "#6366f1" : "#0070f3");
-    const strokeColor = isRoot ? "#0f172a" : (isCategory ? "#4f46e5" : "#0051a8");
+    // Limit to 2 lines max
+    if (lines.length > 2) {
+      lines.splice(2);
+      lines[1] = lines[1].slice(0, maxCharsPerLine - 2) + "..";
+    }
+    
+    // Node sizing based on content
+    const fontSize = 10;
+    const lineHeight = 14;
+    const paddingX = 12;
+    const paddingY = 6;
+    const nodeWidth = Math.max(80, Math.min(120, Math.max(...lines.map(l => l.length)) * 7 + paddingX * 2));
+    const nodeHeight = lines.length * lineHeight + paddingY * 2;
+    
+    // Colors - lighter for papers, darker text for readability
+    const fillColor = isRoot ? "#374151" : (isCategory ? "#818cf8" : "#93c5fd");
+    const strokeColor = isRoot ? "#1f2937" : (isCategory ? "#6366f1" : "#60a5fa");
+    const textColor = isRoot ? "white" : (isCategory ? "#1e1b4b" : "#1e3a5a");
     
     return (
       <g
@@ -800,25 +823,29 @@ export default function Home() {
           y={-nodeHeight / 2}
           width={nodeWidth}
           height={nodeHeight}
-          rx={nodeHeight / 2}
-          ry={nodeHeight / 2}
+          rx={8}
+          ry={8}
           fill={fillColor}
           stroke={strokeColor}
-          strokeWidth={2}
+          strokeWidth={1.5}
         />
-        {/* Centered text */}
-        <text
-          fill="white"
-          textAnchor="middle"
-          dominantBaseline="central"
-          style={{ 
-            fontSize: `${fontSize}px`, 
-            fontWeight: isCategory ? 600 : 500,
-            pointerEvents: "none",
-          }}
-        >
-          {displayName}
-        </text>
+        {/* Multi-line text */}
+        {lines.map((line, i) => (
+          <text
+            key={i}
+            fill={textColor}
+            textAnchor="middle"
+            x={0}
+            y={-((lines.length - 1) * lineHeight) / 2 + i * lineHeight + 4}
+            style={{ 
+              fontSize: `${fontSize}px`, 
+              fontWeight: 400,
+              pointerEvents: "none",
+            }}
+          >
+            {line}
+          </text>
+        ))}
       </g>
     );
   }, [handleNodeClick, handleNodeRightClick]);
@@ -836,6 +863,24 @@ export default function Home() {
           .rd3t-tree-container {
             background: linear-gradient(180deg, #fafbfc 0%, #f1f5f9 100%);
           }
+          .tree-container {
+            overflow: auto !important;
+          }
+          .tree-container::-webkit-scrollbar {
+            width: 10px;
+            height: 10px;
+          }
+          .tree-container::-webkit-scrollbar-track {
+            background: #f1f1f1;
+            border-radius: 5px;
+          }
+          .tree-container::-webkit-scrollbar-thumb {
+            background: #c1c1c1;
+            border-radius: 5px;
+          }
+          .tree-container::-webkit-scrollbar-thumb:hover {
+            background: #a1a1a1;
+          }
         `}</style>
         <div style={{ padding: "1rem", borderBottom: "1px solid #e5e5e5", backgroundColor: "#fafafa" }}>
           <h1 style={{ margin: 0, fontSize: "1.5rem", fontWeight: 600 }}>Paper Curator</h1>
@@ -845,6 +890,7 @@ export default function Home() {
           </p>
         </div>
         <div 
+          className="tree-container"
           style={{ flex: 1, position: "relative", overflow: "auto" }}
           onContextMenu={(e) => e.preventDefault()}
         >
@@ -853,11 +899,14 @@ export default function Home() {
               data={treeData}
               orientation="vertical"
               pathFunc="diagonal"
-              translate={{ x: 300, y: 40 }}
-              nodeSize={{ x: 100, y: 60 }}
-              separation={{ siblings: 1.0, nonSiblings: 1.2 }}
+              translate={{ x: 300, y: 50 }}
+              nodeSize={{ x: 140, y: 80 }}
+              separation={{ siblings: 1.0, nonSiblings: 1.3 }}
               renderCustomNodeElement={renderCustomNode}
               pathClassFunc={() => "tree-link"}
+              zoomable={true}
+              scaleExtent={{ min: 0.1, max: 3 }}
+              draggable={true}
             />
           ) : (
             <div style={{ display: "flex", alignItems: "center", justifyContent: "center", height: "100%", color: "#999" }}>

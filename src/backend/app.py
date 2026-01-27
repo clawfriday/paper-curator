@@ -285,10 +285,11 @@ def _require_identifier(arxiv_id: Optional[str], url: Optional[str]) -> str:
     if arxiv_id:
         return arxiv_id
     if url:
-        match = re.search(r"arxiv\.org/(?:abs|pdf)/([^/\s?]+)", url)
+        # Match /abs/, /pdf/, or /html/ paths
+        match = re.search(r"arxiv\.org/(?:abs|pdf|html)/([^/\s?]+)", url)
         if match:
             return match.group(1).replace(".pdf", "")
-        return url
+        raise HTTPException(status_code=400, detail=f"Could not extract arXiv ID from URL: {url}")
     raise HTTPException(status_code=400, detail="Provide arxiv_id or url.")
 
 
