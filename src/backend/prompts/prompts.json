@@ -11,9 +11,9 @@
     "variables": ["existing_categories", "title", "abstract"]
   },
   "abbreviate": {
-    "id": "abbreviate_v1",
+    "id": "abbreviate_v2",
     "description": "Generate a short abbreviation for a paper title",
-    "template": "Generate a short, memorable abbreviation for this research paper title.\n\nRules:\n- Use the well-known abbreviation if one exists (e.g., \"GPT-4\", \"BERT\", \"ViT\", \"CLIP\")\n- If no well-known abbreviation exists, create a short one (max 12 chars)\n- Use acronyms, key terms, or author-style names (e.g., \"DeepSeek-R1\", \"DAPO\", \"LLaMA\")\n- Do NOT include version numbers unless critical (e.g., \"v3\" only if distinguishing from v2)\n\nPaper title: {title}\n\nRespond with ONLY the abbreviation, nothing else.",
+    "template": "Generate a short, memorable abbreviation for this research paper title.\n\nRules:\n- Use the well-known abbreviation if one exists (e.g., \"GPT-4\", \"BERT\", \"ViT\", \"CLIP\")\n- If no well-known abbreviation exists, create a short one (max 15 chars)\n- Use acronyms, key terms, or author-style names (e.g., \"DeepSeek-R1\", \"DAPO\", \"LLaMA\")\n- ALWAYS preserve version numbers exactly as written (e.g., \"V3\", \"V3.1\", \"v2\", \"4o\") to distinguish between different versions\n- For technical reports, include the model name and version (e.g., \"DeepSeek-V3\" not just \"DeepSeek\")\n\nPaper title: {title}\n\nRespond with ONLY the abbreviation, nothing else.",
     "variables": ["title"]
   },
   "explain_reference": {

@@ -180,3 +180,12 @@ This follows your ordering: **(1) package OSS as FastAPI services**, **(2) build
 
 ### Milestone 8 - bugfixes
 - meaningless "suma2025deepseekr1incentivizingreasoning" token from model response
+- the prompt on "abbreviation" should be less restrictive. Currently the technical report for Deepseek v3.2 is summarized as Deepseek v3, which conflicts with actual Deepseek v3 technical report
+- to breakdown the paper summary query into multile queries, each query should only focus on on one question.
+- the summary under 'Details' should be displayed in sections, each section contains the answer to one of the queries earlier. Each section should be collapsible
+- currently, the auto-reclassification wasn't triggered, even when the parent node (e.g. "Natural Language Process") is getting crowed
+- the outcome of the following should be persisted into the database, and reloaded into GUI whenever the server restarts, including the following
+  - repos
+  - refs
+  - similar
+  - query
