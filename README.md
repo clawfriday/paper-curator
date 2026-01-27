@@ -180,4 +180,3 @@ This follows your ordering: **(1) package OSS as FastAPI services**, **(2) build
 
 ### Milestone 8 - bugfixes
 - meaningless "suma2025deepseekr1incentivizingreasoning" token from model response
-- 

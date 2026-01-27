@@ -18,6 +18,10 @@ $(VENV_DIR)/bin/activate: pyproject.toml
 test: install
 	pytest tests -v
 
+# Connect to the endpoints
+connect:
+	./scripts/connect_endpoint.sh
+
 # Start docker-compose stack (frontend + backend)
 run:
 	docker compose -f src/compose.yml up --build
