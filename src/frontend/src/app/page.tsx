@@ -119,6 +119,7 @@ export default function Home() {
   const [hoveredRefId, setHoveredRefId] = useState<number | null>(null);
   const [refExplanations, setRefExplanations] = useState<Record<number, string>>({});
   const [featureLog, setFeatureLog] = useState<string[]>([]);
+  const [ingestLog, setIngestLog] = useState<string[]>([]);
   
   // Collapsible sections
   const [isIngestExpanded, setIsIngestExpanded] = useState(true);
@@ -133,6 +134,14 @@ export default function Home() {
   };
   
   const clearFeatureLog = () => setFeatureLog([]);
+  
+  // Helper to add to ingest log
+  const logIngest = (message: string) => {
+    const timestamp = new Date().toLocaleTimeString();
+    setIngestLog((prev) => [...prev, `[${timestamp}] ${message}`]);
+  };
+  
+  const clearIngestLog = () => setIngestLog([]);
 
   // Load config and tree on mount
   useEffect(() => {
@@ -224,6 +233,8 @@ export default function Home() {
     if (!arxivUrl.trim()) return;
 
     setIsIngesting(true);
+    clearIngestLog();
+    logIngest(`Starting ingestion for: ${arxivUrl.trim()}`);
     setSteps([
       { name: "Resolve arXiv", status: "pending" },
       { name: "Download PDF", status: "pending" },
@@ -248,12 +259,15 @@ export default function Home() {
 
     // Step 1: Resolve
     updateStep(0, { status: "running" });
+    logIngest("Resolving arXiv metadata...");
     const resolveRes = await fetch("/api/arxiv/resolve", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ url: arxivUrl }),
     });
     if (!resolveRes.ok) {
+      const errText = await resolveRes.text();
+      logIngest(`Error: HTTP ${resolveRes.status} - ${errText}`);
       updateStep(0, { status: "error", message: `HTTP ${resolveRes.status}` });
       setIsIngesting(false);
       return;
@@ -265,16 +279,21 @@ export default function Home() {
     abstract = resolveData.summary;
     pdfUrl = resolveData.pdf_url;
     published = resolveData.published;
+    logIngest(`Found: ${title}`);
+    logIngest(`arXiv ID: ${arxivId}`);
     updateStep(0, { status: "done", message: title });
 
     // Step 2: Download
     updateStep(1, { status: "running" });
+    logIngest("Downloading PDF...");
     const downloadRes = await fetch("/api/arxiv/download", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ arxiv_id: arxivId }),
     });
     if (!downloadRes.ok) {
+      const errText = await downloadRes.text();
+      logIngest(`Error: HTTP ${downloadRes.status} - ${errText}`);
       updateStep(1, { status: "error", message: `HTTP ${downloadRes.status}` });
       setIsIngesting(false);
       return;
@@ -282,10 +301,12 @@ export default function Home() {
     const downloadData = await downloadRes.json();
     pdfPath = downloadData.pdf_path;
     latexPath = downloadData.latex_path;
+    logIngest(`PDF saved to: ${pdfPath}`);
     updateStep(1, { status: "done", message: "PDF downloaded" });
 
     // Steps 3-5: Extract + Classify + Abbreviate in PARALLEL
     // These are independent: extract uses PDF, classify/abbreviate use title/abstract
+    logIngest("Running Extract + Classify + Abbreviate in parallel...");
     updateStep(2, { status: "running" });
     updateStep(3, { status: "running", message: "Determining category..." });
     updateStep(4, { status: "running", message: "Creating short name..." });
@@ -342,6 +363,7 @@ export default function Home() {
     }
 
     // Step 6: Summarize (also indexes PDF for faster QA)
+    logIngest("Summarizing paper (may take ~30s)...");
     updateStep(5, { status: "running", message: "May take a minute..." });
     const summarizeRes = await fetch("/api/summarize", {
       method: "POST",
@@ -349,12 +371,21 @@ export default function Home() {
       body: JSON.stringify({ pdf_path: pdfPath, arxiv_id: arxivId }),
     });
     if (!summarizeRes.ok) {
+      const errText = await summarizeRes.text();
+      logIngest(`Error: HTTP ${summarizeRes.status}`);
+      try {
+        const errJson = JSON.parse(errText);
+        logIngest(`Details: ${errJson.detail || errText}`);
+      } catch {
+        logIngest(`Details: ${errText.slice(0, 200)}`);
+      }
       updateStep(5, { status: "error", message: `HTTP ${summarizeRes.status}` });
       setIsIngesting(false);
       return;
     }
     const summarizeData = await summarizeRes.json();
     summary = summarizeData.summary;
+    logIngest("Summary generated successfully");
     updateStep(5, { status: "done", message: "Done" });
 
     // Step 7: Save to database
@@ -795,17 +826,17 @@ export default function Home() {
     }
     
     // Node sizing based on content
-    const fontSize = 10;
-    const lineHeight = 14;
-    const paddingX = 12;
-    const paddingY = 6;
-    const nodeWidth = Math.max(80, Math.min(120, Math.max(...lines.map(l => l.length)) * 7 + paddingX * 2));
+    const fontSize = 11;
+    const lineHeight = 15;
+    const paddingX = 14;
+    const paddingY = 8;
+    const nodeWidth = Math.max(90, Math.min(130, Math.max(...lines.map(l => l.length)) * 7.5 + paddingX * 2));
     const nodeHeight = lines.length * lineHeight + paddingY * 2;
     
-    // Colors - lighter for papers, darker text for readability
-    const fillColor = isRoot ? "#374151" : (isCategory ? "#818cf8" : "#93c5fd");
-    const strokeColor = isRoot ? "#1f2937" : (isCategory ? "#6366f1" : "#60a5fa");
-    const textColor = isRoot ? "white" : (isCategory ? "#1e1b4b" : "#1e3a5a");
+    // Colors - high contrast: light backgrounds with dark text
+    const fillColor = isRoot ? "#1f2937" : (isCategory ? "#e0e7ff" : "#dbeafe");
+    const strokeColor = isRoot ? "#111827" : (isCategory ? "#6366f1" : "#3b82f6");
+    const textColor = isRoot ? "#ffffff" : (isCategory ? "#312e81" : "#1e3a8a");
     
     return (
       <g
@@ -827,9 +858,9 @@ export default function Home() {
           ry={8}
           fill={fillColor}
           stroke={strokeColor}
-          strokeWidth={1.5}
+          strokeWidth={2}
         />
-        {/* Multi-line text */}
+        {/* Multi-line text with sharp rendering */}
         {lines.map((line, i) => (
           <text
             key={i}
@@ -839,8 +870,10 @@ export default function Home() {
             y={-((lines.length - 1) * lineHeight) / 2 + i * lineHeight + 4}
             style={{ 
               fontSize: `${fontSize}px`, 
-              fontWeight: 400,
+              fontWeight: 500,
+              fontFamily: "-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif",
               pointerEvents: "none",
+              textRendering: "optimizeLegibility",
             }}
           >
             {line}
@@ -862,6 +895,11 @@ export default function Home() {
           }
           .rd3t-tree-container {
             background: linear-gradient(180deg, #fafbfc 0%, #f1f5f9 100%);
+          }
+          .rd3t-tree-container svg text {
+            -webkit-font-smoothing: antialiased;
+            -moz-osx-font-smoothing: grayscale;
+            text-rendering: optimizeLegibility;
           }
           .tree-container {
             overflow: auto !important;
@@ -1039,6 +1077,28 @@ export default function Home() {
                           </p>
                         )}
                       </div>
+                    </div>
+                  ))}
+                </div>
+              )}
+              
+              {/* Ingest log textbox */}
+              {ingestLog.length > 0 && (
+                <div
+                  style={{
+                    marginTop: "0.75rem",
+                    backgroundColor: "#1e1e1e",
+                    borderRadius: "4px",
+                    padding: "0.5rem",
+                    maxHeight: "150px",
+                    overflowY: "auto",
+                    fontFamily: "monospace",
+                    fontSize: "0.7rem",
+                  }}
+                >
+                  {ingestLog.map((log, i) => (
+                    <div key={i} style={{ color: log.includes("Error") ? "#f87171" : "#a3e635", marginBottom: "2px" }}>
+                      {log}
                     </div>
                   ))}
                 </div>
