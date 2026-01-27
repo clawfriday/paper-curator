@@ -159,6 +159,7 @@ This follows your ordering: **(1) package OSS as FastAPI services**, **(2) build
 | Bulk Re-abbreviate (6 papers) | 1.89s | 1.17s | **38%** | asyncio.gather |
 | Prefetch (repos+refs+similar) | 1.24s | 0.64s | **48%** | asyncio.gather |
 | External API requests | 46ms first | 38ms reuse | **17%** | Connection pooling |
+| Structured QA (5 components) | ~10min (sequential) | ~1.5min (parallel) | **~7x** | asyncio.gather for all aspect queries |
 
 #### Implemented Optimizations
 
@@ -172,6 +173,8 @@ This follows your ordering: **(1) package OSS as FastAPI services**, **(2) build
 
 5. **Connection pooling**: Shared httpx.AsyncClient pool for Semantic Scholar, GitHub, and Papers With Code. Eliminates TLS handshake overhead on repeated calls.
 
+6. **Parallel structured QA**: The `/qa/structured` endpoint now runs all aspect queries in parallel using `asyncio.gather`. Component extraction runs first (sequential), then all 20 aspect queries (5 components × 4 aspects) run concurrently, reducing total time from ~10min to ~1.5min.
+
 #### New Endpoints
 - `POST /embed/abstract` - Embed text for pgvector similarity
 - `POST /embed/fulltext` - Index PDF for PaperQA2 (persisted)
@@ -179,13 +182,18 @@ This follows your ordering: **(1) package OSS as FastAPI services**, **(2) build
 - `POST /papers/prefetch` - Prefetch repos/refs/similar in parallel
 
 ### Milestone 8 - bugfixes
-- meaningless "suma2025deepseekr1incentivizingreasoning" token from model response
-- the prompt on "abbreviation" should be less restrictive. Currently the technical report for Deepseek v3.2 is summarized as Deepseek v3, which conflicts with actual Deepseek v3 technical report
-- to breakdown the paper summary query into multile queries, each query should only focus on on one question.
-- the summary under 'Details' should be displayed in sections, each section contains the answer to one of the queries earlier. Each section should be collapsible
-- currently, the auto-reclassification wasn't triggered, even when the parent node (e.g. "Natural Language Process") is getting crowed
-- the outcome of the following should be persisted into the database, and reloaded into GUI whenever the server restarts, including the following
+- [x] meaningless "suma2025deepseekr1incentivizingreasoning" token from model response
+- [x] the prompt on "abbreviation" should be less restrictive. Currently the technical report for Deepseek v3.2 is summarized as Deepseek v3, which conflicts with actual Deepseek v3 technical report
+- [x] to breakdown the paper summary query into multile queries, each query should only focus on on one question. **Implemented via `/qa/structured` endpoint with full parallelization (asyncio.gather for all 20 aspect queries)**
+- [x] the summary under 'Details' should be displayed in sections, each section contains the answer to one of the queries earlier. Each section should be collapsible
+- [ ] currently, the auto-reclassification wasn't triggered, even when the parent node (e.g. "Natural Language Process") is getting crowed
+- [ ] the outcome of the following should be persisted into the database, and reloaded into GUI whenever the server restarts, including the following
   - repos
   - refs
   - similar
   - query
+
+### Milestone 9 - add QA to summary
+- Inside query window, each historical query and response should be individually selectable, and multiple of them can be selected together. Once selection is done, a button 'add to details' appears (which grayed out when nothing selected), once pressed, it will try to add the selected content into the relevant sections inside Details/Summary
+
+- Inside Details/Summary, there is one more button 'dedup'. Once clicked, it will read the whole summary, and remove the duplicated section

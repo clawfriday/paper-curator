@@ -69,6 +69,60 @@ interface UIConfig {
   tree_auto_save_interval_ms: number;
 }
 
+// Collapsible section component for structured summaries
+function CollapsibleSection({ 
+  title, 
+  children, 
+  defaultOpen = false 
+}: { 
+  title: string; 
+  children: React.ReactNode; 
+  defaultOpen?: boolean;
+}) {
+  const [isOpen, setIsOpen] = useState(defaultOpen);
+  
+  return (
+    <div style={{ 
+      marginBottom: "0.5rem", 
+      border: "1px solid #e5e7eb", 
+      borderRadius: "6px",
+      overflow: "hidden",
+    }}>
+      <button
+        onClick={() => setIsOpen(!isOpen)}
+        style={{
+          width: "100%",
+          padding: "0.5rem 0.75rem",
+          display: "flex",
+          justifyContent: "space-between",
+          alignItems: "center",
+          backgroundColor: "#f9fafb",
+          border: "none",
+          cursor: "pointer",
+          fontSize: "0.8rem",
+          fontWeight: 600,
+          color: "#374151",
+          textAlign: "left",
+        }}
+      >
+        <span>{title}</span>
+        <span style={{ fontSize: "0.7rem", color: "#6b7280" }}>
+          {isOpen ? "▼" : "▶"}
+        </span>
+      </button>
+      {isOpen && (
+        <div style={{ 
+          padding: "0.75rem", 
+          backgroundColor: "#fff",
+          borderTop: "1px solid #e5e7eb",
+        }}>
+          {children}
+        </div>
+      )}
+    </div>
+  );
+}
+
 // Convert PaperNode to react-d3-tree compatible format
 function toTreeData(node: PaperNode): RawNodeDatum {
   return {
@@ -113,6 +167,17 @@ export default function Home() {
   const [queryAnswer, setQueryAnswer] = useState("");
   const [isQuerying, setIsQuerying] = useState(false);
   const [isReabbreviating, setIsReabbreviating] = useState(false);
+  const [isLoadingStructured, setIsLoadingStructured] = useState(false);
+  const [structuredAnalysis, setStructuredAnalysis] = useState<{
+    components: string[];
+    sections: Array<{
+      component: string;
+      steps: string;
+      benefits: string;
+      rationale: string;
+      results: string;
+    }>;
+  } | null>(null);
   const [references, setReferences] = useState<Reference[]>([]);
   const [similarPapers, setSimilarPapers] = useState<SimilarPaper[]>([]);
   const [isLoadingFeature, setIsLoadingFeature] = useState(false);
@@ -419,7 +484,7 @@ export default function Home() {
       updateStep(4, { status: "done", message: abbreviation });
     }
 
-    // Step 6: Summarize (also indexes PDF for faster QA)
+    // Step 6: Summarize (quick single query, also indexes PDF for QA)
     logIngest("Summarizing paper (may take ~30s)...");
     updateStep(5, { status: "running", message: "May take a minute..." });
     const summarizeRes = await fetch("/api/summarize", {
@@ -512,6 +577,7 @@ export default function Home() {
     setRepos([]);
     setReferences([]);
     setSimilarPapers([]);
+    setStructuredAnalysis(null);
   }, [taxonomy, findNode]);
 
   const handleNodeRightClick = useCallback((event: React.MouseEvent, nodeName: string) => {
@@ -830,6 +896,45 @@ export default function Home() {
       logFeature(`✗ Error: ${e}`);
     } finally {
       setIsReabbreviating(false);
+      logFeature("Done");
+    }
+  };
+
+  const handleStructuredAnalysis = async () => {
+    if (!selectedNode?.attributes?.arxivId) return;
+    setIsLoadingStructured(true);
+    setStructuredAnalysis(null);
+    clearFeatureLog();
+    logFeature(`Running detailed analysis for ${selectedNode.attributes.arxivId}...`);
+    logFeature("This may take several minutes...");
+    
+    try {
+      const res = await fetch("/api/qa/structured", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ 
+          arxiv_id: selectedNode.attributes.arxivId,
+          pdf_path: selectedNode.attributes.pdfPath,
+        }),
+      });
+      if (res.ok) {
+        const data = await res.json();
+        setStructuredAnalysis(data);
+        logFeature(`✓ Analysis complete: ${data.components.length} components`);
+      } else {
+        const errText = await res.text();
+        logFeature(`✗ Error: ${res.status}`);
+        try {
+          const errJson = JSON.parse(errText);
+          logFeature(`Details: ${errJson.detail || errText}`);
+        } catch {
+          logFeature(`Details: ${errText.slice(0, 200)}`);
+        }
+      }
+    } catch (e) {
+      logFeature(`✗ Error: ${e}`);
+    } finally {
+      setIsLoadingStructured(false);
       logFeature("Done");
     }
   };
@@ -1330,31 +1435,139 @@ export default function Home() {
                       <strong>Category:</strong> {selectedNode.attributes.category}
                     </p>
                   )}
-                  {selectedNode.attributes.summary && (
-                    <div>
-                      <h4 style={{ fontSize: "0.875rem", marginBottom: "0.5rem" }}>Summary</h4>
-                      <p style={{ fontSize: "0.875rem", lineHeight: 1.6, color: "#333", whiteSpace: "pre-wrap" }}>
-                        {selectedNode.attributes.summary}
-                      </p>
+                  {selectedNode.attributes.summary && (() => {
+                    // Try to parse as structured summary
+                    let structured: { type: string; components: string[]; sections: Array<{
+                      component: string;
+                      steps: string;
+                      benefits: string;
+                      rationale: string;
+                      results: string;
+                    }> } | null = null;
+                    try {
+                      const parsed = JSON.parse(selectedNode.attributes.summary);
+                      if (parsed.type === "structured" && parsed.sections) {
+                        structured = parsed;
+                      }
+                    } catch {
+                      // Not JSON, use as plain text
+                    }
+                    
+                    if (structured) {
+                      // Render structured summary with collapsible sections
+                      return (
+                        <div>
+                          <h4 style={{ fontSize: "0.875rem", marginBottom: "0.5rem" }}>
+                            Summary ({structured.components.length} components)
+                          </h4>
+                          {structured.sections.map((section, idx) => (
+                            <CollapsibleSection
+                              key={idx}
+                              title={section.component}
+                              defaultOpen={idx === 0}
+                            >
+                              <div style={{ fontSize: "0.8rem", lineHeight: 1.5 }}>
+                                <div style={{ marginBottom: "0.5rem" }}>
+                                  <strong style={{ color: "#4f46e5" }}>Steps:</strong>
+                                  <div style={{ whiteSpace: "pre-wrap", marginTop: "0.25rem" }}>{section.steps}</div>
+                                </div>
+                                <div style={{ marginBottom: "0.5rem" }}>
+                                  <strong style={{ color: "#059669" }}>Benefits:</strong>
+                                  <div style={{ marginTop: "0.25rem" }}>{section.benefits}</div>
+                                </div>
+                                <div style={{ marginBottom: "0.5rem" }}>
+                                  <strong style={{ color: "#d97706" }}>Rationale:</strong>
+                                  <div style={{ marginTop: "0.25rem" }}>{section.rationale}</div>
+                                </div>
+                                <div>
+                                  <strong style={{ color: "#dc2626" }}>Results:</strong>
+                                  <div style={{ whiteSpace: "pre-wrap", marginTop: "0.25rem" }}>{section.results}</div>
+                                </div>
+                              </div>
+                            </CollapsibleSection>
+                          ))}
+                        </div>
+                      );
+                    } else {
+                      // Render plain text summary (legacy format)
+                      return (
+                        <div>
+                          <h4 style={{ fontSize: "0.875rem", marginBottom: "0.5rem" }}>Summary</h4>
+                          <p style={{ fontSize: "0.875rem", lineHeight: 1.6, color: "#333", whiteSpace: "pre-wrap" }}>
+                            {selectedNode.attributes.summary}
+                          </p>
+                        </div>
+                      );
+                    }
+                  })()}
+                  {/* Action buttons */}
+                  <div style={{ display: "flex", gap: "0.5rem", marginTop: "1rem", flexWrap: "wrap" }}>
+                    <button
+                      onClick={handleReabbreviate}
+                      disabled={isReabbreviating}
+                      style={{
+                        padding: "0.5rem 1rem",
+                        fontSize: "0.75rem",
+                        backgroundColor: isReabbreviating ? "#ccc" : "#6366f1",
+                        color: "white",
+                        border: "none",
+                        borderRadius: "4px",
+                        cursor: isReabbreviating ? "not-allowed" : "pointer",
+                      }}
+                    >
+                      {isReabbreviating ? "Updating..." : "🔄 Re-abbreviate"}
+                    </button>
+                    <button
+                      onClick={handleStructuredAnalysis}
+                      disabled={isLoadingStructured}
+                      style={{
+                        padding: "0.5rem 1rem",
+                        fontSize: "0.75rem",
+                        backgroundColor: isLoadingStructured ? "#ccc" : "#059669",
+                        color: "white",
+                        border: "none",
+                        borderRadius: "4px",
+                        cursor: isLoadingStructured ? "not-allowed" : "pointer",
+                      }}
+                    >
+                      {isLoadingStructured ? "Analyzing..." : "🔍 Detailed Analysis"}
+                    </button>
+                  </div>
+                  
+                  {/* Structured Analysis Results */}
+                  {structuredAnalysis && (
+                    <div style={{ marginTop: "1rem" }}>
+                      <h4 style={{ fontSize: "0.875rem", marginBottom: "0.5rem" }}>
+                        Detailed Analysis ({structuredAnalysis.components.length} components)
+                      </h4>
+                      {structuredAnalysis.sections.map((section, idx) => (
+                        <CollapsibleSection
+                          key={idx}
+                          title={section.component}
+                          defaultOpen={idx === 0}
+                        >
+                          <div style={{ fontSize: "0.8rem", lineHeight: 1.5 }}>
+                            <div style={{ marginBottom: "0.5rem" }}>
+                              <strong style={{ color: "#4f46e5" }}>Steps:</strong>
+                              <div style={{ whiteSpace: "pre-wrap", marginTop: "0.25rem" }}>{section.steps}</div>
+                            </div>
+                            <div style={{ marginBottom: "0.5rem" }}>
+                              <strong style={{ color: "#059669" }}>Benefits:</strong>
+                              <div style={{ marginTop: "0.25rem" }}>{section.benefits}</div>
+                            </div>
+                            <div style={{ marginBottom: "0.5rem" }}>
+                              <strong style={{ color: "#d97706" }}>Rationale:</strong>
+                              <div style={{ marginTop: "0.25rem" }}>{section.rationale}</div>
+                            </div>
+                            <div>
+                              <strong style={{ color: "#dc2626" }}>Results:</strong>
+                              <div style={{ whiteSpace: "pre-wrap", marginTop: "0.25rem" }}>{section.results}</div>
+                            </div>
+                          </div>
+                        </CollapsibleSection>
+                      ))}
                     </div>
                   )}
-                  {/* Re-abbreviate button */}
-                  <button
-                    onClick={handleReabbreviate}
-                    disabled={isReabbreviating}
-                    style={{
-                      marginTop: "1rem",
-                      padding: "0.5rem 1rem",
-                      fontSize: "0.75rem",
-                      backgroundColor: isReabbreviating ? "#ccc" : "#6366f1",
-                      color: "white",
-                      border: "none",
-                      borderRadius: "4px",
-                      cursor: isReabbreviating ? "not-allowed" : "pointer",
-                    }}
-                  >
-                    {isReabbreviating ? "Updating..." : "🔄 Re-generate Abbreviation"}
-                  </button>
                 </div>
               ) : selectedNode ? (
                 <div>

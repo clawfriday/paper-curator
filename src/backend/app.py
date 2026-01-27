@@ -88,6 +88,11 @@ class SummarizeRequest(BaseModel):
     arxiv_id: Optional[str] = Field(default=None, description="arXiv ID for persisting index")
 
 
+class StructuredSummarizeRequest(BaseModel):
+    pdf_path: str = Field(description="Local PDF file path")
+    arxiv_id: Optional[str] = Field(default=None, description="arXiv ID for persisting index")
+
+
 class EmbedAbstractRequest(BaseModel):
     text: str = Field(description="Abstract text to embed for similarity search")
 
@@ -102,6 +107,11 @@ class QaRequest(BaseModel):
     context: Optional[str] = Field(default=None, description="Context text to answer from")
     question: str = Field(description="Question to answer")
     pdf_path: Optional[str] = Field(default=None, description="Local PDF file path")
+
+
+class StructuredQaRequest(BaseModel):
+    arxiv_id: str = Field(description="arXiv ID for cached index lookup (paper must be indexed)")
+    pdf_path: Optional[str] = Field(default=None, description="PDF path fallback if index not found")
 
 
 class ClassifyRequest(BaseModel):
@@ -677,6 +687,134 @@ def summarize(payload: SummarizeRequest) -> dict[str, Any]:
     }
 
 
+@app.post("/summarize/structured")
+async def summarize_structured(payload: StructuredSummarizeRequest) -> dict[str, Any]:
+    """Generate a structured summary with components and detailed analysis.
+    
+    Flow:
+    1. Extract key components/concepts from the paper
+    2. For each component, query 4 aspects in parallel:
+       - Logical steps / pseudo-code
+       - Main benefit area
+       - Rationale behind benefit
+       - Quantifiable results
+    3. Return structured sections
+    """
+    endpoint_config = _get_endpoint_config()
+    base_url = endpoint_config["llm_base_url"]
+    embed_base_url = endpoint_config["embedding_base_url"]
+    api_key = endpoint_config["api_key"]
+    
+    # Check endpoints
+    try:
+        model = f"openai/{_resolve_model(base_url, api_key)}"
+    except Exception as e:
+        raise HTTPException(status_code=503, detail=f"LLM endpoint not available: {e}")
+    
+    try:
+        embed_model = f"openai/{_resolve_model(embed_base_url, api_key)}"
+    except Exception as e:
+        raise HTTPException(status_code=503, detail=f"Embedding endpoint not available: {e}")
+    
+    # Reset LiteLLM callbacks to prevent accumulation
+    try:
+        import litellm
+        litellm.input_callback = []
+        litellm.success_callback = []
+        litellm.failure_callback = []
+        litellm._async_success_callback = []
+        litellm._async_failure_callback = []
+    except Exception:
+        pass
+    
+    # Step 1: Extract components
+    extract_prompt = get_prompt("extract_components")
+    components_raw = await _paperqa_answer_async(
+        None,
+        payload.pdf_path,
+        extract_prompt,
+        base_url,
+        embed_base_url,
+        api_key,
+        model,
+        embed_model,
+        arxiv_id=payload.arxiv_id,
+    )
+    
+    # Parse components JSON
+    try:
+        # Clean up response - find JSON array
+        import re
+        match = re.search(r'\[.*\]', components_raw, re.DOTALL)
+        if match:
+            components = json.loads(match.group())
+        else:
+            # Fallback: treat as single component
+            components = [components_raw.strip().strip('"\'')]
+    except json.JSONDecodeError:
+        components = [components_raw.strip().strip('"\'')]
+    
+    if not components:
+        components = ["Main Contribution"]
+    
+    # Helper to reset LiteLLM callbacks
+    def _reset_litellm_callbacks():
+        try:
+            import litellm
+            litellm.input_callback = []
+            litellm.success_callback = []
+            litellm.failure_callback = []
+            litellm._async_success_callback = []
+            litellm._async_failure_callback = []
+        except Exception:
+            pass
+    
+    # Step 2: For each component, query 4 aspects sequentially (to avoid callback accumulation)
+    async def analyze_component(component: str) -> dict[str, Any]:
+        """Analyze a single component with 4 sequential queries."""
+        result = {"component": component}
+        
+        aspects = [
+            ("steps", get_prompt("component_steps", component=component)),
+            ("benefits", get_prompt("component_benefits", component=component)),
+            ("rationale", get_prompt("component_rationale", component=component)),
+            ("results", get_prompt("component_results", component=component)),
+        ]
+        
+        for aspect, prompt in aspects:
+            # Reset callbacks before each query
+            _reset_litellm_callbacks()
+            
+            answer = await _paperqa_answer_async(
+                None,
+                payload.pdf_path,
+                prompt,
+                base_url,
+                embed_base_url,
+                api_key,
+                model,
+                embed_model,
+                arxiv_id=payload.arxiv_id,  # Reuses cached index
+            )
+            result[aspect] = answer.strip()
+        
+        return result
+    
+    # Analyze components sequentially to avoid callback accumulation
+    sections = []
+    for component in components:
+        _reset_litellm_callbacks()
+        section = await analyze_component(component)
+        sections.append(section)
+    
+    return {
+        "components": list(components),
+        "sections": list(sections),
+        "model": model,
+        "indexed": payload.arxiv_id is not None,
+    }
+
+
 @app.post("/embed/abstract")
 async def embed_abstract(payload: EmbedAbstractRequest) -> dict[str, Any]:
     """Embed abstract text for pgvector similarity search."""
@@ -757,6 +895,114 @@ def qa(payload: QaRequest) -> dict[str, Any]:
         arxiv_id=payload.arxiv_id,
     )
     return {"answer": answer, "used_cache": has_cache}
+
+
+@app.post("/qa/structured")
+async def qa_structured(payload: StructuredQaRequest) -> dict[str, Any]:
+    """Run structured analysis on an already-indexed paper.
+    
+    Uses cached PaperQA index for efficient querying. Runs ALL aspect queries
+    in parallel using asyncio.gather for maximum throughput.
+    
+    Flow:
+    1. Extract key components from paper (sequential - need results first)
+    2. For ALL components, query ALL 4 aspects in parallel
+    3. Return structured sections
+    """
+    # Check for cached index
+    index_path = _get_paperqa_index_path(payload.arxiv_id)
+    if not index_path.exists() and not payload.pdf_path:
+        raise HTTPException(
+            status_code=404, 
+            detail=f"No cached index for {payload.arxiv_id}. Ingest the paper first."
+        )
+    
+    endpoint_config = _get_endpoint_config()
+    base_url = endpoint_config["llm_base_url"]
+    embed_base_url = endpoint_config["embedding_base_url"]
+    api_key = endpoint_config["api_key"]
+    model = f"openai/{_resolve_model(base_url, api_key)}"
+    embed_model = f"openai/{_resolve_model(embed_base_url, api_key)}"
+    
+    def reset_callbacks():
+        try:
+            import litellm
+            litellm.input_callback = []
+            litellm.success_callback = []
+            litellm.failure_callback = []
+            litellm._async_success_callback = []
+            litellm._async_failure_callback = []
+        except Exception:
+            pass
+    
+    async def run_query_async(question: str) -> str:
+        """Run a single PaperQA query asynchronously."""
+        reset_callbacks()
+        return await _paperqa_answer_async(
+            None,
+            payload.pdf_path,
+            question,
+            base_url,
+            embed_base_url,
+            api_key,
+            model,
+            embed_model,
+            arxiv_id=payload.arxiv_id,
+        )
+    
+    # Step 1: Extract components (sequential - need results before step 2)
+    reset_callbacks()
+    extract_prompt = get_prompt("extract_components")
+    components_raw = await run_query_async(extract_prompt)
+    
+    # Parse components JSON
+    try:
+        match = re.search(r'\[.*\]', components_raw, re.DOTALL)
+        if match:
+            components = json.loads(match.group())
+        else:
+            components = [components_raw.strip().strip('"\'')]
+    except json.JSONDecodeError:
+        components = [components_raw.strip().strip('"\'')]
+    
+    if not components:
+        components = ["Main Contribution"]
+    
+    # Limit components to prevent excessive runtime
+    components = components[:5]
+    
+    # Step 2: Build all queries and run them in parallel
+    # Create list of (component_index, aspect_name, question) tuples
+    query_tasks = []
+    query_metadata = []  # Track which component and aspect each query belongs to
+    
+    for idx, component in enumerate(components):
+        for aspect, prompt_name in [
+            ("steps", "component_steps"),
+            ("benefits", "component_benefits"),
+            ("rationale", "component_rationale"),
+            ("results", "component_results"),
+        ]:
+            question = get_prompt(prompt_name, component=component)
+            query_tasks.append(run_query_async(question))
+            query_metadata.append((idx, aspect))
+    
+    # Run ALL queries in parallel
+    results = await asyncio.gather(*query_tasks, return_exceptions=True)
+    
+    # Reassemble results into sections
+    sections = [{"component": comp} for comp in components]
+    for (idx, aspect), result in zip(query_metadata, results):
+        if isinstance(result, Exception):
+            sections[idx][aspect] = f"Error: {result}"
+        else:
+            sections[idx][aspect] = result
+    
+    return {
+        "components": components,
+        "sections": sections,
+        "model": model,
+    }
 
 
 @app.post("/classify")

@@ -1,8 +1,38 @@
 {
   "paper_summary": {
-    "id": "paper_summary_v1",
-    "description": "Summarize an AI paper",
+    "id": "paper_summary_v2",
+    "description": "Legacy single-query summary (deprecated, use structured summary instead)",
     "template": "You are summarizing an AI paper. Produce a concise markdown summary with:\n- What it does concretely as a logical chain of steps, plain language, no figurative speech.\n- The main area it benefits (model performance / training efficiency / inference throughput / etc.).\n- The rationale behind this benefit.\n- Quantifiable results in the main area it improves.\n- No duplication across the above."
+  },
+  "extract_components": {
+    "id": "extract_components_v1",
+    "description": "Extract key components/concepts from a paper",
+    "template": "You are analyzing an AI research paper. Identify the key technical components, methods, or concepts introduced or used in this paper.\n\nFor example, DeepSeek-V3 has: MLA (Multi-head Latent Attention), MTP (Multi-Token Prediction), fine-grained FP8 training, DualPipe parallelism.\n\nRules:\n- List only distinct technical contributions or methods\n- Use the abbreviation if well-known (e.g., \"MLA\" not \"Multi-head Latent Attention\")\n- Include 1-5 components (fewer for simple papers, more for comprehensive ones)\n- Each component should be a specific technique, not a general concept\n\nRespond with a JSON array of component names, e.g.: [\"MLA\", \"MTP\", \"FP8 Training\", \"DualPipe\"]\nIf the paper has only one main contribution, return a single-element array.\nRespond with ONLY the JSON array, nothing else.",
+    "variables": []
+  },
+  "component_steps": {
+    "id": "component_steps_v1",
+    "description": "Describe the logical steps or pseudo-code for a component",
+    "template": "Describe the logical chain of steps or pseudo-code for the following component/method from the paper.\n\nComponent: {component}\n\nRules:\n- Use plain language, no figurative speech\n- Be concrete and specific\n- Use numbered steps or pseudo-code format\n- Keep it concise (3-7 steps typically)\n\nRespond with the steps only, no preamble.",
+    "variables": ["component"]
+  },
+  "component_benefits": {
+    "id": "component_benefits_v1",
+    "description": "Identify the main area a component benefits",
+    "template": "What is the main area that the following component/method benefits?\n\nComponent: {component}\n\nChoose from categories like:\n- Model performance (accuracy, quality)\n- Training efficiency (speed, memory, cost)\n- Inference throughput (latency, tokens/sec)\n- Scalability (larger models, more data)\n- Other (specify)\n\nRespond with a brief answer (1-2 sentences), stating the benefit area and a short explanation.",
+    "variables": ["component"]
+  },
+  "component_rationale": {
+    "id": "component_rationale_v1",
+    "description": "Explain the rationale behind a component's benefit",
+    "template": "Explain WHY the following component/method provides its benefits. What is the underlying insight or mechanism?\n\nComponent: {component}\n\nRules:\n- Focus on the 'why' not the 'what'\n- Be technical but accessible\n- 2-4 sentences\n\nRespond with the rationale only, no preamble.",
+    "variables": ["component"]
+  },
+  "component_results": {
+    "id": "component_results_v1",
+    "description": "Extract quantifiable results for a component",
+    "template": "What are the quantifiable results or metrics reported for the following component/method?\n\nComponent: {component}\n\nRules:\n- Include specific numbers, percentages, or comparisons\n- If no specific metrics for this component, state 'No specific metrics reported'\n- Be concise (1-3 bullet points)\n\nRespond with the results only, no preamble.",
+    "variables": ["component"]
   },
   "classify": {
     "id": "classify_v1",
