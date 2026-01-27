@@ -124,6 +124,11 @@ class SavePaperRequest(BaseModel):
     abbreviation: Optional[str] = None  # Short display name for tree node
 
 
+class BatchIngestRequest(BaseModel):
+    directory: str = Field(description="Local directory containing PDF files")
+    skip_existing: bool = Field(default=True, description="Skip PDFs already in database")
+
+
 class TreeNodeRequest(BaseModel):
     node_id: str
     name: str
@@ -384,6 +389,33 @@ def _build_paperqa_settings(
     )
 
 
+async def _index_pdf_for_paperqa_async(
+    pdf_path: str,
+    arxiv_id: str,
+    llm_base_url: str,
+    embed_base_url: str,
+    api_key: str,
+    llm_model: str,
+    embed_model: str,
+) -> Docs:
+    """Index a PDF and persist the Docs object for later QA queries (async)."""
+    os.environ["OPENAI_API_BASE"] = llm_base_url
+    os.environ["OPENAI_API_KEY"] = api_key
+    
+    docs = Docs()
+    settings = _build_paperqa_settings(
+        llm_model, embed_model, llm_base_url, embed_base_url, api_key
+    )
+    await docs.aadd(pdf_path, settings=settings)
+    
+    # Persist to filesystem using pickle
+    index_path = _get_paperqa_index_path(arxiv_id)
+    with open(index_path, "wb") as f:
+        pickle.dump(docs, f)
+    
+    return docs
+
+
 def _index_pdf_for_paperqa(
     pdf_path: str,
     arxiv_id: str,
@@ -393,26 +425,10 @@ def _index_pdf_for_paperqa(
     llm_model: str,
     embed_model: str,
 ) -> Docs:
-    """Index a PDF and persist the Docs object for later QA queries."""
-    os.environ["OPENAI_API_BASE"] = llm_base_url
-    os.environ["OPENAI_API_KEY"] = api_key
-    
-    async def _run() -> Docs:
-        docs = Docs()
-        settings = _build_paperqa_settings(
-            llm_model, embed_model, llm_base_url, embed_base_url, api_key
-        )
-        await docs.aadd(pdf_path, settings=settings)
-        return docs
-    
-    docs = asyncio.run(_run())
-    
-    # Persist to filesystem using pickle (JSON doesn't work with VectorStore)
-    index_path = _get_paperqa_index_path(arxiv_id)
-    with open(index_path, "wb") as f:
-        pickle.dump(docs, f)
-    
-    return docs
+    """Index a PDF and persist the Docs object for later QA queries (sync wrapper)."""
+    return asyncio.run(_index_pdf_for_paperqa_async(
+        pdf_path, arxiv_id, llm_base_url, embed_base_url, api_key, llm_model, embed_model
+    ))
 
 
 def _load_paperqa_index(arxiv_id: str) -> Optional[Docs]:
@@ -428,6 +444,64 @@ def _load_paperqa_index(arxiv_id: str) -> Optional[Docs]:
         return None
 
 
+async def _paperqa_answer_async(
+    text: Optional[str],
+    pdf_path: Optional[str],
+    question: str,
+    llm_base_url: str,
+    embed_base_url: str,
+    api_key: str,
+    llm_model: str,
+    embed_model: str,
+    arxiv_id: Optional[str] = None,
+) -> str:
+    """Query PaperQA2 for an answer (async). Uses cached index if available."""
+    assert text or pdf_path, "Provide text or pdf_path."
+    os.environ["OPENAI_API_BASE"] = llm_base_url
+    os.environ["OPENAI_API_KEY"] = api_key
+
+    docs: Optional[Docs] = None
+    
+    # Try to load cached index if arxiv_id provided
+    if arxiv_id:
+        docs = _load_paperqa_index(arxiv_id)
+    
+    # If no cached index, create new one
+    if docs is None:
+        docs = Docs()
+        content_path: Optional[pathlib.Path] = None
+        if pdf_path:
+            content_path = pathlib.Path(pdf_path)
+        elif text is not None:
+            inputs_dir = pathlib.Path("storage/inputs")
+            inputs_dir.mkdir(parents=True, exist_ok=True)
+            text_hash = hashlib.sha256(text.encode("utf-8")).hexdigest()
+            content_path = inputs_dir / f"paperqa_{text_hash}.txt"
+            content_path.write_text(text, encoding="utf-8")
+        if content_path is None or not content_path.exists():
+            raise HTTPException(status_code=404, detail="Content path not found.")
+        
+        settings = _build_paperqa_settings(
+            llm_model, embed_model, llm_base_url, embed_base_url, api_key
+        )
+        await docs.aadd(str(content_path), settings=settings)
+        
+        # Persist if arxiv_id provided
+        if arxiv_id:
+            index_path = _get_paperqa_index_path(arxiv_id)
+            with open(index_path, "wb") as f:
+                pickle.dump(docs, f)
+    
+    settings = _build_paperqa_settings(
+        llm_model, embed_model, llm_base_url, embed_base_url, api_key
+    )
+    result = await docs.aquery(question, settings=settings)
+    answer = str(result.answer) if hasattr(result, "answer") else str(result)
+    # Clean up PaperQA2 citation markers
+    answer = _clean_paperqa_citations(answer)
+    return answer
+
+
 def _paperqa_answer(
     text: Optional[str],
     pdf_path: Optional[str],
@@ -439,54 +513,11 @@ def _paperqa_answer(
     embed_model: str,
     arxiv_id: Optional[str] = None,
 ) -> str:
-    """Query PaperQA2 for an answer. Uses cached index if available."""
-    assert text or pdf_path, "Provide text or pdf_path."
-    os.environ["OPENAI_API_BASE"] = llm_base_url
-    os.environ["OPENAI_API_KEY"] = api_key
-
-    async def _run() -> Any:
-        docs: Optional[Docs] = None
-        
-        # Try to load cached index if arxiv_id provided
-        if arxiv_id:
-            docs = _load_paperqa_index(arxiv_id)
-        
-        # If no cached index, create new one
-        if docs is None:
-            docs = Docs()
-            content_path: Optional[pathlib.Path] = None
-            if pdf_path:
-                content_path = pathlib.Path(pdf_path)
-            elif text is not None:
-                inputs_dir = pathlib.Path("storage/inputs")
-                inputs_dir.mkdir(parents=True, exist_ok=True)
-                text_hash = hashlib.sha256(text.encode("utf-8")).hexdigest()
-                content_path = inputs_dir / f"paperqa_{text_hash}.txt"
-                content_path.write_text(text, encoding="utf-8")
-            if content_path is None or not content_path.exists():
-                raise HTTPException(status_code=404, detail="Content path not found.")
-            
-            settings = _build_paperqa_settings(
-                llm_model, embed_model, llm_base_url, embed_base_url, api_key
-            )
-            await docs.aadd(str(content_path), settings=settings)
-            
-            # Persist if arxiv_id provided
-            if arxiv_id:
-                index_path = _get_paperqa_index_path(arxiv_id)
-                with open(index_path, "wb") as f:
-                    pickle.dump(docs, f)
-        
-        settings = _build_paperqa_settings(
-            llm_model, embed_model, llm_base_url, embed_base_url, api_key
-        )
-        return await docs.aquery(question, settings=settings)
-
-    result = asyncio.run(_run())
-    answer = str(result.answer) if hasattr(result, "answer") else str(result)
-    # Clean up PaperQA2 citation markers (e.g., "(suma2025deepseekr1... pages 1-2)")
-    answer = _clean_paperqa_citations(answer)
-    return answer
+    """Query PaperQA2 for an answer (sync wrapper). Uses cached index if available."""
+    return asyncio.run(_paperqa_answer_async(
+        text, pdf_path, question, llm_base_url, embed_base_url, api_key,
+        llm_model, embed_model, arxiv_id
+    ))
 
 
 def _clean_paperqa_citations(text: str) -> str:
@@ -507,8 +538,8 @@ def _clean_paperqa_citations(text: str) -> str:
     return cleaned.strip()
 
 
-def _paperqa_extract_pdf(pdf_path: pathlib.Path) -> dict[str, Any]:
-    """Extract text from PDF using PaperQA2's native parser."""
+async def _paperqa_extract_pdf_async(pdf_path: pathlib.Path) -> dict[str, Any]:
+    """Extract text from PDF using PaperQA2's native parser (async version)."""
     pqa_config = _get_paperqa_config()
     reader_config = {
         "chunk_chars": pqa_config["chunk_chars"],
@@ -521,19 +552,21 @@ def _paperqa_extract_pdf(pdf_path: pathlib.Path) -> dict[str, Any]:
     )
     settings = Settings(parsing=parsing_settings)
 
-    async def _run() -> dict[str, Any]:
-        doc = Doc(docname=pdf_path.stem, dockey=pdf_path.stem, citation="Local PDF")
-        parsed_text = await read_doc(
-            str(pdf_path),
-            doc,
-            parsed_text_only=True,
-            parse_pdf=settings.parsing.parse_pdf,
-            **settings.parsing.reader_config,
-        )
-        text = parsed_text.reduce_content()
-        return {"text": text, "parser": "paperqa"}
+    doc = Doc(docname=pdf_path.stem, dockey=pdf_path.stem, citation="Local PDF")
+    parsed_text = await read_doc(
+        str(pdf_path),
+        doc,
+        parsed_text_only=True,
+        parse_pdf=settings.parsing.parse_pdf,
+        **settings.parsing.reader_config,
+    )
+    text = parsed_text.reduce_content()
+    return {"text": text, "parser": "paperqa"}
 
-    return asyncio.run(_run())
+
+def _paperqa_extract_pdf(pdf_path: pathlib.Path) -> dict[str, Any]:
+    """Extract text from PDF using PaperQA2's native parser (sync wrapper)."""
+    return asyncio.run(_paperqa_extract_pdf_async(pdf_path))
 
 
 # =============================================================================
@@ -898,6 +931,216 @@ def save_paper(payload: SavePaperRequest) -> dict[str, Any]:
     )
     
     return {"paper_id": paper_id, "node_id": paper_node_id, "display_name": display_name}
+
+
+@app.post("/papers/batch-ingest")
+async def batch_ingest(payload: BatchIngestRequest) -> dict[str, Any]:
+    """Batch ingest PDFs from a local directory.
+    
+    For each PDF:
+    1. Extract text to get title (from first page)
+    2. Classify into category
+    3. Generate abbreviation
+    4. Summarize
+    5. Save to database
+    """
+    import glob
+    import shutil
+    
+    # Handle paths: /Users/hyl/xxx becomes /host_home/xxx in Docker
+    # The Docker compose mounts $HOME to /host_home
+    dir_path = payload.directory
+    home_dir = os.environ.get("HOME", "/root")
+    
+    # Check if running in Docker (home is /root) and path starts with typical macOS path
+    if home_dir == "/root" and dir_path.startswith("/Users/"):
+        # Extract the path after /Users/username/
+        parts = dir_path.split("/")
+        if len(parts) > 3:
+            # /Users/username/rest -> /host_home/rest
+            docker_path = "/host_home/" + "/".join(parts[3:])
+            directory = pathlib.Path(docker_path)
+        else:
+            directory = pathlib.Path(dir_path)
+    else:
+        directory = pathlib.Path(dir_path)
+    
+    if not directory.exists():
+        raise HTTPException(
+            status_code=400, 
+            detail=f"Directory not found: {payload.directory} (mapped to {directory})"
+        )
+    
+    # Find all PDFs
+    pdf_files = list(directory.glob("*.pdf")) + list(directory.glob("*.PDF"))
+    if not pdf_files:
+        raise HTTPException(status_code=400, detail=f"No PDF files found in: {payload.directory}")
+    
+    results = []
+    endpoint_config = _get_endpoint_config()
+    base_url = endpoint_config["llm_base_url"]
+    embed_base_url = endpoint_config["embedding_base_url"]
+    api_key = endpoint_config["api_key"]
+    
+    # Verify endpoints before starting
+    try:
+        model = _resolve_model(base_url, api_key)
+    except Exception as e:
+        raise HTTPException(status_code=503, detail=f"LLM endpoint not available: {e}")
+    
+    try:
+        embed_model = _resolve_model(embed_base_url, api_key)
+    except Exception as e:
+        raise HTTPException(status_code=503, detail=f"Embedding endpoint not available: {e}")
+    
+    client = _get_async_openai_client(base_url, api_key)
+    
+    for pdf_file in pdf_files:
+        try:
+            # Generate a unique ID based on filename
+            filename = pdf_file.stem  # filename without extension
+            paper_id = f"local_{hashlib.md5(filename.encode()).hexdigest()[:12]}"
+            
+            # Check if already exists
+            if payload.skip_existing and db.get_paper_by_arxiv_id(paper_id):
+                results.append({
+                    "file": pdf_file.name,
+                    "status": "skipped",
+                    "reason": "already exists",
+                })
+                continue
+            
+            # Copy PDF to storage
+            storage_dir = pathlib.Path("storage/downloads")
+            storage_dir.mkdir(parents=True, exist_ok=True)
+            dest_path = storage_dir / f"{paper_id}.pdf"
+            shutil.copy2(pdf_file, dest_path)
+            pdf_path = str(dest_path)
+            
+            # Extract text from PDF using the async version
+            try:
+                extract_result = await _paperqa_extract_pdf_async(pdf_file)
+                first_chunk = extract_result.get("text", "")[:2000]
+            except Exception as ex:
+                results.append({
+                    "file": pdf_file.name,
+                    "status": "error",
+                    "reason": f"Could not extract text from PDF: {ex}",
+                })
+                continue
+            
+            if not first_chunk:
+                results.append({
+                    "file": pdf_file.name,
+                    "status": "error",
+                    "reason": "PDF extraction returned empty text",
+                })
+                continue
+            
+            # Use filename as title (clean it up)
+            title = filename.replace("_", " ").replace("-", " ").strip()
+            
+            # Get existing categories for classification
+            tree = db.get_tree()
+            existing_categories = [n["name"] for n in tree if n["node_type"] == "category"]
+            
+            # Classify
+            classify_prompt = get_prompt("classify", 
+                title=title, 
+                abstract=first_chunk[:500],
+                existing_categories=", ".join(existing_categories) if existing_categories else "None"
+            )
+            classify_resp = await client.chat.completions.create(
+                model=model,
+                messages=[{"role": "user", "content": classify_prompt}],
+                max_tokens=50,
+                temperature=0.1,
+            )
+            category = classify_resp.choices[0].message.content.strip().strip('"\'')
+            
+            # Abbreviate
+            abbrev_prompt = get_prompt("abbreviate", title=title)
+            abbrev_resp = await client.chat.completions.create(
+                model=model,
+                messages=[{"role": "user", "content": abbrev_prompt}],
+                max_tokens=20,
+                temperature=0.1,
+            )
+            abbreviation = abbrev_resp.choices[0].message.content.strip().strip('"\'')
+            
+            # Summarize (this also indexes the PDF) - use async version
+            prompt_id, prompt_hash, prompt_body = _load_prompt()
+            summary = await _paperqa_answer_async(
+                None,
+                pdf_path,
+                prompt_body,
+                base_url,
+                embed_base_url,
+                api_key,
+                f"openai/{model}",
+                f"openai/{embed_model}",
+                arxiv_id=paper_id,
+            )
+            
+            # Save to database
+            db_paper_id = db.create_paper(
+                arxiv_id=paper_id,
+                title=title,
+                authors=[],  # No author info from local PDFs
+                abstract=first_chunk[:1000],
+                summary=summary,
+                pdf_path=pdf_path,
+            )
+            
+            # Add to tree
+            category_exists = any(n["name"] == category and n["node_type"] == "category" for n in tree)
+            if not category_exists:
+                category_node_id = f"cat_{uuid.uuid4().hex[:8]}"
+                db.add_tree_node(
+                    node_id=category_node_id,
+                    name=category,
+                    node_type="category",
+                    parent_id="root",
+                )
+            else:
+                category_node_id = next(n["node_id"] for n in tree if n["name"] == category and n["node_type"] == "category")
+            
+            paper_node_id = f"paper_{paper_id.replace('.', '_')}"
+            db.add_tree_node(
+                node_id=paper_node_id,
+                name=abbreviation,
+                node_type="paper",
+                parent_id=category_node_id,
+                paper_id=db_paper_id,
+            )
+            
+            results.append({
+                "file": pdf_file.name,
+                "status": "success",
+                "paper_id": paper_id,
+                "title": title,
+                "category": category,
+                "abbreviation": abbreviation,
+            })
+            
+        except Exception as e:
+            results.append({
+                "file": pdf_file.name,
+                "status": "error",
+                "reason": str(e),
+            })
+    
+    success_count = sum(1 for r in results if r["status"] == "success")
+    skip_count = sum(1 for r in results if r["status"] == "skipped")
+    error_count = sum(1 for r in results if r["status"] == "error")
+    
+    return {
+        "total": len(pdf_files),
+        "success": success_count,
+        "skipped": skip_count,
+        "errors": error_count,
+        "results": results,
+    }
 
 
 @app.get("/tree")

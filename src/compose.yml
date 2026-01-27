@@ -24,6 +24,8 @@ services:
     volumes:
       - ../storage:/app/storage
       - ../config:/app/config
+      # Mount home directory for batch ingest of local PDFs
+      - ${HOME:-/Users}:/host_home:ro
     ports:
       - "8000:8000"
     environment:

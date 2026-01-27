@@ -121,6 +121,17 @@ export default function Home() {
   const [featureLog, setFeatureLog] = useState<string[]>([]);
   const [ingestLog, setIngestLog] = useState<string[]>([]);
   
+  // Batch ingest state
+  const [batchDirectory, setBatchDirectory] = useState("");
+  const [isBatchIngesting, setIsBatchIngesting] = useState(false);
+  const [batchResults, setBatchResults] = useState<{
+    total: number;
+    success: number;
+    skipped: number;
+    errors: number;
+    results: Array<{ file: string; status: string; reason?: string; title?: string; category?: string }>;
+  } | null>(null);
+  
   // Collapsible sections
   const [isIngestExpanded, setIsIngestExpanded] = useState(true);
   const [isDetailsExpanded, setIsDetailsExpanded] = useState(true);
@@ -228,6 +239,52 @@ export default function Home() {
     },
     []
   );
+
+  const handleBatchIngest = async () => {
+    if (!batchDirectory.trim()) return;
+    
+    setIsBatchIngesting(true);
+    setBatchResults(null);
+    clearIngestLog();
+    logIngest(`Starting batch ingest from: ${batchDirectory.trim()}`);
+    
+    try {
+      const res = await fetch("/api/papers/batch-ingest", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ directory: batchDirectory.trim(), skip_existing: true }),
+      });
+      
+      if (!res.ok) {
+        const errText = await res.text();
+        logIngest(`Error: HTTP ${res.status}`);
+        try {
+          const errJson = JSON.parse(errText);
+          logIngest(`Details: ${errJson.detail || errText}`);
+        } catch {
+          logIngest(`Details: ${errText.slice(0, 200)}`);
+        }
+        setIsBatchIngesting(false);
+        return;
+      }
+      
+      const data = await res.json();
+      setBatchResults(data);
+      logIngest(`Completed: ${data.success} success, ${data.skipped} skipped, ${data.errors} errors`);
+      
+      // Refresh tree
+      const treeRes = await fetch("/api/tree");
+      if (treeRes.ok) {
+        const treeData = await treeRes.json();
+        setTaxonomy(treeData);
+        logIngest("Tree refreshed");
+      }
+    } catch (err) {
+      logIngest(`Error: ${err}`);
+    } finally {
+      setIsBatchIngesting(false);
+    }
+  };
 
   const handleIngest = async () => {
     if (!arxivUrl.trim()) return;
@@ -1081,6 +1138,59 @@ export default function Home() {
                   ))}
                 </div>
               )}
+              
+              {/* Batch Ingest */}
+              <div style={{ marginTop: "1rem", paddingTop: "1rem", borderTop: "1px solid #e5e5e5" }}>
+                <h3 style={{ margin: "0 0 0.5rem", fontSize: "0.875rem", fontWeight: 500, color: "#666" }}>
+                  📁 Batch Ingest (Local PDFs)
+                </h3>
+                <input
+                  type="text"
+                  value={batchDirectory}
+                  onChange={(e) => setBatchDirectory(e.target.value)}
+                  placeholder="Directory path (e.g., /Users/you/papers)"
+                  disabled={isBatchIngesting}
+                  style={{
+                    width: "100%",
+                    padding: "0.5rem",
+                    marginBottom: "0.5rem",
+                    boxSizing: "border-box",
+                    border: "1px solid #ddd",
+                    borderRadius: "4px",
+                    fontSize: "0.75rem",
+                  }}
+                />
+                <button
+                  onClick={handleBatchIngest}
+                  disabled={isBatchIngesting || !batchDirectory.trim()}
+                  style={{
+                    width: "100%",
+                    padding: "0.5rem",
+                    backgroundColor: isBatchIngesting ? "#ccc" : "#10b981",
+                    color: "white",
+                    border: "none",
+                    borderRadius: "4px",
+                    cursor: isBatchIngesting ? "not-allowed" : "pointer",
+                    fontSize: "0.75rem",
+                    fontWeight: 500,
+                  }}
+                >
+                  {isBatchIngesting ? "Processing..." : "Batch Ingest"}
+                </button>
+                
+                {/* Batch results */}
+                {batchResults && (
+                  <div style={{ marginTop: "0.5rem", fontSize: "0.7rem" }}>
+                    <div style={{ color: "#10b981" }}>✓ {batchResults.success} ingested</div>
+                    {batchResults.skipped > 0 && (
+                      <div style={{ color: "#f59e0b" }}>⏭ {batchResults.skipped} skipped (existing)</div>
+                    )}
+                    {batchResults.errors > 0 && (
+                      <div style={{ color: "#ef4444" }}>✗ {batchResults.errors} errors</div>
+                    )}
+                  </div>
+                )}
+              </div>
               
               {/* Ingest log textbox */}
               {ingestLog.length > 0 && (
