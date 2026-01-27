@@ -996,6 +996,17 @@ async def batch_ingest(payload: BatchIngestRequest) -> dict[str, Any]:
     client = _get_async_openai_client(base_url, api_key)
     
     for pdf_file in pdf_files:
+        # Reset LiteLLM callbacks to prevent MAX_CALLBACKS limit (30) accumulation
+        try:
+            import litellm
+            litellm.input_callback = []
+            litellm.success_callback = []
+            litellm.failure_callback = []
+            litellm._async_success_callback = []
+            litellm._async_failure_callback = []
+        except Exception:
+            pass  # Ignore if litellm not available or attributes don't exist
+        
         try:
             # Generate a unique ID based on filename
             filename = pdf_file.stem  # filename without extension
