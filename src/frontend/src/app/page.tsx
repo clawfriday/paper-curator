@@ -211,6 +211,11 @@ export default function Home() {
   const [isIngestExpanded, setIsIngestExpanded] = useState(true);
   const [isDetailsExpanded, setIsDetailsExpanded] = useState(true);
   
+  // Query selection for merge feature
+  const [selectedQueryIds, setSelectedQueryIds] = useState<Set<number>>(new Set());
+  const [isMergingQueries, setIsMergingQueries] = useState(false);
+  const [isDedupingSummary, setIsDedupingSummary] = useState(false);
+  
   const hoverTimeoutRef = useRef<NodeJS.Timeout | null>(null);
   
   // Helper to add to feature log
@@ -972,6 +977,110 @@ export default function Home() {
     }
   };
 
+  const toggleQuerySelection = (queryId: number) => {
+    setSelectedQueryIds(prev => {
+      const newSet = new Set(prev);
+      if (newSet.has(queryId)) {
+        newSet.delete(queryId);
+      } else {
+        newSet.add(queryId);
+      }
+      return newSet;
+    });
+  };
+
+  const handleMergeQueries = async () => {
+    if (!selectedNode?.attributes?.arxivId || selectedQueryIds.size === 0) return;
+    setIsMergingQueries(true);
+    clearFeatureLog();
+    logFeature(`Merging ${selectedQueryIds.size} Q&A pair(s) into summary...`);
+    
+    // Get selected Q&A pairs
+    const selectedQa = queryHistory
+      .filter(q => selectedQueryIds.has(q.id))
+      .map(q => ({ question: q.question, answer: q.answer }));
+    
+    try {
+      const res = await fetch("/api/summary/merge", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          arxiv_id: selectedNode.attributes.arxivId,
+          selected_qa: selectedQa,
+        }),
+      });
+      
+      if (res.ok) {
+        const data = await res.json();
+        logFeature(`✓ Merged ${data.merged_count} Q&A pair(s) into summary`);
+        // Update the selected node's summary
+        if (selectedNode) {
+          setSelectedNode({
+            ...selectedNode,
+            attributes: {
+              ...selectedNode.attributes,
+              summary: data.summary,
+            }
+          });
+        }
+        // Clear selection
+        setSelectedQueryIds(new Set());
+        // Switch to details panel to show updated summary
+        setActivePanel("details");
+      } else {
+        const errText = await res.text();
+        logFeature(`✗ Error: ${res.status} - ${errText}`);
+      }
+    } catch (e) {
+      logFeature(`✗ Error: ${e}`);
+    } finally {
+      setIsMergingQueries(false);
+      logFeature("Done");
+    }
+  };
+
+  const handleDedupSummary = async () => {
+    if (!selectedNode?.attributes?.arxivId) return;
+    setIsDedupingSummary(true);
+    clearFeatureLog();
+    logFeature("Deduplicating summary...");
+    
+    try {
+      const res = await fetch("/api/summary/dedup", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          arxiv_id: selectedNode.attributes.arxivId,
+        }),
+      });
+      
+      if (res.ok) {
+        const data = await res.json();
+        const reduction = data.original_length - data.new_length;
+        const percent = Math.round((reduction / data.original_length) * 100);
+        logFeature(`✓ Removed duplicates (${reduction > 0 ? `-${percent}%` : "no changes"})`);
+        // Update the selected node's summary
+        if (selectedNode) {
+          setSelectedNode({
+            ...selectedNode,
+            attributes: {
+              ...selectedNode.attributes,
+              summary: data.summary,
+            }
+          });
+        }
+      } else {
+        const errText = await res.text();
+        logFeature(`✗ Error: ${res.status} - ${errText}`);
+      }
+    } catch (e) {
+      logFeature(`✗ Error: ${e}`);
+    } finally {
+      setIsDedupingSummary(false);
+      logFeature("Done");
+    }
+  };
+
   const handleReabbreviate = async () => {
     if (!selectedNode?.attributes?.arxivId) return;
     setIsReabbreviating(true);
@@ -1675,6 +1784,21 @@ export default function Home() {
                     >
                       {isLoadingStructured ? "Analyzing..." : "🔍 Detailed Analysis"}
                     </button>
+                    <button
+                      onClick={handleDedupSummary}
+                      disabled={isDedupingSummary}
+                      style={{
+                        padding: "0.5rem 1rem",
+                        fontSize: "0.75rem",
+                        backgroundColor: isDedupingSummary ? "#ccc" : "#f59e0b",
+                        color: "white",
+                        border: "none",
+                        borderRadius: "4px",
+                        cursor: isDedupingSummary ? "not-allowed" : "pointer",
+                      }}
+                    >
+                      {isDedupingSummary ? "Deduping..." : "🧹 Dedup"}
+                    </button>
                   </div>
                   
                   {/* Structured Analysis Results */}
@@ -1939,26 +2063,69 @@ export default function Home() {
                     <div style={{ marginTop: "1.5rem" }}>
                       <h3 style={{ fontSize: "0.875rem", fontWeight: 600, marginBottom: "0.75rem", color: "#333" }}>
                         Query History ({queryHistory.length})
+                        {selectedQueryIds.size > 0 && (
+                          <span style={{ fontWeight: 400, color: "#0070f3", marginLeft: "0.5rem" }}>
+                            ({selectedQueryIds.size} selected)
+                          </span>
+                        )}
                       </h3>
                       {queryHistory.map((q) => (
-                        <div key={q.id} style={{ 
-                          marginBottom: "0.75rem", 
-                          padding: "0.75rem", 
-                          backgroundColor: "#f5f5f5", 
-                          borderRadius: "4px",
-                          borderLeft: "3px solid #0070f3"
-                        }}>
-                          <div style={{ fontSize: "0.75rem", color: "#666", marginBottom: "0.25rem" }}>
-                            {new Date(q.created_at).toLocaleString()}
-                          </div>
-                          <div style={{ fontSize: "0.8125rem", fontWeight: 500, marginBottom: "0.5rem" }}>
-                            Q: {q.question}
-                          </div>
-                          <div style={{ fontSize: "0.8125rem", color: "#444", whiteSpace: "pre-wrap" }}>
-                            A: {q.answer}
+                        <div 
+                          key={q.id} 
+                          onClick={() => toggleQuerySelection(q.id)}
+                          style={{ 
+                            marginBottom: "0.75rem", 
+                            padding: "0.75rem", 
+                            backgroundColor: selectedQueryIds.has(q.id) ? "#e3f2fd" : "#f5f5f5", 
+                            borderRadius: "4px",
+                            borderLeft: `3px solid ${selectedQueryIds.has(q.id) ? "#2196f3" : "#0070f3"}`,
+                            cursor: "pointer",
+                            transition: "all 0.15s ease",
+                          }}
+                        >
+                          <div style={{ display: "flex", alignItems: "flex-start", gap: "0.5rem" }}>
+                            <input
+                              type="checkbox"
+                              checked={selectedQueryIds.has(q.id)}
+                              onChange={() => toggleQuerySelection(q.id)}
+                              onClick={(e) => e.stopPropagation()}
+                              style={{ marginTop: "0.15rem", cursor: "pointer" }}
+                            />
+                            <div style={{ flex: 1 }}>
+                              <div style={{ fontSize: "0.75rem", color: "#666", marginBottom: "0.25rem" }}>
+                                {new Date(q.created_at).toLocaleString()}
+                              </div>
+                              <div style={{ fontSize: "0.8125rem", fontWeight: 500, marginBottom: "0.5rem" }}>
+                                Q: {q.question}
+                              </div>
+                              <div style={{ fontSize: "0.8125rem", color: "#444", whiteSpace: "pre-wrap" }}>
+                                A: {q.answer}
+                              </div>
+                            </div>
                           </div>
                         </div>
                       ))}
+                      
+                      {/* Add to Details button */}
+                      <button
+                        onClick={handleMergeQueries}
+                        disabled={selectedQueryIds.size === 0 || isMergingQueries}
+                        style={{
+                          marginTop: "0.5rem",
+                          width: "100%",
+                          padding: "0.5rem",
+                          backgroundColor: selectedQueryIds.size === 0 ? "#ccc" : "#4caf50",
+                          color: "white",
+                          border: "none",
+                          borderRadius: "4px",
+                          cursor: selectedQueryIds.size === 0 ? "not-allowed" : "pointer",
+                          fontSize: "0.8125rem",
+                          fontWeight: 500,
+                          transition: "background-color 0.15s ease",
+                        }}
+                      >
+                        {isMergingQueries ? "Merging..." : `Add to Details${selectedQueryIds.size > 0 ? ` (${selectedQueryIds.size})` : ""}`}
+                      </button>
                     </div>
                   )}
                 </div>

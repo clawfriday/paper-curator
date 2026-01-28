@@ -51,5 +51,17 @@
     "description": "Explain how a cited paper relates to the source paper",
     "template": "You are a research paper analyst. Explain how a cited paper relates to the source paper.\n\nSource paper: {source_title}\nCited paper: {cited_title}\n{context_section}\n\nProvide a concise 2-3 sentence explanation of:\n1. What the cited paper is about\n2. How it relates to or contributes to the source paper\n\nBe specific and technical but accessible.",
     "variables": ["source_title", "cited_title", "context_section"]
+  },
+  "merge_qa_to_summary": {
+    "id": "merge_qa_v1",
+    "description": "Merge Q&A content into existing summary sections",
+    "template": "You are merging Q&A content into an existing paper summary.\n\nCurrent Summary:\n{current_summary}\n\nNew Q&A to integrate:\n{qa_content}\n\nInstructions:\n1. Read the current summary structure carefully\n2. For each Q&A pair, identify where the information best fits in the summary\n3. Integrate the new information naturally into the relevant sections\n4. If information already exists, enhance it with additional details from Q&A\n5. If information is truly new, add it to the most relevant section\n6. Preserve the overall structure and formatting of the summary\n7. Do NOT add duplicate information\n\nRespond with the updated summary only, maintaining the same markdown format.",
+    "variables": ["current_summary", "qa_content"]
+  },
+  "dedup_summary": {
+    "id": "dedup_summary_v1",
+    "description": "Remove duplicated content from a summary",
+    "template": "You are cleaning up a paper summary to remove duplicated content.\n\nCurrent Summary:\n{summary}\n\nInstructions:\n1. Identify any duplicated or redundant information across sections\n2. Keep the most detailed/accurate version of duplicated content\n3. Remove the less detailed duplicates\n4. Merge related points that are scattered across sections\n5. Preserve the overall structure and formatting\n6. Ensure each piece of information appears only once in the most relevant section\n\nRespond with the deduplicated summary only, maintaining the same markdown format. If no duplicates found, return the summary unchanged.",
+    "variables": ["summary"]
   }
 }

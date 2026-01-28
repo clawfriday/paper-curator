@@ -1013,6 +1013,117 @@ async def qa_structured(payload: StructuredQaRequest) -> dict[str, Any]:
     return structured_result
 
 
+class MergeSummaryRequest(BaseModel):
+    arxiv_id: str = Field(description="arXiv ID of the paper")
+    selected_qa: list[dict[str, str]] = Field(description="List of {question, answer} pairs to merge")
+
+
+class DedupSummaryRequest(BaseModel):
+    arxiv_id: str = Field(description="arXiv ID of the paper")
+
+
+@app.post("/summary/merge")
+async def merge_qa_to_summary(payload: MergeSummaryRequest) -> dict[str, Any]:
+    """Merge selected Q&A content into the paper's summary.
+    
+    Uses LLM to intelligently integrate Q&A content into appropriate
+    sections of the existing summary.
+    """
+    # Get paper from DB
+    paper = db.get_paper_by_arxiv_id(payload.arxiv_id)
+    if not paper:
+        raise HTTPException(status_code=404, detail="Paper not found")
+    
+    current_summary = paper.get("summary", "")
+    if not current_summary:
+        raise HTTPException(status_code=400, detail="Paper has no summary to merge into")
+    
+    if not payload.selected_qa:
+        raise HTTPException(status_code=400, detail="No Q&A pairs provided")
+    
+    # Format Q&A content
+    qa_content = "\n\n".join([
+        f"Q: {qa['question']}\nA: {qa['answer']}"
+        for qa in payload.selected_qa
+    ])
+    
+    # Get LLM config
+    endpoint_config = _get_endpoint_config()
+    base_url = endpoint_config["llm_base_url"]
+    api_key = endpoint_config["api_key"]
+    model = _resolve_model(base_url, api_key)
+    client = _get_async_openai_client(base_url, api_key)
+    
+    # Get merge prompt
+    prompt = get_prompt(
+        "merge_qa_to_summary",
+        current_summary=current_summary,
+        qa_content=qa_content,
+    )
+    
+    response = await client.chat.completions.create(
+        model=model,
+        messages=[{"role": "user", "content": prompt}],
+        max_tokens=4000,
+        temperature=0.3,
+    )
+    updated_summary = response.choices[0].message.content.strip()
+    
+    # Update summary in database
+    db.update_paper_summary(paper["id"], updated_summary)
+    
+    return {
+        "summary": updated_summary,
+        "merged_count": len(payload.selected_qa),
+        "model": model,
+    }
+
+
+@app.post("/summary/dedup")
+async def dedup_summary(payload: DedupSummaryRequest) -> dict[str, Any]:
+    """Remove duplicated content from a paper's summary.
+    
+    Uses LLM to identify and remove redundant information while
+    preserving the most detailed version.
+    """
+    # Get paper from DB
+    paper = db.get_paper_by_arxiv_id(payload.arxiv_id)
+    if not paper:
+        raise HTTPException(status_code=404, detail="Paper not found")
+    
+    current_summary = paper.get("summary", "")
+    if not current_summary:
+        raise HTTPException(status_code=400, detail="Paper has no summary")
+    
+    # Get LLM config
+    endpoint_config = _get_endpoint_config()
+    base_url = endpoint_config["llm_base_url"]
+    api_key = endpoint_config["api_key"]
+    model = _resolve_model(base_url, api_key)
+    client = _get_async_openai_client(base_url, api_key)
+    
+    # Get dedup prompt
+    prompt = get_prompt("dedup_summary", summary=current_summary)
+    
+    response = await client.chat.completions.create(
+        model=model,
+        messages=[{"role": "user", "content": prompt}],
+        max_tokens=4000,
+        temperature=0.1,
+    )
+    deduped_summary = response.choices[0].message.content.strip()
+    
+    # Update summary in database
+    db.update_paper_summary(paper["id"], deduped_summary)
+    
+    return {
+        "summary": deduped_summary,
+        "original_length": len(current_summary),
+        "new_length": len(deduped_summary),
+        "model": model,
+    }
+
+
 @app.post("/classify")
 async def classify(payload: ClassifyRequest) -> dict[str, Any]:
     """Classify a paper into a category using LLM."""

@@ -59,5 +59,5 @@ def test_summarize_with_pdf(client, sample_arxiv_id, tmp_path):
 def test_summarize_no_input(client):
     """Test that missing input returns error."""
     response = client.post("/summarize", json={})
-    # 502 if endpoint unreachable, 500 if assert fails
-    assert response.status_code in [500, 502]
+    # 502 if endpoint unreachable, 500 if assert fails, 503 if LLM unavailable
+    assert response.status_code in [500, 502, 503]
