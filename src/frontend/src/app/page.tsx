@@ -430,10 +430,13 @@ export default function Home() {
     // Step 1: Resolve
     updateStep(0, { status: "running" });
     logIngest("Resolving arXiv metadata...");
+    // Detect if input is URL or plain arXiv ID
+    const inputValue = arxivUrl.trim();
+    const isUrl = inputValue.includes("arxiv.org") || inputValue.startsWith("http");
     const resolveRes = await fetch("/api/arxiv/resolve", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ url: arxivUrl }),
+      body: JSON.stringify(isUrl ? { url: inputValue } : { arxiv_id: inputValue }),
     });
     if (!resolveRes.ok) {
       const errText = await resolveRes.text();

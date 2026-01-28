@@ -442,11 +442,20 @@ def cache_similar_paper(
 
 
 def get_cached_similar_papers(paper_id: int) -> list[dict[str, Any]]:
-    """Get cached similar papers."""
+    """Get cached similar papers with field names matching frontend expectations."""
     with get_db() as conn:
         with conn.cursor(cursor_factory=RealDictCursor) as cur:
             cur.execute(
-                "SELECT * FROM similar_papers_cache WHERE paper_id = %s ORDER BY similarity_score DESC NULLS LAST",
+                """
+                SELECT 
+                    similar_arxiv_id as arxiv_id,
+                    similar_title as title,
+                    similarity_score as similarity,
+                    description
+                FROM similar_papers_cache 
+                WHERE paper_id = %s 
+                ORDER BY similarity_score DESC NULLS LAST
+                """,
                 (paper_id,)
             )
             return [dict(row) for row in cur.fetchall()]
