@@ -199,6 +199,14 @@ export default function Home() {
     results: Array<{ file: string; status: string; reason?: string; title?: string; category?: string }>;
   } | null>(null);
   
+  // Rebalance state
+  const [isRebalancing, setIsRebalancing] = useState(false);
+  const [rebalanceResult, setRebalanceResult] = useState<{
+    message: string;
+    categories_processed?: string[];
+    reclassified: Array<{ arxiv_id: string; old_category: string; new_category: string }>;
+  } | null>(null);
+  
   // Collapsible sections
   const [isIngestExpanded, setIsIngestExpanded] = useState(true);
   const [isDetailsExpanded, setIsDetailsExpanded] = useState(true);
@@ -306,6 +314,44 @@ export default function Home() {
     },
     []
   );
+
+  const handleRebalanceCategories = async () => {
+    setIsRebalancing(true);
+    setRebalanceResult(null);
+    clearIngestLog();
+    logIngest("Rebalancing crowded categories...");
+    
+    try {
+      const res = await fetch("/api/categories/rebalance", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+      });
+      
+      if (res.ok) {
+        const data = await res.json();
+        setRebalanceResult(data);
+        logIngest(`✓ ${data.message}`);
+        if (data.reclassified?.length > 0) {
+          logIngest(`Moved ${data.reclassified.length} papers to new categories`);
+          // Reload tree
+          const treeRes = await fetch("/api/tree");
+          if (treeRes.ok) {
+            const treeData = await treeRes.json();
+            setTaxonomy(treeData.tree);
+          }
+        }
+      } else {
+        const errText = await res.text();
+        logIngest(`Error: HTTP ${res.status}`);
+        logIngest(`Details: ${errText.slice(0, 200)}`);
+      }
+    } catch (e) {
+      logIngest(`Error: ${e}`);
+    } finally {
+      setIsRebalancing(false);
+      logIngest("Done");
+    }
+  };
 
   const handleBatchIngest = async () => {
     if (!batchDirectory.trim()) return;
@@ -609,6 +655,10 @@ export default function Home() {
           }
           if (data.similar_papers?.length > 0) setSimilarPapers(data.similar_papers);
           if (data.queries?.length > 0) setQueryHistory(data.queries);
+          // Restore structured analysis if available
+          if (data.structured_summary) {
+            setStructuredAnalysis(data.structured_summary);
+          }
         }
       } catch (e) {
         console.error("Failed to load cached data:", e);
@@ -1343,6 +1393,45 @@ export default function Home() {
                     )}
                     {batchResults.errors > 0 && (
                       <div style={{ color: "#ef4444" }}>✗ {batchResults.errors} errors</div>
+                    )}
+                  </div>
+                )}
+              </div>
+              
+              {/* Rebalance Categories */}
+              <div style={{ marginTop: "1rem", paddingTop: "1rem", borderTop: "1px solid #e5e5e5" }}>
+                <h3 style={{ margin: "0 0 0.5rem", fontSize: "0.875rem", fontWeight: 500, color: "#666" }}>
+                  ⚖️ Rebalance Categories
+                </h3>
+                <p style={{ fontSize: "0.7rem", color: "#888", marginBottom: "0.5rem" }}>
+                  Reclassify papers in crowded categories (10+ papers)
+                </p>
+                <button
+                  onClick={handleRebalanceCategories}
+                  disabled={isRebalancing}
+                  style={{
+                    width: "100%",
+                    padding: "0.5rem",
+                    backgroundColor: isRebalancing ? "#ccc" : "#8b5cf6",
+                    color: "white",
+                    border: "none",
+                    borderRadius: "4px",
+                    cursor: isRebalancing ? "not-allowed" : "pointer",
+                    fontSize: "0.75rem",
+                    fontWeight: 500,
+                  }}
+                >
+                  {isRebalancing ? "Rebalancing..." : "Rebalance Now"}
+                </button>
+                
+                {/* Rebalance results */}
+                {rebalanceResult && (
+                  <div style={{ marginTop: "0.5rem", fontSize: "0.7rem" }}>
+                    <div style={{ color: "#8b5cf6" }}>{rebalanceResult.message}</div>
+                    {rebalanceResult.reclassified?.length > 0 && (
+                      <div style={{ color: "#10b981", marginTop: "0.25rem" }}>
+                        ✓ Moved {rebalanceResult.reclassified.length} papers
+                      </div>
                     )}
                   </div>
                 )}

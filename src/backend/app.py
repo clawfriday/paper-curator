@@ -998,11 +998,19 @@ async def qa_structured(payload: StructuredQaRequest) -> dict[str, Any]:
         else:
             sections[idx][aspect] = result
     
-    return {
+    # Persist structured analysis to database
+    structured_result = {
         "components": components,
         "sections": sections,
         "model": model,
     }
+    
+    if payload.arxiv_id:
+        paper = db.get_paper_by_arxiv_id(payload.arxiv_id)
+        if paper:
+            db.update_paper_structured_summary(paper["id"], structured_result)
+    
+    return structured_result
 
 
 @app.post("/classify")
@@ -1481,9 +1489,98 @@ async def batch_ingest(payload: BatchIngestRequest) -> dict[str, Any]:
     }
 
 
+@app.post("/categories/rebalance")
+async def rebalance_categories() -> dict[str, Any]:
+    """Rebalance all categories that exceed the threshold.
+    
+    Iterates through all crowded categories and reclassifies papers
+    to create more specific subcategories.
+    """
+    classification_config = _get_classification_config()
+    if not classification_config["auto_reclassify_enabled"]:
+        return {"message": "Auto-reclassification is disabled", "reclassified": []}
+    
+    threshold = classification_config["category_threshold"]
+    categories = db.get_all_categories_with_counts()
+    crowded_categories = [c for c in categories if c["paper_count"] > threshold]
+    
+    if not crowded_categories:
+        return {"message": "No crowded categories found", "reclassified": []}
+    
+    endpoint_config = _get_endpoint_config()
+    base_url = endpoint_config["llm_base_url"]
+    api_key = endpoint_config["api_key"]
+    model = _resolve_model(base_url, api_key)
+    client = _get_async_openai_client(base_url, api_key)
+    
+    all_reclassified = []
+    
+    for category in crowded_categories:
+        category_node_id = category["node_id"]
+        category_name = category["name"]
+        papers_in_category = db.get_papers_in_category(category_node_id)
+        
+        # Get existing categories (excluding the current one)
+        tree = db.get_tree()
+        existing_categories = [
+            n["name"] for n in tree 
+            if n["node_type"] == "category" and n["node_id"] != category_node_id
+        ]
+        
+        for paper in papers_in_category:
+            prompt = get_prompt(
+                "classify",
+                existing_categories=", ".join(existing_categories) if existing_categories else "None yet",
+                title=paper["title"],
+                abstract=(paper.get("abstract") or "")[:2000],
+            )
+            
+            response = await client.chat.completions.create(
+                model=model,
+                messages=[{"role": "user", "content": prompt}],
+                max_tokens=50,
+                temperature=0.1,
+            )
+            new_category = response.choices[0].message.content.strip()
+            
+            # Only move if category is different
+            if new_category != category_name:
+                new_cat_node = next(
+                    (n for n in db.get_tree() if n["name"] == new_category and n["node_type"] == "category"),
+                    None
+                )
+                
+                if not new_cat_node:
+                    new_cat_node_id = f"cat_{uuid.uuid4().hex[:8]}"
+                    db.add_tree_node(
+                        node_id=new_cat_node_id,
+                        name=new_category,
+                        node_type="category",
+                        parent_id="root",
+                    )
+                else:
+                    new_cat_node_id = new_cat_node["node_id"]
+                
+                db.move_paper_to_category(paper["node_id"], new_cat_node_id)
+                all_reclassified.append({
+                    "arxiv_id": paper["arxiv_id"],
+                    "old_category": category_name,
+                    "new_category": new_category,
+                })
+                
+                if new_category not in existing_categories:
+                    existing_categories.append(new_category)
+    
+    return {
+        "message": f"Rebalanced {len(crowded_categories)} categories",
+        "categories_processed": [c["name"] for c in crowded_categories],
+        "reclassified": all_reclassified,
+    }
+
+
 @app.get("/papers/{arxiv_id}/cached-data")
 def get_paper_cached_data(arxiv_id: str) -> dict[str, Any]:
-    """Get all cached data for a paper (repos, refs, similar, queries).
+    """Get all cached data for a paper (repos, refs, similar, queries, structured_summary).
     
     Used to restore state when selecting a paper in the GUI.
     """
@@ -1492,9 +1589,12 @@ def get_paper_cached_data(arxiv_id: str) -> dict[str, Any]:
         raise HTTPException(status_code=404, detail=f"Paper {arxiv_id} not found")
     
     cached_data = db.get_paper_cached_data(paper["id"])
+    structured_summary = db.get_paper_structured_summary(paper["id"])
+    
     return {
         "arxiv_id": arxiv_id,
         "paper_id": paper["id"],
+        "structured_summary": structured_summary,
         **cached_data,
     }
 

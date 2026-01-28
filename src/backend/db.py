@@ -125,6 +125,33 @@ def update_paper_summary(paper_id: int, summary: str) -> None:
             conn.commit()
 
 
+def update_paper_structured_summary(paper_id: int, structured_summary: dict) -> None:
+    """Update paper structured summary (detailed analysis)."""
+    import json
+    with get_db() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "UPDATE papers SET structured_summary = %s WHERE id = %s",
+                (json.dumps(structured_summary), paper_id)
+            )
+            conn.commit()
+
+
+def get_paper_structured_summary(paper_id: int) -> Optional[dict]:
+    """Get paper structured summary."""
+    import json
+    with get_db() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT structured_summary FROM papers WHERE id = %s",
+                (paper_id,)
+            )
+            row = cur.fetchone()
+            if row and row[0]:
+                return row[0] if isinstance(row[0], dict) else json.loads(row[0])
+            return None
+
+
 def find_similar_papers(embedding: list[float], limit: int = 5, exclude_id: Optional[int] = None) -> list[dict[str, Any]]:
     """Find similar papers by embedding using cosine distance."""
     import numpy as np
@@ -230,6 +257,23 @@ def update_tree_node_name(node_id: str, name: str) -> None:
                 (name, node_id)
             )
             conn.commit()
+
+
+def get_all_categories_with_counts() -> list[dict[str, Any]]:
+    """Get all categories with their paper counts."""
+    with get_db() as conn:
+        with conn.cursor(cursor_factory=RealDictCursor) as cur:
+            cur.execute(
+                """
+                SELECT c.node_id, c.name, COUNT(p.node_id) as paper_count
+                FROM tree_nodes c
+                LEFT JOIN tree_nodes p ON p.parent_id = c.node_id AND p.node_type = 'paper'
+                WHERE c.node_type = 'category'
+                GROUP BY c.node_id, c.name
+                ORDER BY paper_count DESC
+                """
+            )
+            return [dict(row) for row in cur.fetchall()]
 
 
 def get_category_paper_count(category_name: str) -> int:
