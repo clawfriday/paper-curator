@@ -280,6 +280,16 @@ def _get_ui_config() -> dict[str, Any]:
     }
 
 
+def _get_classification_config() -> dict[str, Any]:
+    """Get classification configuration."""
+    config = _load_config()
+    classification = config.get("classification", {})
+    return {
+        "category_threshold": int(classification.get("category_threshold", 10)),
+        "auto_reclassify_enabled": bool(classification.get("auto_reclassify_enabled", True)),
+    }
+
+
 def _get_external_apis_config() -> dict[str, Any]:
     """Get external APIs configuration."""
     config = _load_config()
@@ -852,7 +862,10 @@ async def embed(payload: EmbedAbstractRequest) -> dict[str, Any]:
 
 @app.post("/qa")
 def qa(payload: QaRequest) -> dict[str, Any]:
-    """Answer a question about a paper. Uses cached index if arxiv_id provided."""
+    """Answer a question about a paper. Uses cached index if arxiv_id provided.
+    
+    Persists the query and answer to the database for later retrieval.
+    """
     endpoint_config = _get_endpoint_config()
     base_url = endpoint_config["llm_base_url"]
     embed_base_url = endpoint_config["embedding_base_url"]
@@ -874,6 +887,13 @@ def qa(payload: QaRequest) -> dict[str, Any]:
         embed_model,
         arxiv_id=payload.arxiv_id,
     )
+    
+    # Persist query to database if arxiv_id provided
+    if payload.arxiv_id:
+        paper = db.get_paper_by_arxiv_id(payload.arxiv_id)
+        if paper:
+            db.add_query(paper["id"], payload.question, answer, model)
+    
     return {"answer": answer, "used_cache": has_cache}
 
 
@@ -1113,8 +1133,11 @@ async def reabbreviate_all_papers() -> dict[str, Any]:
 # =============================================================================
 
 @app.post("/papers/save")
-def save_paper(payload: SavePaperRequest) -> dict[str, Any]:
-    """Save a paper to the database and add it to the tree."""
+async def save_paper(payload: SavePaperRequest) -> dict[str, Any]:
+    """Save a paper to the database and add it to the tree.
+    
+    If the target category exceeds the threshold, triggers auto-reclassification.
+    """
     # Create paper in DB
     paper_id = db.create_paper(
         arxiv_id=payload.arxiv_id,
@@ -1156,7 +1179,85 @@ def save_paper(payload: SavePaperRequest) -> dict[str, Any]:
         paper_id=paper_id,
     )
     
-    return {"paper_id": paper_id, "node_id": paper_node_id, "display_name": display_name}
+    # Check if auto-reclassification is needed
+    reclassified = []
+    classification_config = _get_classification_config()
+    if classification_config["auto_reclassify_enabled"]:
+        paper_count = db.get_category_paper_count_by_id(category_node_id)
+        threshold = classification_config["category_threshold"]
+        
+        if paper_count > threshold:
+            # Get all papers in the overcrowded category
+            papers_in_category = db.get_papers_in_category(category_node_id)
+            
+            # Get existing categories (excluding the current one)
+            existing_categories = [
+                n["name"] for n in tree 
+                if n["node_type"] == "category" and n["node_id"] != category_node_id
+            ]
+            
+            # Reclassify each paper
+            endpoint_config = _get_endpoint_config()
+            base_url = endpoint_config["llm_base_url"]
+            api_key = endpoint_config["api_key"]
+            model = _resolve_model(base_url, api_key)
+            client = _get_async_openai_client(base_url, api_key)
+            
+            for paper in papers_in_category:
+                # Ask LLM for more specific category
+                prompt = get_prompt(
+                    "classify",
+                    existing_categories=", ".join(existing_categories) if existing_categories else "None yet",
+                    title=paper["title"],
+                    abstract=(paper.get("abstract") or "")[:2000],
+                )
+                
+                response = await client.chat.completions.create(
+                    model=model,
+                    messages=[{"role": "user", "content": prompt}],
+                    max_tokens=50,
+                    temperature=0.1,
+                )
+                new_category = response.choices[0].message.content.strip()
+                
+                # Only move if category is different
+                if new_category != payload.category:
+                    # Check if new category exists
+                    new_cat_node = next(
+                        (n for n in db.get_tree() if n["name"] == new_category and n["node_type"] == "category"),
+                        None
+                    )
+                    
+                    if not new_cat_node:
+                        # Create new category
+                        new_cat_node_id = f"cat_{uuid.uuid4().hex[:8]}"
+                        db.add_tree_node(
+                            node_id=new_cat_node_id,
+                            name=new_category,
+                            node_type="category",
+                            parent_id="root",
+                        )
+                    else:
+                        new_cat_node_id = new_cat_node["node_id"]
+                    
+                    # Move paper to new category
+                    db.move_paper_to_category(paper["node_id"], new_cat_node_id)
+                    reclassified.append({
+                        "arxiv_id": paper["arxiv_id"],
+                        "old_category": payload.category,
+                        "new_category": new_category,
+                    })
+                    
+                    # Add new category to existing list for subsequent papers
+                    if new_category not in existing_categories:
+                        existing_categories.append(new_category)
+    
+    return {
+        "paper_id": paper_id,
+        "node_id": paper_node_id,
+        "display_name": display_name,
+        "reclassified": reclassified,
+    }
 
 
 @app.post("/papers/batch-ingest")
@@ -1377,6 +1478,24 @@ async def batch_ingest(payload: BatchIngestRequest) -> dict[str, Any]:
         "skipped": skip_count,
         "errors": error_count,
         "results": results,
+    }
+
+
+@app.get("/papers/{arxiv_id}/cached-data")
+def get_paper_cached_data(arxiv_id: str) -> dict[str, Any]:
+    """Get all cached data for a paper (repos, refs, similar, queries).
+    
+    Used to restore state when selecting a paper in the GUI.
+    """
+    paper = db.get_paper_by_arxiv_id(arxiv_id)
+    if not paper:
+        raise HTTPException(status_code=404, detail=f"Paper {arxiv_id} not found")
+    
+    cached_data = db.get_paper_cached_data(paper["id"])
+    return {
+        "arxiv_id": arxiv_id,
+        "paper_id": paper["id"],
+        **cached_data,
     }
 
 

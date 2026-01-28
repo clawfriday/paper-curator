@@ -180,7 +180,9 @@ export default function Home() {
   } | null>(null);
   const [references, setReferences] = useState<Reference[]>([]);
   const [similarPapers, setSimilarPapers] = useState<SimilarPaper[]>([]);
+  const [queryHistory, setQueryHistory] = useState<Array<{id: number; question: string; answer: string; created_at: string}>>([]);
   const [isLoadingFeature, setIsLoadingFeature] = useState(false);
+  const [isLoadingCachedData, setIsLoadingCachedData] = useState(false);
   const [hoveredRefId, setHoveredRefId] = useState<number | null>(null);
   const [refExplanations, setRefExplanations] = useState<Record<number, string>>({});
   const [featureLog, setFeatureLog] = useState<string[]>([]);
@@ -570,14 +572,50 @@ export default function Home() {
     return null;
   }, []);
 
-  const handleNodeClick = useCallback((nodeName: string) => {
+  const handleNodeClick = useCallback(async (nodeName: string) => {
     const node = findNode(taxonomy, nodeName);
     setSelectedNode(node);
     setActivePanel("details");
+    setStructuredAnalysis(null);
+    
+    // Reset states
     setRepos([]);
     setReferences([]);
     setSimilarPapers([]);
-    setStructuredAnalysis(null);
+    setQueryHistory([]);
+    setRefExplanations({});
+    
+    // Load cached data if this is a paper node
+    if (node?.attributes?.arxivId) {
+      setIsLoadingCachedData(true);
+      try {
+        const res = await fetch("/api/papers/cached-data", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ arxiv_id: node.attributes.arxivId }),
+        });
+        if (res.ok) {
+          const data = await res.json();
+          // Restore cached data
+          if (data.repos?.length > 0) setRepos(data.repos);
+          if (data.references?.length > 0) {
+            setReferences(data.references);
+            // Pre-populate cached explanations
+            const cached: Record<number, string> = {};
+            for (const ref of data.references) {
+              if (ref.explanation) cached[ref.id] = ref.explanation;
+            }
+            setRefExplanations(cached);
+          }
+          if (data.similar_papers?.length > 0) setSimilarPapers(data.similar_papers);
+          if (data.queries?.length > 0) setQueryHistory(data.queries);
+        }
+      } catch (e) {
+        console.error("Failed to load cached data:", e);
+      } finally {
+        setIsLoadingCachedData(false);
+      }
+    }
   }, [taxonomy, findNode]);
 
   const handleNodeRightClick = useCallback((event: React.MouseEvent, nodeName: string) => {
@@ -836,7 +874,8 @@ export default function Home() {
     setIsQuerying(true);
     setQueryAnswer("");
     clearFeatureLog();
-    logFeature(`Querying: "${queryInput}"`);
+    const question = queryInput.trim();
+    logFeature(`Querying: "${question}"`);
     logFeature("Searching paper for answer...");
     
     try {
@@ -846,14 +885,26 @@ export default function Home() {
         body: JSON.stringify({
           arxiv_id: selectedNode.attributes.arxivId,
           pdf_path: selectedNode.attributes.pdfPath || `storage/downloads/${selectedNode.attributes.arxivId}.pdf`,
-          question: queryInput,
+          question: question,
           context: "",
         }),
       });
       if (res.ok) {
         const data = await res.json();
-        setQueryAnswer(data.answer || "No answer found.");
+        const answer = data.answer || "No answer found.";
+        setQueryAnswer(answer);
         logFeature(`✓ Answer generated${data.used_cache ? " (cached index)" : ""}`);
+        
+        // Add to query history (backend already persisted it)
+        setQueryHistory(prev => [{
+          id: Date.now(), // Temporary ID, actual ID is in DB
+          question: question,
+          answer: answer,
+          created_at: new Date().toISOString(),
+        }, ...prev]);
+        
+        // Clear input for next question
+        setQueryInput("");
       } else {
         const errText = await res.text();
         logFeature(`✗ Error: ${res.status}`);
@@ -1788,6 +1839,34 @@ export default function Home() {
                       <p style={{ fontSize: "0.875rem", lineHeight: 1.6, whiteSpace: "pre-wrap", margin: 0 }}>
                         {queryAnswer}
                       </p>
+                    </div>
+                  )}
+                  
+                  {/* Query History */}
+                  {queryHistory.length > 0 && (
+                    <div style={{ marginTop: "1.5rem" }}>
+                      <h3 style={{ fontSize: "0.875rem", fontWeight: 600, marginBottom: "0.75rem", color: "#333" }}>
+                        Query History ({queryHistory.length})
+                      </h3>
+                      {queryHistory.map((q) => (
+                        <div key={q.id} style={{ 
+                          marginBottom: "0.75rem", 
+                          padding: "0.75rem", 
+                          backgroundColor: "#f5f5f5", 
+                          borderRadius: "4px",
+                          borderLeft: "3px solid #0070f3"
+                        }}>
+                          <div style={{ fontSize: "0.75rem", color: "#666", marginBottom: "0.25rem" }}>
+                            {new Date(q.created_at).toLocaleString()}
+                          </div>
+                          <div style={{ fontSize: "0.8125rem", fontWeight: 500, marginBottom: "0.5rem" }}>
+                            Q: {q.question}
+                          </div>
+                          <div style={{ fontSize: "0.8125rem", color: "#444", whiteSpace: "pre-wrap" }}>
+                            A: {q.answer}
+                          </div>
+                        </div>
+                      ))}
                     </div>
                   )}
                 </div>

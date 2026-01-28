@@ -247,6 +247,45 @@ def get_category_paper_count(category_name: str) -> int:
             return cur.fetchone()[0]
 
 
+def get_category_paper_count_by_id(category_node_id: str) -> int:
+    """Get number of papers in a category by node_id."""
+    with get_db() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT COUNT(*) FROM tree_nodes WHERE parent_id = %s AND node_type = 'paper'",
+                (category_node_id,)
+            )
+            return cur.fetchone()[0]
+
+
+def get_papers_in_category(category_node_id: str) -> list[dict[str, Any]]:
+    """Get all papers in a category with their details."""
+    with get_db() as conn:
+        with conn.cursor(cursor_factory=RealDictCursor) as cur:
+            cur.execute(
+                """
+                SELECT tn.node_id, tn.name as display_name, p.*
+                FROM tree_nodes tn
+                JOIN papers p ON tn.paper_id = p.id
+                WHERE tn.parent_id = %s AND tn.node_type = 'paper'
+                ORDER BY tn.position
+                """,
+                (category_node_id,)
+            )
+            return [dict(row) for row in cur.fetchall()]
+
+
+def move_paper_to_category(paper_node_id: str, new_category_node_id: str) -> None:
+    """Move a paper to a different category."""
+    with get_db() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "UPDATE tree_nodes SET parent_id = %s WHERE node_id = %s",
+                (new_category_node_id, paper_node_id)
+            )
+            conn.commit()
+
+
 # =============================================================================
 # Repo Cache
 # =============================================================================
@@ -367,3 +406,54 @@ def get_cached_similar_papers(paper_id: int) -> list[dict[str, Any]]:
                 (paper_id,)
             )
             return [dict(row) for row in cur.fetchall()]
+
+
+# =============================================================================
+# Query History
+# =============================================================================
+
+def add_query(
+    paper_id: int,
+    question: str,
+    answer: str,
+    model: Optional[str] = None,
+) -> int:
+    """Save a QA query and return its ID."""
+    with get_db() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                INSERT INTO paper_queries (paper_id, question, answer, model)
+                VALUES (%s, %s, %s, %s)
+                RETURNING id
+                """,
+                (paper_id, question, answer, model)
+            )
+            query_id = cur.fetchone()[0]
+            conn.commit()
+            return query_id
+
+
+def get_queries(paper_id: int) -> list[dict[str, Any]]:
+    """Get query history for a paper."""
+    with get_db() as conn:
+        with conn.cursor(cursor_factory=RealDictCursor) as cur:
+            cur.execute(
+                "SELECT * FROM paper_queries WHERE paper_id = %s ORDER BY created_at DESC",
+                (paper_id,)
+            )
+            return [dict(row) for row in cur.fetchall()]
+
+
+# =============================================================================
+# Get All Cached Data for a Paper
+# =============================================================================
+
+def get_paper_cached_data(paper_id: int) -> dict[str, Any]:
+    """Get all cached data for a paper (repos, refs, similar, queries)."""
+    return {
+        "repos": get_cached_repos(paper_id),
+        "references": get_references(paper_id),
+        "similar_papers": get_cached_similar_papers(paper_id),
+        "queries": get_queries(paper_id),
+    }

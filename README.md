@@ -186,12 +186,13 @@ This follows your ordering: **(1) package OSS as FastAPI services**, **(2) build
 - [x] the prompt on "abbreviation" should be less restrictive. Currently the technical report for Deepseek v3.2 is summarized as Deepseek v3, which conflicts with actual Deepseek v3 technical report
 - [x] to breakdown the paper summary query into multile queries, each query should only focus on on one question. **Implemented via `/qa/structured` endpoint with full parallelization (asyncio.gather for all 20 aspect queries)**
 - [x] the summary under 'Details' should be displayed in sections, each section contains the answer to one of the queries earlier. Each section should be collapsible
-- [ ] currently, the auto-reclassification wasn't triggered, even when the parent node (e.g. "Natural Language Process") is getting crowed
-- [ ] the outcome of the following should be persisted into the database, and reloaded into GUI whenever the server restarts, including the following
-  - repos
-  - refs
-  - similar
-  - query
+- [x] currently, the auto-reclassification wasn't triggered, even when the parent node (e.g. "Natural Language Process") is getting crowed. **Fixed**: Auto-reclassification now triggers when a category exceeds `category_threshold` (default 10) in config. Classification uses LLM with dynamic category generation - it can reuse existing categories or create new ones based on paper content.
+- [x] the outcome of the following should be persisted into the database, and reloaded into GUI whenever the server restarts, including the following:
+  - details: stored in `papers.summary` column
+  - repos: stored in `repo_cache` table
+  - refs: stored in `paper_references` table  
+  - similar: stored in `similar_papers_cache` table
+  - query: **NEW** stored in `paper_queries` table, loaded via `/papers/{arxiv_id}/cached-data` endpoint
 
 ### Milestone 9 - add QA to summary
 - Inside query window, each historical query and response should be individually selectable, and multiple of them can be selected together. Once selection is done, a button 'add to details' appears (which grayed out when nothing selected), once pressed, it will try to add the selected content into the relevant sections inside Details/Summary

@@ -28,6 +28,15 @@ ui:
   tree_auto_save_interval_ms: 30000  # 30 seconds
 
 # =============================================================================
+# Classification settings
+# =============================================================================
+classification:
+  # Max papers per category before triggering auto-reclassification
+  category_threshold: 10
+  # Enable auto-reclassification when threshold exceeded
+  auto_reclassify_enabled: true
+
+# =============================================================================
 # External API settings
 # =============================================================================
 external_apis:
