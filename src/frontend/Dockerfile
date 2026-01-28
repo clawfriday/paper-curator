@@ -3,8 +3,11 @@ FROM node:20-slim AS base
 # Install dependencies stage
 FROM base AS deps
 WORKDIR /app
-COPY package.json ./
-RUN npm install
+# Copy both package.json and package-lock.json for reproducible builds
+COPY package.json package-lock.json* ./
+# Use npm ci for faster, reliable, reproducible builds (uses package-lock.json)
+# Falls back to npm install if package-lock.json is missing
+RUN npm ci || npm install
 
 # Build stage
 FROM base AS builder
