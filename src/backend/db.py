@@ -248,6 +248,21 @@ def delete_tree_node(node_id: str) -> None:
             conn.commit()
 
 
+def delete_paper(paper_id: int) -> None:
+    """Delete a paper and all its associated data.
+    
+    CASCADE constraints will automatically delete:
+    - paper_references (source_paper_id)
+    - similar_papers_cache (paper_id)
+    - repo_cache (paper_id)
+    - paper_queries (paper_id)
+    """
+    with get_db() as conn:
+        with conn.cursor() as cur:
+            cur.execute("DELETE FROM papers WHERE id = %s", (paper_id,))
+            conn.commit()
+
+
 def update_tree_node_name(node_id: str, name: str) -> None:
     """Update a tree node's display name."""
     with get_db() as conn:

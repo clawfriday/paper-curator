@@ -459,6 +459,25 @@ export default function Home() {
     published = resolveData.published;
     logIngest(`Found: ${title}`);
     logIngest(`arXiv ID: ${arxivId}`);
+    
+    // Check for duplicate
+    const checkDupRes = await fetch("/api/papers/cached-data", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ arxiv_id: arxivId }),
+    });
+    if (checkDupRes.ok) {
+      logIngest(`⚠️ Paper already exists in database!`);
+      logIngest(`Skipping ingestion - paper ${arxivId} was previously ingested.`);
+      updateStep(0, { status: "done", message: `${title} (already exists)` });
+      // Mark remaining steps as skipped
+      for (let i = 1; i < 7; i++) {
+        updateStep(i, { status: "done", message: "Skipped (duplicate)" });
+      }
+      setIsIngesting(false);
+      return;
+    }
+    
     updateStep(0, { status: "done", message: title });
 
     // Step 2: Download
@@ -689,6 +708,49 @@ export default function Home() {
       });
     }
   }, [taxonomy, findNode]);
+
+  const handleRemoveNode = async (node: PaperNode) => {
+    if (!node.attributes?.arxivId) return;
+    
+    const arxivId = node.attributes.arxivId;
+    const confirmed = window.confirm(
+      `Are you sure you want to remove "${node.name}"?\n\nThis will permanently delete:\n- The paper from the database\n- All associated references, queries, and similar papers\n- The tree node\n\nThis action cannot be undone.`
+    );
+    
+    if (!confirmed) return;
+    
+    clearFeatureLog();
+    logFeature(`Removing paper: ${arxivId}...`);
+    
+    try {
+      const res = await fetch("/api/papers/delete", {
+        method: "DELETE",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ arxiv_id: arxivId }),
+      });
+      
+      if (res.ok) {
+        logFeature(`✓ Paper ${arxivId} removed successfully`);
+        // Reload tree to reflect changes
+        const treeRes = await fetch("/api/tree");
+        if (treeRes.ok) {
+          const treeData = await treeRes.json();
+          setTaxonomy(treeData);
+        }
+        // Clear selection if we just deleted the selected node
+        if (selectedNode?.attributes?.arxivId === arxivId) {
+          setSelectedNode(null);
+          setActivePanel("details");
+        }
+      } else {
+        const errText = await res.text();
+        logFeature(`✗ Error: ${res.status} - ${errText}`);
+      }
+    } catch (e) {
+      logFeature(`✗ Error: ${e}`);
+    }
+    logFeature("Done");
+  };
 
   // Feature handlers
   const handleFindRepos = async (node: PaperNode) => {
@@ -1374,6 +1436,22 @@ export default function Home() {
             onMouseLeave={(e) => (e.currentTarget.style.backgroundColor = "white")}
           >
             <span>🔍</span> Find Similar Papers
+          </div>
+          <div
+            style={{ 
+              padding: "0.75rem 1rem", 
+              cursor: "pointer", 
+              display: "flex", 
+              alignItems: "center", 
+              gap: "0.5rem",
+              borderTop: "1px solid #eee",
+              color: "#dc2626",
+            }}
+            onClick={() => { handleRemoveNode(contextMenu.node!); setContextMenu({ ...contextMenu, visible: false }); }}
+            onMouseEnter={(e) => (e.currentTarget.style.backgroundColor = "#fef2f2")}
+            onMouseLeave={(e) => (e.currentTarget.style.backgroundColor = "white")}
+          >
+            <span>🗑️</span> Remove Paper
           </div>
         </div>
       )}

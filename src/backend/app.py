@@ -1771,6 +1771,34 @@ def delete_tree_node(node_id: str) -> dict[str, str]:
     return {"status": "ok"}
 
 
+@app.delete("/papers/{arxiv_id}")
+def delete_paper(arxiv_id: str) -> dict[str, Any]:
+    """Delete a paper and its tree node.
+    
+    Removes the paper from the database (which cascades to delete
+    all associated data like references, similar papers, queries, repos)
+    and removes the tree node.
+    """
+    paper = db.get_paper_by_arxiv_id(arxiv_id)
+    if not paper:
+        raise HTTPException(status_code=404, detail=f"Paper {arxiv_id} not found")
+    
+    # Construct node_id (format: paper_XXXX_XXXXXvX where dots become underscores)
+    node_id = f"paper_{arxiv_id.replace('.', '_')}"
+    
+    # Delete paper (cascades to all related data)
+    db.delete_paper(paper["id"])
+    
+    # Delete tree node
+    db.delete_tree_node(node_id)
+    
+    return {
+        "status": "ok",
+        "deleted_arxiv_id": arxiv_id,
+        "deleted_paper_id": paper["id"],
+    }
+
+
 class PrefetchRequest(BaseModel):
     arxiv_id: str
     title: str

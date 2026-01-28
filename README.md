@@ -193,10 +193,13 @@ This follows your ordering: **(1) package OSS as FastAPI services**, **(2) build
   - refs: stored in `paper_references` table  
   - similar: stored in `similar_papers_cache` table
   - query: **NEW** stored in `paper_queries` table, loaded via `/papers/{arxiv_id}/cached-data` endpoint
-- use a mechanism, to avoid ingesting duplic
+- [x] Duplicate detection: after resolving arXiv ID, check if paper already exists in database; if so, skip ingestion with "already exists" message
+- [x] Remove node: right-click menu on paper nodes includes "Remove Paper" option (red, with confirmation dialog); deletes paper and all associated data via `DELETE /papers/{arxiv_id}` endpoint
+- the formulas are not displayed correctly inside the 
+
 
 
 ### Milestone 9 - add QA to summary
 - [x] Query selection: each historical query in the Query tab has a checkbox; clicking the row or checkbox toggles selection
 - [x] "Add to Details" button: appears below query history, disabled when nothing selected; merges selected Q&A into summary using LLM (`/summary/merge` endpoint with `merge_qa_to_summary` prompt)
-- [x] "Dedup" button: in Details panel action buttons; removes duplicated content from summary using LLM (`/summary/dedup` endpoint with `dedup_summary` prompt)
+- [x] "Dedup" button: in Details panel action buttons; removes duplicated content from summary using LLM (`/summary/dedup` endpoint with `dedup_summary` prompt)ed 
