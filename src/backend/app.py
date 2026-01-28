@@ -348,6 +348,20 @@ def _get_paperqa_index_path(arxiv_id: str) -> pathlib.Path:
     return index_dir / f"{safe_id}.pkl"
 
 
+def _reset_litellm_callbacks() -> None:
+    """Reset LiteLLM callbacks to prevent accumulation.
+    
+    LiteLLM accumulates callbacks with each LLM call. When the limit (30) is
+    reached, it causes instability. This resets all callback lists.
+    """
+    import litellm
+    litellm.input_callback = []
+    litellm.success_callback = []
+    litellm.failure_callback = []
+    litellm._async_success_callback = []
+    litellm._async_failure_callback = []
+
+
 def _build_paperqa_settings(
     llm_model: str,
     embed_model: str,
@@ -705,35 +719,20 @@ async def summarize_structured(payload: StructuredSummarizeRequest) -> dict[str,
        - Rationale behind benefit
        - Quantifiable results
     3. Return structured sections
+    
+    Uses: PaperQA2 for document indexing and LLM queries
     """
     endpoint_config = _get_endpoint_config()
     base_url = endpoint_config["llm_base_url"]
     embed_base_url = endpoint_config["embedding_base_url"]
     api_key = endpoint_config["api_key"]
     
-    # Check endpoints
-    try:
-        model = f"openai/{_resolve_model(base_url, api_key)}"
-    except Exception as e:
-        raise HTTPException(status_code=503, detail=f"LLM endpoint not available: {e}")
+    model = f"openai/{_resolve_model(base_url, api_key)}"
+    embed_model = f"openai/{_resolve_model(embed_base_url, api_key)}"
     
-    try:
-        embed_model = f"openai/{_resolve_model(embed_base_url, api_key)}"
-    except Exception as e:
-        raise HTTPException(status_code=503, detail=f"Embedding endpoint not available: {e}")
+    _reset_litellm_callbacks()
     
-    # Reset LiteLLM callbacks to prevent accumulation
-    try:
-        import litellm
-        litellm.input_callback = []
-        litellm.success_callback = []
-        litellm.failure_callback = []
-        litellm._async_success_callback = []
-        litellm._async_failure_callback = []
-    except Exception:
-        pass
-    
-    # Step 1: Extract components
+    # Step 1: Extract components using PaperQA2
     extract_prompt = get_prompt("extract_components")
     components_raw = await _paperqa_answer_async(
         None,
@@ -747,35 +746,12 @@ async def summarize_structured(payload: StructuredSummarizeRequest) -> dict[str,
         arxiv_id=payload.arxiv_id,
     )
     
-    # Parse components JSON
-    try:
-        # Clean up response - find JSON array
-        import re
-        match = re.search(r'\[.*\]', components_raw, re.DOTALL)
-        if match:
-            components = json.loads(match.group())
-        else:
-            # Fallback: treat as single component
-            components = [components_raw.strip().strip('"\'')]
-    except json.JSONDecodeError:
-        components = [components_raw.strip().strip('"\'')]
+    # Parse components JSON - extract array from response
+    match = re.search(r'\[.*\]', components_raw, re.DOTALL)
+    components = json.loads(match.group()) if match else [components_raw.strip().strip('"\'')]
+    components = components or ["Main Contribution"]
     
-    if not components:
-        components = ["Main Contribution"]
-    
-    # Helper to reset LiteLLM callbacks
-    def _reset_litellm_callbacks():
-        try:
-            import litellm
-            litellm.input_callback = []
-            litellm.success_callback = []
-            litellm.failure_callback = []
-            litellm._async_success_callback = []
-            litellm._async_failure_callback = []
-        except Exception:
-            pass
-    
-    # Step 2: For each component, query 4 aspects sequentially (to avoid callback accumulation)
+    # Step 2: For each component, query 4 aspects sequentially
     async def analyze_component(component: str) -> dict[str, Any]:
         """Analyze a single component with 4 sequential queries."""
         result = {"component": component}
@@ -788,9 +764,7 @@ async def summarize_structured(payload: StructuredSummarizeRequest) -> dict[str,
         ]
         
         for aspect, prompt in aspects:
-            # Reset callbacks before each query
             _reset_litellm_callbacks()
-            
             answer = await _paperqa_answer_async(
                 None,
                 payload.pdf_path,
@@ -800,7 +774,7 @@ async def summarize_structured(payload: StructuredSummarizeRequest) -> dict[str,
                 api_key,
                 model,
                 embed_model,
-                arxiv_id=payload.arxiv_id,  # Reuses cached index
+                arxiv_id=payload.arxiv_id,
             )
             result[aspect] = answer.strip()
         
