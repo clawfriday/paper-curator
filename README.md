@@ -147,6 +147,8 @@ This follows your ordering: **(1) package OSS as FastAPI services**, **(2) build
   - Closer spacing between nodes (nodeSize 100x60, separation 1.0/1.2)
   - Scrollable tree container with gradient background
   - Color-coded nodes: dark gray (root), purple (categories), blue (papers)
+  - Each leaf-node (paper) currently are listed in a horizontal line, please place them into a semi-circle
+  - The fonts are still not very 
 
 ### Mileston 7 - Speedup (Complete)
 
@@ -195,8 +197,7 @@ This follows your ordering: **(1) package OSS as FastAPI services**, **(2) build
   - query: **NEW** stored in `paper_queries` table, loaded via `/papers/{arxiv_id}/cached-data` endpoint
 - [x] Duplicate detection: after resolving arXiv ID, check if paper already exists in database; if so, skip ingestion with "already exists" message
 - [x] Remove node: right-click menu on paper nodes includes "Remove Paper" option (red, with confirmation dialog); deletes paper and all associated data via `DELETE /papers/{arxiv_id}` endpoint
-- the formulas are not displayed correctly inside the 
-
+- [x] LaTeX formula rendering: added react-katex library to render LaTeX formulas in Details and Query panels; formulas in format \(...\) (inline) and \[...\] (block) are now properly rendered as mathematical notation
 
 
 ### Milestone 9 - add QA to summary

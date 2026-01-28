@@ -3,6 +3,8 @@
 import { useState, useCallback, useMemo, useEffect, useRef } from "react";
 import dynamic from "next/dynamic";
 import type { RawNodeDatum, CustomNodeElementProps } from "react-d3-tree";
+import { InlineMath, BlockMath } from "react-katex";
+import "katex/dist/katex.min.css";
 
 const Tree = dynamic(() => import("react-d3-tree"), { ssr: false });
 
@@ -67,6 +69,72 @@ interface UIConfig {
   hover_debounce_ms: number;
   max_similar_papers: number;
   tree_auto_save_interval_ms: number;
+}
+
+// Component to render text with LaTeX formulas
+function TextWithMath({ text, style }: { text: string; style?: React.CSSProperties }) {
+  // Split by lines first to preserve line breaks
+  const lines = text.split('\n');
+  
+  return (
+    <span style={style}>
+      {lines.map((line, lineIdx) => {
+        // Split each line by LaTeX patterns: \(...\) for inline and \[...\] for block
+        const parts: (string | { type: "inline" | "block"; content: string })[] = [];
+        let lastIndex = 0;
+        
+        // Match both inline \(...\) and block \[...\] math
+        const mathRegex = /(\\(?:\[|\())(.*?)(\\(?:\)|\]))/gs;
+        let match;
+        
+        while ((match = mathRegex.exec(line)) !== null) {
+          // Add text before the match
+          if (match.index > lastIndex) {
+            parts.push(line.substring(lastIndex, match.index));
+          }
+          
+          // Add the math content
+          const isBlock = match[1] === "\\[";
+          parts.push({
+            type: isBlock ? "block" : "inline",
+            content: match[2],
+          });
+          
+          lastIndex = match.index + match[0].length;
+        }
+        
+        // Add remaining text
+        if (lastIndex < line.length) {
+          parts.push(line.substring(lastIndex));
+        }
+        
+        // If no math found, return plain text
+        if (parts.length === 1 && typeof parts[0] === "string") {
+          return (
+            <span key={lineIdx}>
+              {parts[0]}
+              {lineIdx < lines.length - 1 && <br />}
+            </span>
+          );
+        }
+        
+        return (
+          <span key={lineIdx}>
+            {parts.map((part, idx) => {
+              if (typeof part === "string") {
+                return <span key={idx}>{part}</span>;
+              } else if (part.type === "block") {
+                return <BlockMath key={idx} math={part.content} />;
+              } else {
+                return <InlineMath key={idx} math={part.content} />;
+              }
+            })}
+            {lineIdx < lines.length - 1 && <br />}
+          </span>
+        );
+      })}
+    </span>
+  );
 }
 
 // Collapsible section component for structured summaries
@@ -1765,7 +1833,48 @@ export default function Home() {
                       <strong>Category:</strong> {selectedNode.attributes.category}
                     </p>
                   )}
-                  {selectedNode.attributes.summary && (() => {
+                  {/* Show structured analysis if available (from cached data), otherwise show regular summary */}
+                  {structuredAnalysis ? (
+                    <div>
+                      <h4 style={{ fontSize: "0.875rem", marginBottom: "0.5rem" }}>
+                        Detailed Analysis ({structuredAnalysis.components.length} components)
+                      </h4>
+                      {structuredAnalysis.sections.map((section, idx) => (
+                        <CollapsibleSection
+                          key={idx}
+                          title={section.component}
+                          defaultOpen={idx === 0}
+                        >
+                          <div style={{ fontSize: "0.8rem", lineHeight: 1.5 }}>
+                            <div style={{ marginBottom: "0.5rem" }}>
+                              <strong style={{ color: "#4f46e5" }}>Steps:</strong>
+                              <div style={{ whiteSpace: "pre-wrap", marginTop: "0.25rem" }}>
+                                <TextWithMath text={section.steps} />
+                              </div>
+                            </div>
+                            <div style={{ marginBottom: "0.5rem" }}>
+                              <strong style={{ color: "#059669" }}>Benefits:</strong>
+                              <div style={{ marginTop: "0.25rem" }}>
+                                <TextWithMath text={section.benefits} />
+                              </div>
+                            </div>
+                            <div style={{ marginBottom: "0.5rem" }}>
+                              <strong style={{ color: "#d97706" }}>Rationale:</strong>
+                              <div style={{ marginTop: "0.25rem" }}>
+                                <TextWithMath text={section.rationale} />
+                              </div>
+                            </div>
+                            <div>
+                              <strong style={{ color: "#dc2626" }}>Results:</strong>
+                              <div style={{ whiteSpace: "pre-wrap", marginTop: "0.25rem" }}>
+                                <TextWithMath text={section.results} />
+                              </div>
+                            </div>
+                          </div>
+                        </CollapsibleSection>
+                      ))}
+                    </div>
+                  ) : selectedNode.attributes.summary ? (() => {
                     // Try to parse as structured summary
                     let structured: { type: string; components: string[]; sections: Array<{
                       component: string;
@@ -1799,19 +1908,27 @@ export default function Home() {
                               <div style={{ fontSize: "0.8rem", lineHeight: 1.5 }}>
                                 <div style={{ marginBottom: "0.5rem" }}>
                                   <strong style={{ color: "#4f46e5" }}>Steps:</strong>
-                                  <div style={{ whiteSpace: "pre-wrap", marginTop: "0.25rem" }}>{section.steps}</div>
+                                  <div style={{ whiteSpace: "pre-wrap", marginTop: "0.25rem" }}>
+                                    <TextWithMath text={section.steps} />
+                                  </div>
                                 </div>
                                 <div style={{ marginBottom: "0.5rem" }}>
                                   <strong style={{ color: "#059669" }}>Benefits:</strong>
-                                  <div style={{ marginTop: "0.25rem" }}>{section.benefits}</div>
+                                  <div style={{ marginTop: "0.25rem" }}>
+                                    <TextWithMath text={section.benefits} />
+                                  </div>
                                 </div>
                                 <div style={{ marginBottom: "0.5rem" }}>
                                   <strong style={{ color: "#d97706" }}>Rationale:</strong>
-                                  <div style={{ marginTop: "0.25rem" }}>{section.rationale}</div>
+                                  <div style={{ marginTop: "0.25rem" }}>
+                                    <TextWithMath text={section.rationale} />
+                                  </div>
                                 </div>
                                 <div>
                                   <strong style={{ color: "#dc2626" }}>Results:</strong>
-                                  <div style={{ whiteSpace: "pre-wrap", marginTop: "0.25rem" }}>{section.results}</div>
+                                  <div style={{ whiteSpace: "pre-wrap", marginTop: "0.25rem" }}>
+                                    <TextWithMath text={section.results} />
+                                  </div>
                                 </div>
                               </div>
                             </CollapsibleSection>
@@ -1824,12 +1941,12 @@ export default function Home() {
                         <div>
                           <h4 style={{ fontSize: "0.875rem", marginBottom: "0.5rem" }}>Summary</h4>
                           <p style={{ fontSize: "0.875rem", lineHeight: 1.6, color: "#333", whiteSpace: "pre-wrap" }}>
-                            {selectedNode.attributes.summary}
+                            <TextWithMath text={selectedNode.attributes.summary} />
                           </p>
                         </div>
                       );
                     }
-                  })()}
+                  })() : null}
                   {/* Action buttons */}
                   <div style={{ display: "flex", gap: "0.5rem", marginTop: "1rem", flexWrap: "wrap" }}>
                     <button
@@ -1879,40 +1996,7 @@ export default function Home() {
                     </button>
                   </div>
                   
-                  {/* Structured Analysis Results */}
-                  {structuredAnalysis && (
-                    <div style={{ marginTop: "1rem" }}>
-                      <h4 style={{ fontSize: "0.875rem", marginBottom: "0.5rem" }}>
-                        Detailed Analysis ({structuredAnalysis.components.length} components)
-                      </h4>
-                      {structuredAnalysis.sections.map((section, idx) => (
-                        <CollapsibleSection
-                          key={idx}
-                          title={section.component}
-                          defaultOpen={idx === 0}
-                        >
-                          <div style={{ fontSize: "0.8rem", lineHeight: 1.5 }}>
-                            <div style={{ marginBottom: "0.5rem" }}>
-                              <strong style={{ color: "#4f46e5" }}>Steps:</strong>
-                              <div style={{ whiteSpace: "pre-wrap", marginTop: "0.25rem" }}>{section.steps}</div>
-                            </div>
-                            <div style={{ marginBottom: "0.5rem" }}>
-                              <strong style={{ color: "#059669" }}>Benefits:</strong>
-                              <div style={{ marginTop: "0.25rem" }}>{section.benefits}</div>
-                            </div>
-                            <div style={{ marginBottom: "0.5rem" }}>
-                              <strong style={{ color: "#d97706" }}>Rationale:</strong>
-                              <div style={{ marginTop: "0.25rem" }}>{section.rationale}</div>
-                            </div>
-                            <div>
-                              <strong style={{ color: "#dc2626" }}>Results:</strong>
-                              <div style={{ whiteSpace: "pre-wrap", marginTop: "0.25rem" }}>{section.results}</div>
-                            </div>
-                          </div>
-                        </CollapsibleSection>
-                      ))}
-                    </div>
-                  )}
+                  {/* Note: Structured Analysis is now shown above in the summary section */}
                 </div>
               ) : selectedNode ? (
                 <div>
@@ -2131,7 +2215,7 @@ export default function Home() {
                     <div style={{ marginTop: "1rem", padding: "0.75rem", backgroundColor: "#f9f9f9", borderRadius: "4px" }}>
                       <h4 style={{ fontSize: "0.75rem", marginTop: 0, marginBottom: "0.5rem", color: "#666" }}>Answer:</h4>
                       <p style={{ fontSize: "0.875rem", lineHeight: 1.6, whiteSpace: "pre-wrap", margin: 0 }}>
-                        {queryAnswer}
+                        <TextWithMath text={queryAnswer} />
                       </p>
                     </div>
                   )}
@@ -2177,7 +2261,7 @@ export default function Home() {
                                 Q: {q.question}
                               </div>
                               <div style={{ fontSize: "0.8125rem", color: "#444", whiteSpace: "pre-wrap" }}>
-                                A: {q.answer}
+                                A: <TextWithMath text={q.answer} />
                               </div>
                             </div>
                           </div>
