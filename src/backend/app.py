@@ -22,6 +22,7 @@ from paperqa.settings import (
     AnswerSettings,
     MultimodalOptions,
     ParsingSettings,
+    PromptSettings,
     Settings,
     make_default_litellm_model_list_settings,
 )
@@ -381,6 +382,10 @@ def _build_paperqa_settings(
         evidence_skip_summary=pqa_config["evidence_skip_summary"],
         evidence_relevance_score_cutoff=pqa_config["evidence_relevance_score_cutoff"],
     )
+    # Disable JSON mode to avoid parsing issues with non-OpenAI models
+    # PaperQA2 expects specific JSON format that some models don't produce correctly
+    prompt_settings = PromptSettings(use_json=False)
+    
     return Settings(
         llm=llm_model,
         llm_config=llm_config,
@@ -396,6 +401,7 @@ def _build_paperqa_settings(
         },
         parsing=parsing_settings,
         answer=answer_settings,
+        prompts=prompt_settings,
     )
 
 
