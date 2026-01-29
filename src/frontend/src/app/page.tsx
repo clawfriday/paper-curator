@@ -163,6 +163,9 @@ function PaperNodeComponent({ data }: { data: { node: PaperNode; onNodeClick: (n
   const isRoot = node.name === "AI Papers";
   const [showHoverPreview, setShowHoverPreview] = useState(false);
   
+  // Check if this category has category children (not just papers)
+  const hasCategoryChildren = isCategory && node.children && node.children.some(child => !child.attributes || !child.attributes.arxivId);
+  
   // Show full name, wrap into multiple lines if needed
   const name = node.name;
   const maxCharsPerLine = 14;
@@ -253,32 +256,103 @@ function PaperNodeComponent({ data }: { data: { node: PaperNode; onNodeClick: (n
           <div style={{ position: "absolute", bottom: "-4px", left: "50%", transform: "translateX(-50%)", width: 0, height: 0, borderLeft: "4px solid transparent", borderRight: "4px solid transparent", borderTop: "4px solid rgba(0, 0, 0, 0.9)" }} />
         </div>
       )}
-      {/* Source handle (right side) - for edges going out */}
-      <Handle
-        type="source"
-        position={Position.Right}
-        id="right"
-        style={{
-          right: -5,
-          width: 10,
-          height: 10,
-          backgroundColor: strokeColor,
-          border: `2px solid ${fillColor}`,
-        }}
-      />
-      {/* Target handle (left side) - for edges coming in */}
-      <Handle
-        type="target"
-        position={Position.Left}
-        id="left"
-        style={{
-          left: -5,
-          width: 10,
-          height: 10,
-          backgroundColor: strokeColor,
-          border: `2px solid ${fillColor}`,
-        }}
-      />
+      {/* Handles - position depends on node type */}
+      {/* Categories: Bottom/Top handles (for category-to-category connections) OR Left handles (for category-to-paper) */}
+      {isCategory && (
+        <>
+          {hasCategoryChildren ? (
+            // Category has category children: use bottom/top handles
+            <>
+              <Handle
+                type="source"
+                position={Position.Bottom}
+                id="bottom"
+                style={{
+                  bottom: -5,
+                  left: "50%",
+                  transform: "translateX(-50%)",
+                  width: 10,
+                  height: 10,
+                  backgroundColor: strokeColor,
+                  border: `2px solid ${fillColor}`,
+                }}
+              />
+              <Handle
+                type="target"
+                position={Position.Top}
+                id="top"
+                style={{
+                  top: -5,
+                  left: "50%",
+                  transform: "translateX(-50%)",
+                  width: 10,
+                  height: 10,
+                  backgroundColor: strokeColor,
+                  border: `2px solid ${fillColor}`,
+                }}
+              />
+            </>
+          ) : (
+            // Bottom-level category (only has papers): use left handle
+            <Handle
+              type="source"
+              position={Position.Left}
+              id="left"
+              style={{
+                left: -5,
+                width: 10,
+                height: 10,
+                backgroundColor: strokeColor,
+                border: `2px solid ${fillColor}`,
+              }}
+            />
+          )}
+          {/* All categories can receive connections from top */}
+          <Handle
+            type="target"
+            position={Position.Top}
+            id="top"
+            style={{
+              top: -5,
+              left: "50%",
+              transform: "translateX(-50%)",
+              width: 10,
+              height: 10,
+              backgroundColor: strokeColor,
+              border: `2px solid ${fillColor}`,
+            }}
+          />
+        </>
+      )}
+      {/* Papers: Left handles (for category-to-paper connections) */}
+      {hasArxivId && (
+        <>
+          <Handle
+            type="source"
+            position={Position.Left}
+            id="left-source"
+            style={{
+              left: -5,
+              width: 10,
+              height: 10,
+              backgroundColor: strokeColor,
+              border: `2px solid ${fillColor}`,
+            }}
+          />
+          <Handle
+            type="target"
+            position={Position.Left}
+            id="left"
+            style={{
+              left: -5,
+              width: 10,
+              height: 10,
+              backgroundColor: strokeColor,
+              border: `2px solid ${fillColor}`,
+            }}
+          />
+        </>
+      )}
       {lines.map((line, i) => (
         <div
           key={i}
@@ -306,14 +380,18 @@ const nodeTypes: NodeTypes = {
 };
 
 // Convert PaperNode tree to React Flow nodes and edges
+// Layout: Categories on rows by level, papers in columns below their category
 function convertToReactFlow(
   node: PaperNode,
   parentId: string | null,
-  position: { x: number; y: number },
+  depth: number, // Track depth level (0 = root, 1 = first level categories, etc.)
+  rowY: number, // Y position for this row (categories at same depth share same Y)
+  columnX: number, // X position for this column (papers stack vertically in columns)
   onNodeClick: (name: string) => void,
   onNodeRightClick: (e: React.MouseEvent, name: string) => void,
-  collapsedCategories: Set<string>
-): { nodes: Node[]; edges: Edge[]; nextY: number; width: number } {
+  collapsedCategories: Set<string>,
+  levelPositions: Map<number, { currentX: number; rowY: number }> // Track X positions per level
+): { nodes: Node[]; edges: Edge[]; columnWidth: number; columnHeight: number } {
   const nodes: Node[] = [];
   const edges: Edge[] = [];
   const nodeId = parentId ? `${parentId}-${node.name}` : node.name;
@@ -323,13 +401,155 @@ function convertToReactFlow(
   // Create node
   const nodeWidth = 130;
   const nodeHeight = 50;
-  const horizontalSpacing = 250; // Space between parent and children
-  const verticalSpacing = 80; // Space between sibling nodes
+  const horizontalSpacing = 200; // Space between sibling categories (horizontal)
+  const verticalSpacing = 80; // Space between papers (vertical)
+  const rowSpacing = 150; // Space between category rows
+  
+  // Determine handle positions based on node type
+  // Categories: Bottom/Top handles (for category-to-category connections)
+  // Papers: Left handles (for category-to-paper connections)
+  const sourcePosition = isCategory ? Position.Bottom : Position.Left;
+  const targetPosition = isCategory ? Position.Top : Position.Left;
+  
+  // Process children first to calculate their bounds for centering
+  let columnWidth = nodeWidth;
+  let columnHeight = nodeHeight;
+  let childrenMinX = Infinity;
+  let childrenMaxX = -Infinity;
+  let finalNodeX = columnX; // Will be updated if centering is needed
+  
+  if (!isCollapsed && node.children && node.children.length > 0) {
+    // Separate children into categories and papers
+    const categoryChildren: PaperNode[] = [];
+    const paperChildren: PaperNode[] = [];
+    
+    node.children.forEach(child => {
+      const childIsCategory = !child.attributes || !child.attributes.arxivId;
+      if (childIsCategory) {
+        categoryChildren.push(child);
+      } else {
+        paperChildren.push(child);
+      }
+    });
+    
+    // Position categories horizontally on the next row (same level)
+    if (categoryChildren.length > 0) {
+      const nextDepth = depth + 1;
+      const nextRowY = rowY + rowSpacing;
+      
+      // Initialize level position if needed
+      if (!levelPositions.has(nextDepth)) {
+        levelPositions.set(nextDepth, { currentX: 50, rowY: nextRowY });
+      }
+      
+      const levelPos = levelPositions.get(nextDepth)!;
+      let currentX = levelPos.currentX;
+      
+      categoryChildren.forEach((child) => {
+        const childX = currentX;
+        const result = convertToReactFlow(
+          child,
+          nodeId,
+          nextDepth,
+          nextRowY,
+          childX,
+          onNodeClick,
+          onNodeRightClick,
+          collapsedCategories,
+          levelPositions
+        );
+        
+        nodes.push(...result.nodes);
+        edges.push(...result.edges);
+        
+        // Create edge from parent to child category: bottom of parent to top of child
+        // Parent has category children, so use bottom handle
+        const childNodeId = `${nodeId}-${child.name}`;
+        edges.push({
+          id: `${nodeId}-${childNodeId}`,
+          source: nodeId,
+          target: childNodeId,
+          sourceHandle: "bottom",
+          targetHandle: "top",
+          type: "smoothstep",
+          animated: false,
+          style: { stroke: "#94a3b8", strokeWidth: 2 },
+        });
+        
+        // Track children bounds for centering
+        childrenMinX = Math.min(childrenMinX, childX);
+        childrenMaxX = Math.max(childrenMaxX, childX + result.columnWidth);
+        
+        // Move to next position horizontally
+        currentX += result.columnWidth + horizontalSpacing;
+        levelPos.currentX = currentX; // Update for next sibling
+      });
+    }
+    
+    // Position papers vertically below this category (in a column)
+    if (paperChildren.length > 0) {
+      const paperStartY = rowY + nodeHeight + verticalSpacing;
+      let currentPaperY = paperStartY;
+      
+      // Papers are in a column, so they share the same X (columnX)
+      // Track bounds for centering
+      childrenMinX = Math.min(childrenMinX, columnX);
+      childrenMaxX = Math.max(childrenMaxX, columnX + nodeWidth);
+      
+      paperChildren.forEach((child, index) => {
+        const result = convertToReactFlow(
+          child,
+          nodeId,
+          depth + 1000, // Use high depth to indicate paper (not a category level)
+          currentPaperY, // Pass Y position directly for papers
+          columnX, // X position: papers are in columns, use parent's columnX
+          onNodeClick,
+          onNodeRightClick,
+          collapsedCategories,
+          levelPositions
+        );
+        
+        nodes.push(...result.nodes);
+        edges.push(...result.edges);
+        
+        // Create edge from parent to child paper: left of parent to left of leaf
+        // Parent only has papers (bottom-level category), so use left handle
+        const childNodeId = `${nodeId}-${child.name}`;
+        edges.push({
+          id: `${nodeId}-${childNodeId}`,
+          source: nodeId,
+          target: childNodeId,
+          sourceHandle: "left",
+          targetHandle: "left",
+          type: "smoothstep",
+          animated: false,
+          style: { stroke: "#94a3b8", strokeWidth: 2 },
+        });
+        
+        // Move to next paper position vertically
+        currentPaperY += result.columnHeight + verticalSpacing;
+        columnHeight = Math.max(columnHeight, currentPaperY - rowY);
+      });
+    }
+    
+    // Center parent node horizontally over its children (for categories only)
+    if (isCategory && (categoryChildren.length > 0 || paperChildren.length > 0) && childrenMinX !== Infinity && childrenMaxX !== -Infinity) {
+      const childrenCenterX = (childrenMinX + childrenMaxX) / 2;
+      finalNodeX = childrenCenterX - (nodeWidth / 2);
+      columnWidth = Math.max(nodeWidth, childrenMaxX - childrenMinX);
+    }
+  }
+  
+  // Position node: 
+  // - Categories: use rowY (same row for same depth), finalNodeX for X (centered over children)
+  // - Papers: use columnX for X, and if depth > 100, rowY parameter contains the Y position
+  const nodeX = finalNodeX; // Use finalNodeX which may be centered for categories
+  const nodeY = isCategory ? rowY : (depth > 100 ? rowY : rowY + nodeHeight + verticalSpacing); // Categories: rowY, Papers: if depth>100, rowY is Y position
   
   nodes.push({
     id: nodeId,
     type: "paperNode",
-    position: { x: position.x, y: position.y },
+    position: { x: nodeX, y: nodeY },
     data: { node, onNodeClick, onNodeRightClick },
     style: { 
       width: nodeWidth, 
@@ -338,61 +558,18 @@ function convertToReactFlow(
       outline: "none",
       boxShadow: "none",
     },
-    sourcePosition: Position.Right,
-    targetPosition: Position.Left,
+    sourcePosition,
+    targetPosition,
   });
   
-  // Add edge from parent if not root
-  if (parentId) {
-    edges.push({
-      id: `${parentId}-${nodeId}`,
-      source: parentId,
-      target: nodeId,
-      sourceHandle: "right",
-      targetHandle: "left",
-      type: "smoothstep",
-      animated: false,
-      style: { stroke: "#94a3b8", strokeWidth: 2 },
-    });
-  }
-  
-  // Process children if not collapsed
-  let childrenWidth = 0;
-  let childrenStartY = position.y;
-  
-  if (!isCollapsed && node.children && node.children.length > 0) {
-    // Position children vertically centered relative to parent
-    const totalChildrenHeight = (node.children.length - 1) * verticalSpacing;
-    const startY = position.y - (totalChildrenHeight / 2);
-    const childX = position.x + horizontalSpacing;
-    
-    node.children.forEach((child, index) => {
-      const childY = startY + (index * verticalSpacing);
-      
-      const result = convertToReactFlow(
-        child,
-        nodeId,
-        { x: childX, y: childY },
-        onNodeClick,
-        onNodeRightClick,
-        collapsedCategories
-      );
-      
-      nodes.push(...result.nodes);
-      edges.push(...result.edges);
-      childrenWidth = Math.max(childrenWidth, result.width);
-    });
-    
-    childrenStartY = startY + totalChildrenHeight + verticalSpacing;
-  }
-  
-  const totalWidth = horizontalSpacing + childrenWidth;
+  // Note: Edges are created when processing parent's children, not here
+  // This ensures we know what type of children the parent has
   
   return { 
     nodes, 
     edges, 
-    nextY: Math.max(position.y + verticalSpacing, childrenStartY),
-    width: totalWidth > 0 ? totalWidth : nodeWidth,
+    columnWidth: columnWidth,
+    columnHeight: columnHeight,
   };
 }
 
@@ -1029,10 +1206,10 @@ export default function Home() {
     const allNodes: Node[] = [];
     const allEdges: Edge[] = [];
     
-    // Add root node "AI Papers"
+    // Add root node "AI Papers" on row 1
     const rootNodeId = taxonomy.name;
     const rootX = 50;
-    const rootY = 300;
+    const rootY = 50; // Row 1
     
     allNodes.push({
       id: rootNodeId,
@@ -1050,45 +1227,65 @@ export default function Home() {
         outline: "none",
         boxShadow: "none",
       },
-      sourcePosition: Position.Right,
-      targetPosition: Position.Left,
+      sourcePosition: Position.Bottom, // Root connects from bottom to top of categories
+      targetPosition: Position.Top,
     });
     
-    // Position categories to the right of root
-    const categoryX = rootX + 250;
-    const verticalSpacing = 80;
-    const categorySpacing = 200; // Increased spacing to prevent overlaps
+    // Track positions per level for horizontal layout
+    const levelPositions = new Map<number, { currentX: number; rowY: number }>();
+    levelPositions.set(1, { currentX: rootX + 250, rowY: rootY + 150 }); // Row 2: first level categories
     
-    // Calculate positions for categories to prevent overlaps
-    let currentY = 100; // Start higher up
+    // Process root's children (first level categories)
+    let childrenMinX = Infinity;
+    let childrenMaxX = -Infinity;
     
     taxonomy.children.forEach((category) => {
-      const childCount = category.children?.length || 0;
-      // Calculate height needed for this category's subtree
-      const categorySubtreeHeight = Math.max(verticalSpacing, childCount * verticalSpacing);
-      const categoryY = currentY + (categorySubtreeHeight / 2);
-      
-      // Category nodeId when parent is root: `${rootNodeId}-${category.name}`
-      const categoryNodeId = `${rootNodeId}-${category.name}`;
-      
+      const levelPos = levelPositions.get(1)!;
+      const childX = levelPos.currentX;
       const result = convertToReactFlow(
         category,
-        rootNodeId, // Connect to root - this will create the edge
-        { x: categoryX, y: categoryY },
+        rootNodeId,
+        1, // Depth level 1 (first level categories)
+        levelPos.rowY, // Row 2 Y position
+        childX, // Current X position
         handleNodeClick,
         handleNodeRightClick,
-        collapsedCategories
+        collapsedCategories,
+        levelPositions
       );
       
       allNodes.push(...result.nodes);
       allEdges.push(...result.edges);
       
-      // Edge from root to category is already created by convertToReactFlow
-      // since parentId is rootNodeId, it will create edge with target = categoryNodeId
+      // Create edge from root to category: bottom of root to top of category
+      const categoryNodeId = `${rootNodeId}-${category.name}`;
+      allEdges.push({
+        id: `${rootNodeId}-${categoryNodeId}`,
+        source: rootNodeId,
+        target: categoryNodeId,
+        sourceHandle: "bottom",
+        targetHandle: "top",
+        type: "smoothstep",
+        animated: false,
+        style: { stroke: "#94a3b8", strokeWidth: 2 },
+      });
       
-      // Move next category down, accounting for this category's full height
-      currentY += categorySubtreeHeight + categorySpacing;
+      // Track children bounds for centering root
+      childrenMinX = Math.min(childrenMinX, childX);
+      childrenMaxX = Math.max(childrenMaxX, childX + result.columnWidth);
+      
+      // Move to next position horizontally
+      levelPos.currentX += result.columnWidth + 200;
     });
+    
+    // Center root node horizontally over all its children
+    if (taxonomy.children.length > 0 && childrenMinX !== Infinity && childrenMaxX !== -Infinity) {
+      const childrenCenterX = (childrenMinX + childrenMaxX) / 2;
+      const rootNodeIndex = allNodes.findIndex(n => n.id === rootNodeId);
+      if (rootNodeIndex >= 0) {
+        allNodes[rootNodeIndex].position.x = childrenCenterX - 65; // 65 = nodeWidth/2 (130/2)
+      }
+    }
     
     return { nodes: allNodes, edges: allEdges };
   }, [taxonomy, collapsedCategories, handleNodeClick, handleNodeRightClick]);

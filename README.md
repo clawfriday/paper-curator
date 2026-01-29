@@ -191,14 +191,6 @@ This follows your ordering: **(1) package OSS as FastAPI services**, **(2) build
 
 
 ### Mileston 6 - UI improvement (Complete)
-- Collapsible sections in details panel
-- Improved tree diagram:
-  - Node names displayed inside rounded pill-shaped nodes
-  - Curved diagonal lines instead of stepped lines
-  - Closer spacing between nodes (nodeSize 100x60, separation 1.0/1.2)
-  - Scrollable tree container with gradient background
-
-### UI/UX Improvements - Implemented Features
 
 **Phase 1: Details Panel Modernization**
 - ✅ Replaced custom tabs with Shadcn/ui Tabs component (`@radix-ui/react-tabs`)
@@ -232,6 +224,19 @@ This follows your ordering: **(1) package OSS as FastAPI services**, **(2) build
 - ✅ Added loading skeletons for async content (repos, references, similar papers, queries)
 - ✅ Implemented hover previews for paper nodes showing title only
 - **Dependencies:** `tailwindcss` (responsive utilities), `@radix-ui/react-accordion` (debug panel)
+
+**Phase 5: Layout**
+- change the root node 'AI papers' and parent nodes (different classifications of all levels) placement to be horizontal
+- however, keep the leave nodes (papers) to vertical placement 
+
+**Phase 6: Simplify the panes**
+- remove the top-right Pane (Ingest Pane), and move its functions to a new tab 'explorer' in the current bottom-right Pane
+- unify the `Ingest` and `Batch Ingest`, it should only have one input textbox, one button, and one unified endpoint. The input box will trigger different actions based on the detected type of input text:
+  - if it's a URL, or local filepath to a single paper, or a Arxiv paper ID, it will just do a single injestion
+  - if it's a local folder, which contains multiple pdf papers, it will trigger a batch ingestion
+  - if it's a slack channel, it will trigger batch ingestions (a feature to be implemented later)
+- the "rebalance" should just be a single small button in the "explorer" tab, instead of taking up the entire row
+- instead of using dropdown menus when rightclick on each node, let's move each dropdown option to the respective tabs as a new tab
 
 ### Mileston 7 - Speedup (Complete)
 
