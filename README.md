@@ -359,3 +359,10 @@ This follows your ordering: **(1) package OSS as FastAPI services**, **(2) build
 - [x] Query selection: each historical query in the Query tab has a checkbox; clicking the row or checkbox toggles selection
 - [x] "Add to Details" button: appears below query history, disabled when nothing selected; merges selected Q&A into summary using LLM (`/summary/merge` endpoint with `merge_qa_to_summary` prompt)
 - [x] "Dedup" button: in Details panel action buttons; removes duplicated content from summary using LLM (`/summary/dedup` endpoint with `dedup_summary` prompt)ed 
+
+### Mileston 10 - Slack integration
+- allow user to specify a slack channel in the 'batch ingest' textbox
+- it will prompt user for access credential to access the slack channel each time. But this credential should not be persisted
+- it will read all historical paper shared into the channel, and ingest them all
+
+### 

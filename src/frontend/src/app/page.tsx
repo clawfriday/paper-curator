@@ -22,6 +22,7 @@ import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
 import { Accordion, AccordionItem, AccordionTrigger, AccordionContent } from "@/components/ui/accordion";
 import { Card, CardHeader, CardTitle, CardDescription, CardContent } from "@/components/ui/card";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
+import { Search } from "lucide-react";
 
 interface PaperNode {
   name: string;
@@ -215,6 +216,7 @@ function PaperNodeComponent({ data }: { data: { node: PaperNode; onNodeClick: (n
         padding: `${paddingY}px ${paddingX}px`,
         fontFamily: "-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif",
         position: "relative",
+        outline: "none",
       }}
       onClick={() => onNodeClick(node.name)}
       onContextMenu={(e) => {
@@ -302,7 +304,13 @@ function convertToReactFlow(
     type: "paperNode",
     position: { x: position.x, y: position.y },
     data: { node, onNodeClick, onNodeRightClick },
-    style: { width: nodeWidth, height: nodeHeight },
+    style: { 
+      width: nodeWidth, 
+      height: nodeHeight,
+      border: "none",
+      outline: "none",
+      boxShadow: "none",
+    },
     sourcePosition: Position.Right,
     targetPosition: Position.Left,
   });
@@ -440,6 +448,11 @@ export default function Home() {
   const [collapsedCategories, setCollapsedCategories] = useState<Set<string>>(new Set());
   const [nodes, setNodes, onNodesChange] = useNodesState([]);
   const [edges, setEdges, onEdgesChange] = useEdgesState([]);
+  
+  // Phase 3: Navigation & Interaction states (only search kept)
+  const [searchQuery, setSearchQuery] = useState("");
+  const [searchResults, setSearchResults] = useState<PaperNode[]>([]);
+  const [isSearchFocused, setIsSearchFocused] = useState(false);
   
   const hoverTimeoutRef = useRef<NodeJS.Timeout | null>(null);
   
@@ -868,6 +881,47 @@ export default function Home() {
     }
     return null;
   }, []);
+  
+  // Search function
+  const performSearch = useCallback((query: string) => {
+    if (!query.trim()) {
+      setSearchResults([]);
+      return;
+    }
+    
+    const results: PaperNode[] = [];
+    const searchLower = query.toLowerCase();
+    
+    const searchTree = (node: PaperNode) => {
+      // Search in paper nodes (not categories)
+      if (node.attributes?.arxivId) {
+        const titleMatch = node.attributes.title?.toLowerCase().includes(searchLower);
+        const nameMatch = node.name.toLowerCase().includes(searchLower);
+        const authorMatch = node.attributes.authors?.some(author => 
+          author.toLowerCase().includes(searchLower)
+        );
+        
+        if (titleMatch || nameMatch || authorMatch) {
+          results.push(node);
+        }
+      }
+      
+      // Recursively search children
+      if (node.children) {
+        node.children.forEach(child => searchTree(child));
+      }
+    };
+    
+    if (taxonomy.children) {
+      taxonomy.children.forEach(category => {
+        if (category.children) {
+          category.children.forEach(paper => searchTree(paper));
+        }
+      });
+    }
+    
+    setSearchResults(results.slice(0, 10)); // Limit to 10 results
+  }, [taxonomy]);
 
   const handleNodeClick = useCallback(async (nodeName: string) => {
     const node = findNode(taxonomy, nodeName);
@@ -956,7 +1010,13 @@ export default function Home() {
         onNodeClick: handleNodeClick, 
         onNodeRightClick: handleNodeRightClick 
       },
-      style: { width: 130, height: 50 },
+      style: { 
+        width: 130, 
+        height: 50,
+        border: "none",
+        outline: "none",
+        boxShadow: "none",
+      },
       sourcePosition: Position.Right,
       targetPosition: Position.Left,
     });
@@ -1004,16 +1064,9 @@ export default function Home() {
   useEffect(() => {
     // Only update if we have actual data (not empty initial state)
     if (reactFlowData.nodes.length > 0 || reactFlowData.edges.length > 0) {
-      console.log("React Flow data (populated):", { 
-        nodeCount: reactFlowData.nodes.length, 
-        edgeCount: reactFlowData.edges.length,
-        edges: reactFlowData.edges.slice(0, 5), // First 5 edges for debugging
-        nodes: reactFlowData.nodes.slice(0, 3), // First 3 nodes for debugging
-      });
       setNodes(reactFlowData.nodes);
       setEdges(reactFlowData.edges);
     } else {
-      console.log("React Flow data (empty - initial state, skipping update)");
       // Don't update with empty data - keep previous state
     }
   }, [reactFlowData, setNodes, setEdges]);
@@ -1592,13 +1645,94 @@ export default function Home() {
           .tree-container::-webkit-scrollbar-thumb:hover {
             background: #a1a1a1;
           }
+          /* Fix black outline on React Flow nodes - comprehensive overrides */
+          .react-flow__node,
+          .react-flow__node *,
+          .react-flow__node:focus,
+          .react-flow__node:focus-visible,
+          .react-flow__node:focus-within,
+          .react-flow__node.selected,
+          .react-flow__node.draggable,
+          .react-flow__node-drag,
+          .react-flow__node.selectable {
+            outline: none !important;
+            border: none !important;
+            box-shadow: none !important;
+            -webkit-box-shadow: none !important;
+            -moz-box-shadow: none !important;
+          }
+          /* Ensure the inner paper-node div doesn't inherit unwanted styles */
+          .react-flow__node .paper-node,
+          .react-flow__node .paper-node:focus,
+          .react-flow__node .paper-node:focus-visible {
+            outline: none !important;
+            box-shadow: none !important;
+            -webkit-box-shadow: none !important;
+            -moz-box-shadow: none !important;
+          }
+          /* Override any React Flow wrapper divs */
+          .react-flow__node > div {
+            outline: none !important;
+            border: none !important;
+            box-shadow: none !important;
+            -webkit-box-shadow: none !important;
+            -moz-box-shadow: none !important;
+          }
         `}</style>
         <div style={{ padding: "1rem", borderBottom: "1px solid #e5e5e5", backgroundColor: "#fafafa" }}>
-          <h1 style={{ margin: 0, fontSize: "1.5rem", fontWeight: 600 }}>Paper Curator</h1>
-          <p style={{ margin: "0.25rem 0 0", fontSize: "0.875rem", color: "#666" }}>
-            {taxonomy.children?.length || 0} categories, {" "}
-            {taxonomy.children?.reduce((acc, c) => acc + (c.children?.length || 0), 0) || 0} papers
-          </p>
+          <div className="flex items-center justify-between mb-2">
+            <div>
+              <h1 style={{ margin: 0, fontSize: "1.5rem", fontWeight: 600 }}>Paper Curator</h1>
+              <p style={{ margin: "0.25rem 0 0", fontSize: "0.875rem", color: "#666" }}>
+                {taxonomy.children?.length || 0} categories, {" "}
+                {taxonomy.children?.reduce((acc, c) => acc + (c.children?.length || 0), 0) || 0} papers
+              </p>
+            </div>
+            {/* Global Search Bar */}
+            <div className="relative flex-1 max-w-md ml-4">
+              <div className="relative">
+                <Search className="absolute left-3 top-1/2 transform -translate-y-1/2 text-gray-400" size={16} />
+                <input
+                  type="text"
+                  value={searchQuery}
+                  onChange={(e) => {
+                    setSearchQuery(e.target.value);
+                    performSearch(e.target.value);
+                  }}
+                  onFocus={() => setIsSearchFocused(true)}
+                  onBlur={() => setTimeout(() => setIsSearchFocused(false), 200)}
+                  placeholder="Search papers by title or author..."
+                  className="w-full pl-10 pr-4 py-2 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+                />
+              </div>
+              {isSearchFocused && searchResults.length > 0 && (
+                <div className="absolute z-50 w-full mt-1 bg-white border border-gray-200 rounded-lg shadow-lg max-h-64 overflow-y-auto">
+                  {searchResults.map((result, idx) => (
+                    <div
+                      key={idx}
+                      onClick={() => {
+                        handleNodeClick(result.name);
+                        setSearchQuery("");
+                        setSearchResults([]);
+                      }}
+                      className="px-4 py-2 hover:bg-gray-100 cursor-pointer border-b border-gray-100 last:border-b-0"
+                    >
+                      <div className="font-medium text-sm">{result.name}</div>
+                      {result.attributes?.title && (
+                        <div className="text-xs text-gray-600 mt-1">{result.attributes.title}</div>
+                      )}
+                      {result.attributes?.authors && result.attributes.authors.length > 0 && (
+                        <div className="text-xs text-gray-500 mt-1">
+                          {result.attributes.authors.slice(0, 3).join(", ")}
+                          {result.attributes.authors.length > 3 && ` +${result.attributes.authors.length - 3} more`}
+                        </div>
+                      )}
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+          </div>
         </div>
         <div 
           className="tree-container"
@@ -1624,6 +1758,8 @@ export default function Home() {
               }}
               edgesUpdatable={false}
               edgesFocusable={false}
+              nodesFocusable={false}
+              nodesDraggable={false}
             >
               <Background color="#f1f5f9" gap={16} />
               <Controls />
