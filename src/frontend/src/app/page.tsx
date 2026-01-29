@@ -161,6 +161,7 @@ function PaperNodeComponent({ data }: { data: { node: PaperNode; onNodeClick: (n
   const hasArxivId = node.attributes && node.attributes.arxivId;
   const isCategory = !node.attributes || !node.attributes.arxivId;
   const isRoot = node.name === "AI Papers";
+  const [showHoverPreview, setShowHoverPreview] = useState(false);
   
   // Show full name, wrap into multiple lines if needed
   const name = node.name;
@@ -225,7 +226,33 @@ function PaperNodeComponent({ data }: { data: { node: PaperNode; onNodeClick: (n
           onNodeRightClick(e, node.name);
         }
       }}
+      onMouseEnter={() => hasArxivId && setShowHoverPreview(true)}
+      onMouseLeave={() => setShowHoverPreview(false)}
     >
+      {/* Hover preview tooltip */}
+      {showHoverPreview && hasArxivId && node.attributes && node.attributes.title && (
+        <div
+          style={{
+            position: "absolute",
+            bottom: "100%",
+            left: "50%",
+            transform: "translateX(-50%)",
+            marginBottom: "8px",
+            padding: "8px 12px",
+            backgroundColor: "rgba(0, 0, 0, 0.9)",
+            color: "white",
+            borderRadius: "6px",
+            fontSize: "11px",
+            maxWidth: "250px",
+            zIndex: 1000,
+            pointerEvents: "none",
+            boxShadow: "0 4px 12px rgba(0, 0, 0, 0.3)",
+          }}
+        >
+          <div style={{ fontWeight: 600 }}>{node.attributes.title}</div>
+          <div style={{ position: "absolute", bottom: "-4px", left: "50%", transform: "translateX(-50%)", width: 0, height: 0, borderLeft: "4px solid transparent", borderRight: "4px solid transparent", borderTop: "4px solid rgba(0, 0, 0, 0.9)" }} />
+        </div>
+      )}
       {/* Source handle (right side) - for edges going out */}
       <Handle
         type="source"
@@ -453,6 +480,12 @@ export default function Home() {
   const [searchQuery, setSearchQuery] = useState("");
   const [searchResults, setSearchResults] = useState<PaperNode[]>([]);
   const [isSearchFocused, setIsSearchFocused] = useState(false);
+  
+  // Phase 4: Responsive Design & Polish states
+  const [windowWidth, setWindowWidth] = useState(typeof window !== 'undefined' ? window.innerWidth : 1024);
+  const [leftPanelWidth, setLeftPanelWidth] = useState(40); // Percentage
+  const [isFullscreen, setIsFullscreen] = useState<"tree" | "details" | null>(null);
+  const [isDebugPanelOpen, setIsDebugPanelOpen] = useState(false);
   
   const hoverTimeoutRef = useRef<NodeJS.Timeout | null>(null);
   
@@ -1608,11 +1641,65 @@ export default function Home() {
     });
   }, []);
 
+  // Handle window resize for responsive design
+  useEffect(() => {
+    const handleResize = () => {
+      setWindowWidth(window.innerWidth);
+    };
+    window.addEventListener("resize", handleResize);
+    return () => window.removeEventListener("resize", handleResize);
+  }, []);
+  
+  // Determine responsive layout
+  const isMobile = windowWidth < 768;
+  const isTablet = windowWidth >= 768 && windowWidth < 1024;
+  const isDesktop = windowWidth >= 1024;
+  
+  // Calculate panel widths based on responsive state and fullscreen mode
+  const getPanelStyles = () => {
+    if (isFullscreen === "tree") {
+      return {
+        left: { flex: "1 1 100%", display: "flex" },
+        right: { flex: "0 0 0", display: "none" },
+      };
+    }
+    if (isFullscreen === "details") {
+      return {
+        left: { flex: "0 0 0", display: "none" },
+        right: { flex: "1 1 100%", display: "flex" },
+      };
+    }
+    if (isMobile) {
+      // Mobile: stack vertically, show one at a time
+      return {
+        left: { 
+          flex: isFullscreen === null ? "1 1 50%" : "0 0 0", 
+          display: isFullscreen === "details" ? "none" : "flex",
+          minHeight: isFullscreen === null ? "50vh" : "100vh",
+        },
+        right: { 
+          flex: isFullscreen === null ? "1 1 50%" : "1 1 100%", 
+          display: "flex",
+          minHeight: isFullscreen === null ? "50vh" : "100vh",
+        },
+      };
+    }
+    // Desktop/Tablet: side by side with resizable panels
+    const leftPercent = leftPanelWidth;
+    const rightPercent = 100 - leftPanelWidth;
+    return {
+      left: { flex: `0 0 ${leftPercent}%`, display: "flex" },
+      right: { flex: `0 0 ${rightPercent}%`, display: "flex" },
+    };
+  };
+  
+  const panelStyles = getPanelStyles();
+
   return (
     <TooltipProvider>
-      <div style={{ display: "flex", height: "100vh" }}>
+      <div style={{ display: "flex", height: "100vh", flexDirection: isMobile && !isFullscreen ? "column" : "row" }}>
       {/* Left panel: Tree visualization */}
-      <div style={{ flex: 2, borderRight: "1px solid #e5e5e5", display: "flex", flexDirection: "column" }}>
+      <div style={{ ...panelStyles.left, borderRight: isMobile ? "none" : "1px solid #e5e5e5", borderBottom: isMobile && !isFullscreen ? "1px solid #e5e5e5" : "none", display: "flex", flexDirection: "column", position: "relative" }}>
         <style>{`
           .tree-link {
             stroke: #94a3b8 !important;
@@ -1679,17 +1766,38 @@ export default function Home() {
             -moz-box-shadow: none !important;
           }
         `}</style>
-        <div style={{ padding: "1rem", borderBottom: "1px solid #e5e5e5", backgroundColor: "#fafafa" }}>
+        <div style={{ padding: isMobile ? "0.75rem" : "1rem", borderBottom: "1px solid #e5e5e5", backgroundColor: "#fafafa" }}>
           <div className="flex items-center justify-between mb-2">
-            <div>
-              <h1 style={{ margin: 0, fontSize: "1.5rem", fontWeight: 600 }}>Paper Curator</h1>
-              <p style={{ margin: "0.25rem 0 0", fontSize: "0.875rem", color: "#666" }}>
+            <div style={{ flex: 1, minWidth: 0 }}>
+              <div className="flex items-center gap-2">
+                <h1 style={{ margin: 0, fontSize: isMobile ? "1.25rem" : "1.5rem", fontWeight: 600 }}>Paper Curator</h1>
+                {/* Fullscreen toggle buttons */}
+                {!isMobile && (
+                  <>
+                    <button
+                      onClick={() => setIsFullscreen(isFullscreen === "tree" ? null : "tree")}
+                      className="px-2 py-1 text-xs bg-gray-200 hover:bg-gray-300 rounded"
+                      title="Toggle tree fullscreen"
+                    >
+                      {isFullscreen === "tree" ? "↗" : "⛶"}
+                    </button>
+                    <button
+                      onClick={() => setIsFullscreen(isFullscreen === "details" ? null : "details")}
+                      className="px-2 py-1 text-xs bg-gray-200 hover:bg-gray-300 rounded"
+                      title="Toggle details fullscreen"
+                    >
+                      {isFullscreen === "details" ? "↗" : "⛶"}
+                    </button>
+                  </>
+                )}
+              </div>
+              <p style={{ margin: "0.25rem 0 0", fontSize: isMobile ? "0.75rem" : "0.875rem", color: "#666" }}>
                 {taxonomy.children?.length || 0} categories, {" "}
                 {taxonomy.children?.reduce((acc, c) => acc + (c.children?.length || 0), 0) || 0} papers
               </p>
             </div>
             {/* Global Search Bar */}
-            <div className="relative flex-1 max-w-md ml-4">
+            <div className={`relative flex-1 ${isMobile ? "max-w-full mt-2" : "max-w-md ml-4"}`}>
               <div className="relative">
                 <Search className="absolute left-3 top-1/2 transform -translate-y-1/2 text-gray-400" size={16} />
                 <input
@@ -1846,8 +1954,40 @@ export default function Home() {
         </div>
       )}
 
+      {/* Resizer handle for desktop/tablet */}
+      {!isMobile && !isFullscreen && (
+        <div
+          style={{
+            width: "4px",
+            backgroundColor: "#e5e5e5",
+            cursor: "col-resize",
+            position: "relative",
+          }}
+          onMouseDown={(e) => {
+            e.preventDefault();
+            const startX = e.clientX;
+            const startLeftWidth = leftPanelWidth;
+            
+            const handleMouseMove = (moveEvent: MouseEvent) => {
+              const deltaX = moveEvent.clientX - startX;
+              const deltaPercent = (deltaX / windowWidth) * 100;
+              const newLeftWidth = Math.max(20, Math.min(80, startLeftWidth + deltaPercent));
+              setLeftPanelWidth(newLeftWidth);
+            };
+            
+            const handleMouseUp = () => {
+              document.removeEventListener("mousemove", handleMouseMove);
+              document.removeEventListener("mouseup", handleMouseUp);
+            };
+            
+            document.addEventListener("mousemove", handleMouseMove);
+            document.addEventListener("mouseup", handleMouseUp);
+          }}
+        />
+      )}
+      
       {/* Right panel: Details and ingest */}
-      <div className="flex-1 p-6 flex flex-col bg-gray-50 overflow-y-auto">
+      <div style={{ ...panelStyles.right, padding: isMobile ? "1rem" : "1.5rem", display: "flex", flexDirection: "column", backgroundColor: "#f9fafb", overflowY: "auto", position: "relative" }}>
         {/* Ingest section - Accordion */}
         <Card className="mb-4">
           <Accordion type="single" collapsible defaultValue="ingest" className="w-full">
@@ -1961,16 +2101,6 @@ export default function Home() {
                     )}
                   </div>
                   
-                  {/* Ingest log textbox */}
-                  {ingestLog.length > 0 && (
-                    <div className="mt-3 bg-gray-900 rounded p-2 max-h-[150px] overflow-y-auto font-mono text-[11px]">
-                      {ingestLog.map((log, i) => (
-                        <div key={i} className={`mb-0.5 ${log.includes("Error") ? "text-red-400" : "text-green-400"}`}>
-                          {log}
-                        </div>
-                      ))}
-                    </div>
-                  )}
                 </div>
               </AccordionContent>
             </AccordionItem>
@@ -1989,47 +2119,19 @@ export default function Home() {
               <AccordionContent className="flex-1 flex flex-col overflow-hidden">
                 <div className="flex-1 flex flex-col overflow-hidden">
                   {/* Panel tabs */}
-                  {/* Feature Progress Log */}
-                  {featureLog.length > 0 && (
-                    <div style={{ 
-                      margin: "0.5rem", 
-                      backgroundColor: "#1a1a2e", 
-                      padding: "0.5rem", 
-                      borderRadius: "6px", 
-                      fontFamily: "monospace",
-                      fontSize: "0.625rem",
-                      maxHeight: "100px",
-                      overflowY: "auto",
-                    }}>
-                      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "0.25rem" }}>
-                        <span style={{ color: "#10b981", fontWeight: 600 }}>Log</span>
-                        <button 
-                          onClick={clearFeatureLog}
-                          style={{ 
-                            background: "none", 
-                            border: "none", 
-                            color: "#666", 
-                            cursor: "pointer",
-                            fontSize: "0.5rem",
-                          }}
-                        >
-                          Clear
-                        </button>
-                      </div>
-                      {featureLog.map((log, i) => (
-                        <div key={i} style={{ 
-                          color: log.includes("✓") ? "#10b981" : log.includes("✗") ? "#ef4444" : log.includes("Error") ? "#ef4444" : "#e5e5e5",
-                          lineHeight: 1.4,
-                        }}>
-                          {log}
-                        </div>
-                      ))}
-                    </div>
-                  )}
 
                   {/* Dynamic panel content */}
                   <div style={{ flex: 1, padding: "0.75rem", overflowY: "auto" }}>
-                    {selectedNode && (
+                    {/* Loading skeleton for cached data */}
+                    {isLoadingCachedData && (
+                      <div className="space-y-4">
+                        <div className="animate-pulse">
+                          <div className="h-4 bg-gray-200 rounded w-3/4 mb-2"></div>
+                          <div className="h-4 bg-gray-200 rounded w-1/2"></div>
+                        </div>
+                      </div>
+                    )}
+                    {selectedNode && !isLoadingCachedData && (
                   <Tabs 
                     value={activePanel === "references" ? "refs" : activePanel} 
                     onValueChange={(value) => setActivePanel(value === "refs" ? "references" : value as any)}
@@ -2239,7 +2341,11 @@ export default function Home() {
                     <TabsContent value="repos" className="mt-3">
                       <h2 className="text-lg font-semibold mb-4">GitHub Repositories</h2>
                       {isLoadingFeature ? (
-                        <p className="text-gray-600">Searching...</p>
+                        <div className="space-y-3 animate-pulse">
+                          <div className="h-16 bg-gray-200 rounded"></div>
+                          <div className="h-16 bg-gray-200 rounded"></div>
+                          <div className="h-16 bg-gray-200 rounded"></div>
+                        </div>
                       ) : repos.length > 0 ? (
                         <div>
                           {repos.map((repo, i) => (
@@ -2453,6 +2559,71 @@ export default function Home() {
             </AccordionItem>
           </Accordion>
         </Card>
+        
+        {/* Debug Panel - Collapsible */}
+        {(featureLog.length > 0 || ingestLog.length > 0) && (
+          <Card className="mt-4">
+            <Accordion type="single" collapsible value={isDebugPanelOpen ? "debug" : undefined} onValueChange={(value) => setIsDebugPanelOpen(value === "debug")}>
+              <AccordionItem value="debug" className="border-0">
+                <AccordionTrigger className="px-4 py-2 hover:no-underline">
+                  <h3 className="text-sm font-semibold m-0">🐛 Debug Logs</h3>
+                  {(featureLog.length > 0 || ingestLog.length > 0) && (
+                    <span className="ml-2 text-xs text-gray-500">
+                      ({featureLog.length + ingestLog.length} entries)
+                    </span>
+                  )}
+                </AccordionTrigger>
+                <AccordionContent>
+                  <div className="p-4 space-y-4">
+                    {/* Feature Log */}
+                    {featureLog.length > 0 && (
+                      <div>
+                        <div className="flex justify-between items-center mb-2">
+                          <span className="text-xs font-semibold text-gray-700">Feature Log</span>
+                          <button 
+                            onClick={clearFeatureLog}
+                            className="text-xs text-gray-500 hover:text-gray-700 cursor-pointer"
+                          >
+                            Clear
+                          </button>
+                        </div>
+                        <div className="bg-gray-900 rounded p-2 max-h-[200px] overflow-y-auto font-mono text-[11px]">
+                          {featureLog.map((log, i) => (
+                            <div key={i} className={`mb-0.5 ${log.includes("✓") ? "text-green-400" : log.includes("✗") ? "text-red-400" : log.includes("Error") ? "text-red-400" : "text-gray-300"}`}>
+                              {log}
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+                    )}
+                    
+                    {/* Ingest Log */}
+                    {ingestLog.length > 0 && (
+                      <div>
+                        <div className="flex justify-between items-center mb-2">
+                          <span className="text-xs font-semibold text-gray-700">Ingest Log</span>
+                          <button 
+                            onClick={clearIngestLog}
+                            className="text-xs text-gray-500 hover:text-gray-700 cursor-pointer"
+                          >
+                            Clear
+                          </button>
+                        </div>
+                        <div className="bg-gray-900 rounded p-2 max-h-[200px] overflow-y-auto font-mono text-[11px]">
+                          {ingestLog.map((log, i) => (
+                            <div key={i} className={`mb-0.5 ${log.includes("Error") ? "text-red-400" : "text-green-400"}`}>
+                              {log}
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                </AccordionContent>
+              </AccordionItem>
+            </Accordion>
+          </Card>
+        )}
       </div>
     </div>
     </TooltipProvider>
