@@ -13,6 +13,7 @@ import ReactFlow, {
   Position,
   NodeTypes,
   EdgeTypes,
+  Handle,
 } from "reactflow";
 import "reactflow/dist/style.css";
 import { InlineMath, BlockMath } from "react-katex";
@@ -213,6 +214,7 @@ function PaperNodeComponent({ data }: { data: { node: PaperNode; onNodeClick: (n
         alignItems: "center",
         padding: `${paddingY}px ${paddingX}px`,
         fontFamily: "-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif",
+        position: "relative",
       }}
       onClick={() => onNodeClick(node.name)}
       onContextMenu={(e) => {
@@ -222,6 +224,32 @@ function PaperNodeComponent({ data }: { data: { node: PaperNode; onNodeClick: (n
         }
       }}
     >
+      {/* Source handle (right side) - for edges going out */}
+      <Handle
+        type="source"
+        position={Position.Right}
+        id="right"
+        style={{
+          right: -5,
+          width: 10,
+          height: 10,
+          backgroundColor: strokeColor,
+          border: `2px solid ${fillColor}`,
+        }}
+      />
+      {/* Target handle (left side) - for edges coming in */}
+      <Handle
+        type="target"
+        position={Position.Left}
+        id="left"
+        style={{
+          left: -5,
+          width: 10,
+          height: 10,
+          backgroundColor: strokeColor,
+          border: `2px solid ${fillColor}`,
+        }}
+      />
       {lines.map((line, i) => (
         <div
           key={i}
@@ -256,10 +284,9 @@ function convertToReactFlow(
   onNodeClick: (name: string) => void,
   onNodeRightClick: (e: React.MouseEvent, name: string) => void,
   collapsedCategories: Set<string>
-): { nodes: Node[]; edges: Edge[]; nextY: number } {
+): { nodes: Node[]; edges: Edge[]; nextY: number; width: number } {
   const nodes: Node[] = [];
   const edges: Edge[] = [];
-  let currentY = position.y;
   const nodeId = parentId ? `${parentId}-${node.name}` : node.name;
   const isCategory = !node.attributes || !node.attributes.arxivId;
   const isCollapsed = collapsedCategories.has(nodeId);
@@ -267,15 +294,17 @@ function convertToReactFlow(
   // Create node
   const nodeWidth = 130;
   const nodeHeight = 50;
-  const horizontalSpacing = 200;
-  const verticalSpacing = 80;
+  const horizontalSpacing = 250; // Space between parent and children
+  const verticalSpacing = 80; // Space between sibling nodes
   
   nodes.push({
     id: nodeId,
     type: "paperNode",
-    position: { x: position.x, y: currentY },
+    position: { x: position.x, y: position.y },
     data: { node, onNodeClick, onNodeRightClick },
     style: { width: nodeWidth, height: nodeHeight },
+    sourcePosition: Position.Right,
+    targetPosition: Position.Left,
   });
   
   // Add edge from parent if not root
@@ -284,26 +313,31 @@ function convertToReactFlow(
       id: `${parentId}-${nodeId}`,
       source: parentId,
       target: nodeId,
+      sourceHandle: "right",
+      targetHandle: "left",
       type: "smoothstep",
       animated: false,
-      style: { stroke: "#94a3b8", strokeWidth: 1.5 },
+      style: { stroke: "#94a3b8", strokeWidth: 2 },
     });
   }
   
-  currentY += verticalSpacing;
-  
   // Process children if not collapsed
+  let childrenWidth = 0;
+  let childrenStartY = position.y;
+  
   if (!isCollapsed && node.children && node.children.length > 0) {
+    // Position children vertically centered relative to parent
+    const totalChildrenHeight = (node.children.length - 1) * verticalSpacing;
+    const startY = position.y - (totalChildrenHeight / 2);
+    const childX = position.x + horizontalSpacing;
+    
     node.children.forEach((child, index) => {
-      const childPosition = {
-        x: position.x,
-        y: currentY,
-      };
+      const childY = startY + (index * verticalSpacing);
       
       const result = convertToReactFlow(
         child,
         nodeId,
-        childPosition,
+        { x: childX, y: childY },
         onNodeClick,
         onNodeRightClick,
         collapsedCategories
@@ -311,11 +345,20 @@ function convertToReactFlow(
       
       nodes.push(...result.nodes);
       edges.push(...result.edges);
-      currentY = result.nextY;
+      childrenWidth = Math.max(childrenWidth, result.width);
     });
+    
+    childrenStartY = startY + totalChildrenHeight + verticalSpacing;
   }
   
-  return { nodes, edges, nextY: currentY };
+  const totalWidth = horizontalSpacing + childrenWidth;
+  
+  return { 
+    nodes, 
+    edges, 
+    nextY: Math.max(position.y + verticalSpacing, childrenStartY),
+    width: totalWidth > 0 ? totalWidth : nodeWidth,
+  };
 }
 
 const initialTaxonomy: PaperNode = {
@@ -898,20 +941,60 @@ export default function Home() {
     
     const allNodes: Node[] = [];
     const allEdges: Edge[] = [];
-    let currentY = 50;
+    
+    // Add root node "AI Papers"
+    const rootNodeId = taxonomy.name;
+    const rootX = 50;
+    const rootY = 300;
+    
+    allNodes.push({
+      id: rootNodeId,
+      type: "paperNode",
+      position: { x: rootX, y: rootY },
+      data: { 
+        node: taxonomy, 
+        onNodeClick: handleNodeClick, 
+        onNodeRightClick: handleNodeRightClick 
+      },
+      style: { width: 130, height: 50 },
+      sourcePosition: Position.Right,
+      targetPosition: Position.Left,
+    });
+    
+    // Position categories to the right of root
+    const categoryX = rootX + 250;
+    const verticalSpacing = 80;
+    const categorySpacing = 200; // Increased spacing to prevent overlaps
+    
+    // Calculate positions for categories to prevent overlaps
+    let currentY = 100; // Start higher up
     
     taxonomy.children.forEach((category) => {
+      const childCount = category.children?.length || 0;
+      // Calculate height needed for this category's subtree
+      const categorySubtreeHeight = Math.max(verticalSpacing, childCount * verticalSpacing);
+      const categoryY = currentY + (categorySubtreeHeight / 2);
+      
+      // Category nodeId when parent is root: `${rootNodeId}-${category.name}`
+      const categoryNodeId = `${rootNodeId}-${category.name}`;
+      
       const result = convertToReactFlow(
         category,
-        null,
-        { x: 300, y: currentY },
+        rootNodeId, // Connect to root - this will create the edge
+        { x: categoryX, y: categoryY },
         handleNodeClick,
         handleNodeRightClick,
         collapsedCategories
       );
+      
       allNodes.push(...result.nodes);
       allEdges.push(...result.edges);
-      currentY = result.nextY + 100; // Add spacing between categories
+      
+      // Edge from root to category is already created by convertToReactFlow
+      // since parentId is rootNodeId, it will create edge with target = categoryNodeId
+      
+      // Move next category down, accounting for this category's full height
+      currentY += categorySubtreeHeight + categorySpacing;
     });
     
     return { nodes: allNodes, edges: allEdges };
@@ -919,8 +1002,20 @@ export default function Home() {
   
   // Update React Flow nodes and edges when data changes
   useEffect(() => {
-    setNodes(reactFlowData.nodes);
-    setEdges(reactFlowData.edges);
+    // Only update if we have actual data (not empty initial state)
+    if (reactFlowData.nodes.length > 0 || reactFlowData.edges.length > 0) {
+      console.log("React Flow data (populated):", { 
+        nodeCount: reactFlowData.nodes.length, 
+        edgeCount: reactFlowData.edges.length,
+        edges: reactFlowData.edges.slice(0, 5), // First 5 edges for debugging
+        nodes: reactFlowData.nodes.slice(0, 3), // First 3 nodes for debugging
+      });
+      setNodes(reactFlowData.nodes);
+      setEdges(reactFlowData.edges);
+    } else {
+      console.log("React Flow data (empty - initial state, skipping update)");
+      // Don't update with empty data - keep previous state
+    }
   }, [reactFlowData, setNodes, setEdges]);
 
   const handleRemoveNode = async (node: PaperNode) => {
@@ -1522,6 +1617,13 @@ export default function Home() {
               minZoom={0.1}
               maxZoom={3}
               defaultViewport={{ x: 0, y: 0, zoom: 1 }}
+              defaultEdgeOptions={{
+                type: "smoothstep",
+                animated: false,
+                style: { stroke: "#94a3b8", strokeWidth: 2 },
+              }}
+              edgesUpdatable={false}
+              edgesFocusable={false}
             >
               <Background color="#f1f5f9" gap={16} />
               <Controls />
