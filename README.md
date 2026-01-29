@@ -198,112 +198,40 @@ This follows your ordering: **(1) package OSS as FastAPI services**, **(2) build
   - Closer spacing between nodes (nodeSize 100x60, separation 1.0/1.2)
   - Scrollable tree container with gradient background
 
-### UI/UX Issues & Proposed Improvements
+### UI/UX Improvements - Implemented Features
 
-**Tree Diagram Layout Issues:**
-- Problem: Papers spread horizontally causing extensive horizontal scrolling, poor visibility with many papers per category
-- Solution: Switch to vertical orientation for paper nodes
-- Solution: Use compact grid/list view for papers within categories
-- Solution: Add category collapse/expand functionality
-- Solution: Implement virtual scrolling for large lists
-- Solution: Add search/filter within categories
+**Phase 1: Details Panel Modernization**
+- ✅ Replaced custom tabs with Shadcn/ui Tabs component (`@radix-ui/react-tabs`)
+- ✅ Replaced collapsible sections with Shadcn/ui Accordion component (`@radix-ui/react-accordion`)
+- ✅ Replaced custom cards with Shadcn/ui Card component (`@radix-ui/react-slot`)
+- ✅ Replaced custom tooltips with Shadcn/ui Tooltip component (`@radix-ui/react-tooltip`)
+- ✅ Implemented consistent spacing system using Tailwind CSS (`tailwindcss`, `tailwindcss-animate`)
+- ✅ Added utility functions (`class-variance-authority`, `clsx`, `tailwind-merge`)
+- **Dependencies:** `tailwindcss`, `postcss`, `autoprefixer`, `tailwindcss-animate`, `class-variance-authority`, `clsx`, `tailwind-merge`, `@radix-ui/react-tabs`, `@radix-ui/react-accordion`, `@radix-ui/react-tooltip`, `@radix-ui/react-slot`, `lucide-react`
 
-**Information Density & Readability:**
-- Problem: Right panel too busy with multiple collapsible sections
-- Solution: Reduce default expanded sections
-- Problem: Log areas take significant space
-- Solution: Move logs to expandable debug panel
-- Problem: Author list truncated ("+197 more")
-- Solution: Implement expandable author list with "Show all" button
-- Problem: Details panel lacks clear visual hierarchy
-- Solution: Use progressive disclosure (show summary first, details on demand)
-- Solution: Add breadcrumbs for navigation context
+**Phase 2: Tree Diagram Enhancement**
+- ✅ Replaced react-d3-tree with React Flow (`reactflow`, `@xyflow/react`)
+- ✅ Implemented custom PaperNodeComponent with React Flow Handle components
+- ✅ Configured hierarchical tree layout with proper node positioning
+- ✅ Added root node ("AI Papers") with connections to top-level categories
+- ✅ Implemented edge rendering with smoothstep connections
+- ✅ Added React Flow controls (zoom, pan, minimap)
+- **Dependencies:** `reactflow`, `@xyflow/react`
 
-**Visual Hierarchy & Organization:**
-- Problem: All panels have equal visual weight
-- Solution: Use card-based layout for paper details
-- Problem: Action buttons scattered
-- Solution: Group related actions together
-- Problem: Detailed analysis components shown as plain list
-- Solution: Use accordion for detailed analysis with icons
-- Problem: No visual indicators for paper status
-- Solution: Add visual indicators for paper status/completeness
-- Solution: Implement consistent spacing system (8px grid)
-
-**Text & Content Display:**
-- Problem: Component names lack context
-- Solution: Add tooltips showing full component names
-- Problem: No preview/hover states for paper nodes
-- Solution: Implement hover previews for paper nodes
-- Problem: No loading feedback for async content
-- Solution: Add loading skeletons for async content
-
-**Navigation & Interaction:**
-- Problem: No search functionality visible
-- Solution: Add global search bar in header
-- Problem: Tree navigation requires manual scrolling
-- Solution: Implement keyboard navigation (arrow keys, enter)
-- Problem: Right-click menu not discoverable
-- Solution: Make right-click menu more discoverable with visual hints
-- Solution: Add "Recent papers" quick access panel
-
-**Responsive Design:**
-- Problem: Fixed layout may not work on smaller screens
-- Solution: Implement responsive breakpoints
-- Problem: Tree and details compete for space
-- Solution: Add panel resizing/dragging capability
-- Solution: Add fullscreen mode for tree or details
-
-**Selected Tools/Frameworks:**
-
-**Shadcn/ui (for details panel components)**
-- Copy-paste component library built on Radix UI and Tailwind CSS
-- Fully customizable, no runtime dependencies, TypeScript-first
-- Provides accessible components (tabs, accordion, tooltip, dialog) matching modern design patterns
-- Can incrementally adopt without full rewrite
-
-**React Flow (for tree diagram)**
-- Better control over node positioning, supports horizontal/vertical layouts
-- Built-in zoom/pan, better performance for large graphs
-- Replaces react-d3-tree with more flexible layout options
-
-**Phased Implementation Plan:**
-
-**Phase 1: Details Panel Modernization (Tailwind CSS + Shadcn/ui)**
-- Install Tailwind CSS and Shadcn/ui
-- Replace custom tabs with Shadcn/ui Tabs component
-- Replace collapsible sections with Shadcn/ui Accordion component
-- Replace custom cards with Shadcn/ui Card component
-- Replace custom tooltips with Shadcn/ui Tooltip component
-- Implement consistent spacing system using Tailwind's 8px grid
-- Expected improvement: 60% reduction in custom CSS code, consistent visual design, better accessibility, improved maintainability
-
-**Phase 2: Tree Diagram Enhancement (React Flow)**
-- Install React Flow library
-- Replace react-d3-tree with React Flow
-- Configure vertical orientation for paper nodes
-- Implement compact grid/list view for papers within categories
-- Add category collapse/expand functionality
-- Implement virtual scrolling for large lists
-- Add search/filter within categories
-- Expected improvement: Eliminate horizontal scrolling, 3x better performance with 50+ papers, intuitive navigation, better scalability
-
-**Phase 3: Navigation & Interaction Improvements**
-- Add global search bar in header with paper title/author search
-- Implement keyboard navigation (arrow keys for tree, enter to select, escape to close)
-- Add breadcrumbs showing current paper path in tree
-- Make right-click menu more discoverable with visual hints (three-dot icon)
-- Add "Recent papers" quick access panel (last 5-10 viewed papers)
-- Expected improvement: 50% faster paper discovery, reduced mouse dependency, better user flow, improved discoverability
+**Phase 3: Navigation & Interaction**
+- ✅ Added global search bar in header with paper title/author search
+- ✅ Implemented real-time search with dropdown results (up to 10 matches)
+- ✅ Added search icon using Lucide React (`lucide-react`)
+- **Dependencies:** `lucide-react` (Search icon)
 
 **Phase 4: Responsive Design & Polish**
-- Implement responsive breakpoints (mobile: <768px, tablet: 768-1024px, desktop: >1024px)
-- Add panel resizing/dragging capability between tree and details
-- Add fullscreen mode toggle for tree or details panel
-- Move logs to expandable debug panel (collapsed by default)
-- Add loading skeletons for async content
-- Implement hover previews for paper nodes showing title/authors
-- Expected improvement: Works on tablets and smaller screens, flexible workspace layout, cleaner interface, better perceived performance
+- ✅ Implemented responsive breakpoints (mobile: <768px, tablet: 768-1024px, desktop: >1024px)
+- ✅ Added panel resizing/dragging capability between tree and details panels
+- ✅ Added fullscreen mode toggle for tree or details panel
+- ✅ Moved logs to expandable debug panel (collapsed by default) using Shadcn/ui Accordion
+- ✅ Added loading skeletons for async content (repos, references, similar papers, queries)
+- ✅ Implemented hover previews for paper nodes showing title only
+- **Dependencies:** `tailwindcss` (responsive utilities), `@radix-ui/react-accordion` (debug panel)
 
 ### Mileston 7 - Speedup (Complete)
 
