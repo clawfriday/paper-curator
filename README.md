@@ -197,9 +197,62 @@ This follows your ordering: **(1) package OSS as FastAPI services**, **(2) build
   - Curved diagonal lines instead of stepped lines
   - Closer spacing between nodes (nodeSize 100x60, separation 1.0/1.2)
   - Scrollable tree container with gradient background
-  - Color-coded nodes: dark gray (root), purple (categories), blue (papers)
-  - Each leaf-node (paper) currently are listed in a horizontal line, please place them into a semi-circle
-  - The fonts are still not very 
+
+### UI/UX Issues & Proposed Improvements
+
+**Tree Diagram Layout Issues:**
+- Problem: Papers spread horizontally causing extensive horizontal scrolling, poor visibility with many papers per category
+- Solution: Switch to vertical orientation for paper nodes, use compact grid/list view for papers within categories, add category collapse/expand, implement virtual scrolling for large lists, add search/filter within categories
+
+**Information Density & Readability:**
+- Problem: Right panel too busy with multiple collapsible sections, author list truncated ("+197 more"), log areas take significant space, details panel lacks clear visual hierarchy
+- Solution: Reduce default expanded sections, move logs to expandable debug panel, use tooltips for truncated text, implement tabs with better spacing, add breadcrumbs for navigation context, use progressive disclosure (show summary first, details on demand)
+
+**Visual Hierarchy & Organization:**
+- Problem: All panels have equal visual weight, action buttons scattered, no clear primary/secondary actions, detailed analysis components shown as plain list
+- Solution: Use card-based layout for paper details, group related actions together, implement sticky header for paper info, use accordion for detailed analysis with icons, add visual indicators for paper status/completeness, implement consistent spacing system (8px grid)
+
+**Text & Content Display:**
+- Problem: Long author lists overflow, formulas may not render properly, component names lack context, no preview/hover states
+- Solution: Implement expandable author list with "Show all" button, verify LaTeX rendering works in all contexts, add tooltips showing full component names, implement hover previews for paper nodes, add loading skeletons for async content
+
+**Navigation & Interaction:**
+- Problem: No search functionality visible, tree navigation requires manual scrolling, no keyboard shortcuts, right-click menu not discoverable
+- Solution: Add global search bar in header, implement keyboard navigation (arrow keys, enter), add breadcrumb navigation, make right-click menu more discoverable with visual hints, add "Recent papers" quick access panel
+
+**Responsive Design:**
+- Problem: Fixed layout may not work on smaller screens, tree and details compete for space
+- Solution: Implement responsive breakpoints, add panel resizing/dragging, consider mobile-friendly tree view (hierarchical list), add fullscreen mode for tree or details
+
+**Better Tools/Frameworks for UI Simplification:**
+
+**Option 1: Material-UI (MUI) or Ant Design**
+- Provides pre-built components (tabs, cards, accordions, tooltips) reducing custom CSS
+- Built-in responsive grid system and spacing utilities
+- Consistent design system with theming support
+- Can replace 50%+ of custom styling with component library
+
+**Option 2: Tailwind CSS + Headless UI**
+- Utility-first CSS framework for rapid styling without custom CSS files
+- Headless UI provides accessible, unstyled components (tabs, dialogs, menus)
+- Better maintainability, smaller bundle size than full component library
+- Easy to implement consistent spacing, colors, typography
+
+**Option 3: React Flow or Cytoscape.js (for tree diagram)**
+- React Flow: Better control over node positioning, supports horizontal/vertical layouts, built-in zoom/pan, better performance for large graphs
+- Cytoscape.js: More powerful graph visualization, supports complex layouts (hierarchical, force-directed), better for large datasets, can replace react-d3-tree
+
+**Option 4: Shadcn/ui (Recommended)**
+- Copy-paste component library built on Radix UI and Tailwind CSS
+- Fully customizable, no runtime dependencies, TypeScript-first
+- Provides accessible components (tabs, accordion, tooltip, dialog) matching modern design patterns
+- Can incrementally adopt without full rewrite
+
+**Recommended Approach:**
+- Phase 1: Add Tailwind CSS + Shadcn/ui components for details panel (tabs, cards, accordions) - minimal changes, maximum impact
+- Phase 2: Replace react-d3-tree with React Flow for better tree control and layout options
+- Phase 3: Implement global search and keyboard navigation
+- Phase 4: Add responsive breakpoints and mobile-friendly views
 
 ### Mileston 7 - Speedup (Complete)
 
