@@ -5,6 +5,10 @@ import dynamic from "next/dynamic";
 import type { RawNodeDatum, CustomNodeElementProps } from "react-d3-tree";
 import { InlineMath, BlockMath } from "react-katex";
 import "katex/dist/katex.min.css";
+import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
+import { Accordion, AccordionItem, AccordionTrigger, AccordionContent } from "@/components/ui/accordion";
+import { Card, CardHeader, CardTitle, CardDescription, CardContent } from "@/components/ui/card";
+import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
 
 const Tree = dynamic(() => import("react-d3-tree"), { ssr: false });
 
@@ -137,59 +141,7 @@ function TextWithMath({ text, style }: { text: string; style?: React.CSSProperti
   );
 }
 
-// Collapsible section component for structured summaries
-function CollapsibleSection({ 
-  title, 
-  children, 
-  defaultOpen = false 
-}: { 
-  title: string; 
-  children: React.ReactNode; 
-  defaultOpen?: boolean;
-}) {
-  const [isOpen, setIsOpen] = useState(defaultOpen);
-  
-  return (
-    <div style={{ 
-      marginBottom: "0.5rem", 
-      border: "1px solid #e5e7eb", 
-      borderRadius: "6px",
-      overflow: "hidden",
-    }}>
-      <button
-        onClick={() => setIsOpen(!isOpen)}
-        style={{
-          width: "100%",
-          padding: "0.5rem 0.75rem",
-          display: "flex",
-          justifyContent: "space-between",
-          alignItems: "center",
-          backgroundColor: "#f9fafb",
-          border: "none",
-          cursor: "pointer",
-          fontSize: "0.8rem",
-          fontWeight: 600,
-          color: "#374151",
-          textAlign: "left",
-        }}
-      >
-        <span>{title}</span>
-        <span style={{ fontSize: "0.7rem", color: "#6b7280" }}>
-          {isOpen ? "▼" : "▶"}
-        </span>
-      </button>
-      {isOpen && (
-        <div style={{ 
-          padding: "0.75rem", 
-          backgroundColor: "#fff",
-          borderTop: "1px solid #e5e7eb",
-        }}>
-          {children}
-        </div>
-      )}
-    </div>
-  );
-}
+// Note: CollapsibleSection replaced with Shadcn/ui Accordion component
 
 // Convert PaperNode to react-d3-tree compatible format
 function toTreeData(node: PaperNode): RawNodeDatum {
@@ -276,8 +228,6 @@ export default function Home() {
   } | null>(null);
   
   // Collapsible sections
-  const [isIngestExpanded, setIsIngestExpanded] = useState(true);
-  const [isDetailsExpanded, setIsDetailsExpanded] = useState(true);
   
   // Query selection for merge feature
   const [selectedQueryIds, setSelectedQueryIds] = useState<Set<number>>(new Set());
@@ -1389,7 +1339,8 @@ export default function Home() {
   }, [handleNodeClick, handleNodeRightClick]);
 
   return (
-    <div style={{ display: "flex", height: "100vh" }}>
+    <TooltipProvider>
+      <div style={{ display: "flex", height: "100vh" }}>
       {/* Left panel: Tree visualization */}
       <div style={{ flex: 2, borderRight: "1px solid #e5e5e5", display: "flex", flexDirection: "column" }}>
         <style>{`
@@ -1525,355 +1476,273 @@ export default function Home() {
       )}
 
       {/* Right panel: Details and ingest */}
-      <div style={{ flex: 1, padding: "1.5rem", display: "flex", flexDirection: "column", backgroundColor: "#fafafa", overflowY: "auto" }}>
-        {/* Ingest section - Collapsible */}
-        <div style={{ marginBottom: "1rem", backgroundColor: "white", borderRadius: "8px", border: "1px solid #e5e5e5", overflow: "hidden" }}>
-          <div 
-            onClick={() => setIsIngestExpanded(!isIngestExpanded)}
-            style={{ 
-              padding: "0.75rem 1rem", 
-              display: "flex", 
-              justifyContent: "space-between", 
-              alignItems: "center",
-              cursor: "pointer",
-              backgroundColor: "#f9f9f9",
-              borderBottom: isIngestExpanded ? "1px solid #e5e5e5" : "none",
-            }}
-          >
-            <h2 style={{ margin: 0, fontSize: "1rem", fontWeight: 600 }}>📥 Ingest Paper</h2>
-            <span style={{ fontSize: "0.875rem", color: "#666" }}>{isIngestExpanded ? "▼" : "▶"}</span>
-          </div>
-          {isIngestExpanded && (
-            <div style={{ padding: "1rem" }}>
-              <input
-                type="text"
-                value={arxivUrl}
-                onChange={(e) => setArxivUrl(e.target.value)}
-                placeholder="arXiv URL or ID (e.g., 1706.03762)"
-                disabled={isIngesting}
-                style={{
-                  width: "100%",
-                  padding: "0.5rem",
-                  marginBottom: "0.5rem",
-                  boxSizing: "border-box",
-                  border: "1px solid #ddd",
-                  borderRadius: "4px",
-                  fontSize: "0.875rem",
-                }}
-              />
-              <button
-                id="ingest-btn"
-                onClick={handleIngest}
-                disabled={isIngesting || !arxivUrl.trim()}
-                style={{
-                  width: "100%",
-                  padding: "0.5rem",
-                  backgroundColor: isIngesting ? "#ccc" : "#0070f3",
-                  color: "white",
-                  border: "none",
-                  borderRadius: "4px",
-                  cursor: isIngesting ? "not-allowed" : "pointer",
-                  fontSize: "0.875rem",
-                  fontWeight: 500,
-                }}
-              >
-                {isIngesting ? "Ingesting..." : "Ingest"}
-              </button>
+      <div className="flex-1 p-6 flex flex-col bg-gray-50 overflow-y-auto">
+        {/* Ingest section - Accordion */}
+        <Card className="mb-4">
+          <Accordion type="single" collapsible defaultValue="ingest" className="w-full">
+            <AccordionItem value="ingest" className="border-0">
+              <AccordionTrigger className="px-4 py-3 hover:no-underline">
+                <h2 className="text-base font-semibold m-0">📥 Ingest Paper</h2>
+              </AccordionTrigger>
+              <AccordionContent>
+                <div className="p-4">
+                  <input
+                    type="text"
+                    value={arxivUrl}
+                    onChange={(e) => setArxivUrl(e.target.value)}
+                    placeholder="arXiv URL or ID (e.g., 1706.03762)"
+                    disabled={isIngesting}
+                    className="w-full px-2 py-2 mb-2 border border-gray-300 rounded text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 disabled:bg-gray-100"
+                  />
+                  <button
+                    id="ingest-btn"
+                    onClick={handleIngest}
+                    disabled={isIngesting || !arxivUrl.trim()}
+                    className="w-full px-2 py-2 bg-blue-600 text-white rounded text-sm font-medium disabled:bg-gray-400 disabled:cursor-not-allowed hover:bg-blue-700 transition-colors"
+                  >
+                    {isIngesting ? "Ingesting..." : "Ingest"}
+                  </button>
 
-              {/* Progress steps */}
-              {steps.length > 0 && (
-                <div style={{ marginTop: "0.75rem" }}>
-                  {steps.map((step, i) => (
-                    <div key={i} style={{ display: "flex", alignItems: "flex-start", marginBottom: "0.25rem" }}>
-                      <span style={{ color: getStepColor(step.status), marginRight: "0.375rem", fontSize: "0.75rem" }}>
-                        {getStepIcon(step.status)}
-                      </span>
-                      <div style={{ flex: 1 }}>
-                        <span style={{ fontSize: "0.75rem", color: step.status === "error" ? "#ef4444" : "#333" }}>
-                          {step.name}
-                        </span>
-                        {step.message && (
-                          <p style={{ margin: "0.125rem 0 0", fontSize: "0.625rem", color: step.status === "error" ? "#ef4444" : "#666" }}>
-                            {step.message}
-                          </p>
-                        )}
-                      </div>
-                    </div>
-                  ))}
-                </div>
-              )}
-              
-              {/* Batch Ingest */}
-              <div style={{ marginTop: "1rem", paddingTop: "1rem", borderTop: "1px solid #e5e5e5" }}>
-                <h3 style={{ margin: "0 0 0.5rem", fontSize: "0.875rem", fontWeight: 500, color: "#666" }}>
-                  📁 Batch Ingest (Local PDFs)
-                </h3>
-                <input
-                  type="text"
-                  value={batchDirectory}
-                  onChange={(e) => setBatchDirectory(e.target.value)}
-                  placeholder="Directory path (e.g., /Users/you/papers)"
-                  disabled={isBatchIngesting}
-                  style={{
-                    width: "100%",
-                    padding: "0.5rem",
-                    marginBottom: "0.5rem",
-                    boxSizing: "border-box",
-                    border: "1px solid #ddd",
-                    borderRadius: "4px",
-                    fontSize: "0.75rem",
-                  }}
-                />
-                <button
-                  onClick={handleBatchIngest}
-                  disabled={isBatchIngesting || !batchDirectory.trim()}
-                  style={{
-                    width: "100%",
-                    padding: "0.5rem",
-                    backgroundColor: isBatchIngesting ? "#ccc" : "#10b981",
-                    color: "white",
-                    border: "none",
-                    borderRadius: "4px",
-                    cursor: isBatchIngesting ? "not-allowed" : "pointer",
-                    fontSize: "0.75rem",
-                    fontWeight: 500,
-                  }}
-                >
-                  {isBatchIngesting ? "Processing..." : "Batch Ingest"}
-                </button>
-                
-                {/* Batch results */}
-                {batchResults && (
-                  <div style={{ marginTop: "0.5rem", fontSize: "0.7rem" }}>
-                    <div style={{ color: "#10b981" }}>✓ {batchResults.success} ingested</div>
-                    {batchResults.skipped > 0 && (
-                      <div style={{ color: "#f59e0b" }}>⏭ {batchResults.skipped} skipped (existing)</div>
-                    )}
-                    {batchResults.errors > 0 && (
-                      <div style={{ color: "#ef4444" }}>✗ {batchResults.errors} errors</div>
-                    )}
-                  </div>
-                )}
-              </div>
-              
-              {/* Rebalance Categories */}
-              <div style={{ marginTop: "1rem", paddingTop: "1rem", borderTop: "1px solid #e5e5e5" }}>
-                <h3 style={{ margin: "0 0 0.5rem", fontSize: "0.875rem", fontWeight: 500, color: "#666" }}>
-                  ⚖️ Rebalance Categories
-                </h3>
-                <p style={{ fontSize: "0.7rem", color: "#888", marginBottom: "0.5rem" }}>
-                  Reclassify papers in crowded categories (10+ papers)
-                </p>
-                <button
-                  onClick={handleRebalanceCategories}
-                  disabled={isRebalancing}
-                  style={{
-                    width: "100%",
-                    padding: "0.5rem",
-                    backgroundColor: isRebalancing ? "#ccc" : "#8b5cf6",
-                    color: "white",
-                    border: "none",
-                    borderRadius: "4px",
-                    cursor: isRebalancing ? "not-allowed" : "pointer",
-                    fontSize: "0.75rem",
-                    fontWeight: 500,
-                  }}
-                >
-                  {isRebalancing ? "Rebalancing..." : "Rebalance Now"}
-                </button>
-                
-                {/* Rebalance results */}
-                {rebalanceResult && (
-                  <div style={{ marginTop: "0.5rem", fontSize: "0.7rem" }}>
-                    <div style={{ color: "#8b5cf6" }}>{rebalanceResult.message}</div>
-                    {rebalanceResult.reclassified?.length > 0 && (
-                      <div style={{ color: "#10b981", marginTop: "0.25rem" }}>
-                        ✓ Moved {rebalanceResult.reclassified.length} papers
-                      </div>
-                    )}
-                  </div>
-                )}
-              </div>
-              
-              {/* Ingest log textbox */}
-              {ingestLog.length > 0 && (
-                <div
-                  style={{
-                    marginTop: "0.75rem",
-                    backgroundColor: "#1e1e1e",
-                    borderRadius: "4px",
-                    padding: "0.5rem",
-                    maxHeight: "150px",
-                    overflowY: "auto",
-                    fontFamily: "monospace",
-                    fontSize: "0.7rem",
-                  }}
-                >
-                  {ingestLog.map((log, i) => (
-                    <div key={i} style={{ color: log.includes("Error") ? "#f87171" : "#a3e635", marginBottom: "2px" }}>
-                      {log}
-                    </div>
-                  ))}
-                </div>
-              )}
-            </div>
-          )}
-        </div>
-
-        {/* Paper Details Section - Collapsible */}
-        <div style={{ flex: 1, backgroundColor: "white", borderRadius: "8px", border: "1px solid #e5e5e5", overflow: "hidden", display: "flex", flexDirection: "column" }}>
-          <div 
-            onClick={() => setIsDetailsExpanded(!isDetailsExpanded)}
-            style={{ 
-              padding: "0.75rem 1rem", 
-              display: "flex", 
-              justifyContent: "space-between", 
-              alignItems: "center",
-              cursor: "pointer",
-              backgroundColor: "#f9f9f9",
-              borderBottom: isDetailsExpanded ? "1px solid #e5e5e5" : "none",
-            }}
-          >
-            <h2 style={{ margin: 0, fontSize: "1rem", fontWeight: 600 }}>
-              📄 {selectedNode ? (selectedNode.attributes?.title ? selectedNode.name : selectedNode.name) : "Paper Details"}
-            </h2>
-            <span style={{ fontSize: "0.875rem", color: "#666" }}>{isDetailsExpanded ? "▼" : "▶"}</span>
-          </div>
-          
-          {isDetailsExpanded && (
-            <div style={{ flex: 1, display: "flex", flexDirection: "column", overflow: "hidden" }}>
-              {/* Panel tabs */}
-              {selectedNode && (
-                <div style={{ display: "flex", padding: "0.5rem", gap: "0.25rem", borderBottom: "1px solid #eee", flexWrap: "wrap" }}>
-                  {["details", "repos", "refs", "similar", "query"].map((panel) => (
-                    <button
-                      key={panel}
-                      onClick={() => setActivePanel(panel === "refs" ? "references" : panel as any)}
-                      style={{
-                        flex: 1,
-                        padding: "0.375rem",
-                        backgroundColor: (activePanel === panel || (panel === "refs" && activePanel === "references")) ? "#0070f3" : "#e5e5e5",
-                        color: (activePanel === panel || (panel === "refs" && activePanel === "references")) ? "white" : "#333",
-                        border: "none",
-                        borderRadius: "4px",
-                        cursor: "pointer",
-                        fontSize: "0.625rem",
-                        textTransform: "capitalize",
-                      }}
-                    >
-                      {panel}
-                    </button>
-                  ))}
-                </div>
-              )}
-
-              {/* Feature Progress Log */}
-              {featureLog.length > 0 && (
-                <div style={{ 
-                  margin: "0.5rem", 
-                  backgroundColor: "#1a1a2e", 
-                  padding: "0.5rem", 
-                  borderRadius: "6px", 
-                  fontFamily: "monospace",
-                  fontSize: "0.625rem",
-                  maxHeight: "100px",
-                  overflowY: "auto",
-                }}>
-                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "0.25rem" }}>
-                    <span style={{ color: "#10b981", fontWeight: 600 }}>Log</span>
-                    <button 
-                      onClick={clearFeatureLog}
-                      style={{ 
-                        background: "none", 
-                        border: "none", 
-                        color: "#666", 
-                        cursor: "pointer",
-                        fontSize: "0.5rem",
-                      }}
-                    >
-                      Clear
-                    </button>
-                  </div>
-                  {featureLog.map((log, i) => (
-                    <div key={i} style={{ 
-                      color: log.includes("✓") ? "#10b981" : log.includes("✗") ? "#ef4444" : log.includes("Error") ? "#ef4444" : "#e5e5e5",
-                      lineHeight: 1.4,
-                    }}>
-                      {log}
-                    </div>
-                  ))}
-                </div>
-              )}
-
-              {/* Dynamic panel content */}
-              <div style={{ flex: 1, padding: "0.75rem", overflowY: "auto" }}>
-          {/* Details Panel */}
-          {activePanel === "details" && (
-            <>
-              <h2 style={{ marginTop: 0, fontSize: "1.125rem", fontWeight: 600 }}>Paper Details</h2>
-              {selectedNode?.attributes ? (
-                <div>
-                  <h3 style={{ fontSize: "1rem", marginBottom: "0.5rem" }}>{selectedNode.attributes.title || selectedNode.name}</h3>
-                  {selectedNode.attributes.arxivId && (
-                    <p style={{ fontSize: "0.875rem", color: "#666", margin: "0 0 0.5rem" }}>
-                      <strong>arXiv:</strong>{" "}
-                      <a href={`https://arxiv.org/abs/${selectedNode.attributes.arxivId}`} target="_blank" rel="noopener noreferrer" style={{ color: "#0070f3" }}>
-                        {selectedNode.attributes.arxivId}
-                      </a>
-                    </p>
-                  )}
-                  {selectedNode.attributes.authors && (
-                    <p style={{ fontSize: "0.875rem", color: "#666", margin: "0 0 0.5rem" }}>
-                      <strong>Authors:</strong> {selectedNode.attributes.authors.slice(0, 3).join(", ")}
-                      {selectedNode.attributes.authors.length > 3 && ` +${selectedNode.attributes.authors.length - 3} more`}
-                    </p>
-                  )}
-                  {selectedNode.attributes.category && (
-                    <p style={{ fontSize: "0.875rem", color: "#666", margin: "0 0 1rem" }}>
-                      <strong>Category:</strong> {selectedNode.attributes.category}
-                    </p>
-                  )}
-                  {/* Show structured analysis if available (from cached data), otherwise show regular summary */}
-                  {structuredAnalysis ? (
-                    <div>
-                      <h4 style={{ fontSize: "0.875rem", marginBottom: "0.5rem" }}>
-                        Detailed Analysis ({structuredAnalysis.components.length} components)
-                      </h4>
-                      {structuredAnalysis.sections.map((section, idx) => (
-                        <CollapsibleSection
-                          key={idx}
-                          title={section.component}
-                          defaultOpen={idx === 0}
-                        >
-                          <div style={{ fontSize: "0.8rem", lineHeight: 1.5 }}>
-                            <div style={{ marginBottom: "0.5rem" }}>
-                              <strong style={{ color: "#4f46e5" }}>Steps:</strong>
-                              <div style={{ whiteSpace: "pre-wrap", marginTop: "0.25rem" }}>
-                                <TextWithMath text={section.steps} />
-                              </div>
-                            </div>
-                            <div style={{ marginBottom: "0.5rem" }}>
-                              <strong style={{ color: "#059669" }}>Benefits:</strong>
-                              <div style={{ marginTop: "0.25rem" }}>
-                                <TextWithMath text={section.benefits} />
-                              </div>
-                            </div>
-                            <div style={{ marginBottom: "0.5rem" }}>
-                              <strong style={{ color: "#d97706" }}>Rationale:</strong>
-                              <div style={{ marginTop: "0.25rem" }}>
-                                <TextWithMath text={section.rationale} />
-                              </div>
-                            </div>
-                            <div>
-                              <strong style={{ color: "#dc2626" }}>Results:</strong>
-                              <div style={{ whiteSpace: "pre-wrap", marginTop: "0.25rem" }}>
-                                <TextWithMath text={section.results} />
-                              </div>
-                            </div>
+                  {/* Progress steps */}
+                  {steps.length > 0 && (
+                    <div className="mt-3">
+                      {steps.map((step, i) => (
+                        <div key={i} className="flex items-start mb-1">
+                          <span className="mr-1.5 text-xs" style={{ color: getStepColor(step.status) }}>
+                            {getStepIcon(step.status)}
+                          </span>
+                          <div className="flex-1">
+                            <span className={`text-xs ${step.status === "error" ? "text-red-500" : "text-gray-800"}`}>
+                              {step.name}
+                            </span>
+                            {step.message && (
+                              <p className={`mt-0.5 text-[10px] ${step.status === "error" ? "text-red-500" : "text-gray-600"}`}>
+                                {step.message}
+                              </p>
+                            )}
                           </div>
-                        </CollapsibleSection>
+                        </div>
                       ))}
                     </div>
+                  )}
+                  
+                  {/* Batch Ingest */}
+                  <div className="mt-4 pt-4 border-t border-gray-200">
+                    <h3 className="m-0 mb-2 text-sm font-medium text-gray-600">
+                      📁 Batch Ingest (Local PDFs)
+                    </h3>
+                    <input
+                      type="text"
+                      value={batchDirectory}
+                      onChange={(e) => setBatchDirectory(e.target.value)}
+                      placeholder="Directory path (e.g., /Users/you/papers)"
+                      disabled={isBatchIngesting}
+                      className="w-full px-2 py-2 mb-2 border border-gray-300 rounded text-xs focus:outline-none focus:ring-2 focus:ring-green-500 disabled:bg-gray-100"
+                    />
+                    <button
+                      onClick={handleBatchIngest}
+                      disabled={isBatchIngesting || !batchDirectory.trim()}
+                      className="w-full px-2 py-2 bg-green-600 text-white rounded text-xs font-medium disabled:bg-gray-400 disabled:cursor-not-allowed hover:bg-green-700 transition-colors"
+                    >
+                      {isBatchIngesting ? "Processing..." : "Batch Ingest"}
+                    </button>
+                    
+                    {/* Batch results */}
+                    {batchResults && (
+                      <div className="mt-2 text-[11px]">
+                        <div className="text-green-600">✓ {batchResults.success} ingested</div>
+                        {batchResults.skipped > 0 && (
+                          <div className="text-amber-500">⏭ {batchResults.skipped} skipped (existing)</div>
+                        )}
+                        {batchResults.errors > 0 && (
+                          <div className="text-red-500">✗ {batchResults.errors} errors</div>
+                        )}
+                      </div>
+                    )}
+                  </div>
+                  
+                  {/* Rebalance Categories */}
+                  <div className="mt-4 pt-4 border-t border-gray-200">
+                    <h3 className="m-0 mb-2 text-sm font-medium text-gray-600">
+                      ⚖️ Rebalance Categories
+                    </h3>
+                    <p className="text-[11px] text-gray-500 mb-2">
+                      Reclassify papers in crowded categories (10+ papers)
+                    </p>
+                    <button
+                      onClick={handleRebalanceCategories}
+                      disabled={isRebalancing}
+                      className="w-full px-2 py-2 bg-purple-600 text-white rounded text-xs font-medium disabled:bg-gray-400 disabled:cursor-not-allowed hover:bg-purple-700 transition-colors"
+                    >
+                      {isRebalancing ? "Rebalancing..." : "Rebalance Now"}
+                    </button>
+                    
+                    {/* Rebalance results */}
+                    {rebalanceResult && (
+                      <div className="mt-2 text-[11px]">
+                        <div className="text-purple-600">{rebalanceResult.message}</div>
+                        {rebalanceResult.reclassified?.length > 0 && (
+                          <div className="text-green-600 mt-1">
+                            ✓ Moved {rebalanceResult.reclassified.length} papers
+                          </div>
+                        )}
+                      </div>
+                    )}
+                  </div>
+                  
+                  {/* Ingest log textbox */}
+                  {ingestLog.length > 0 && (
+                    <div className="mt-3 bg-gray-900 rounded p-2 max-h-[150px] overflow-y-auto font-mono text-[11px]">
+                      {ingestLog.map((log, i) => (
+                        <div key={i} className={`mb-0.5 ${log.includes("Error") ? "text-red-400" : "text-green-400"}`}>
+                          {log}
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              </AccordionContent>
+            </AccordionItem>
+          </Accordion>
+        </Card>
+
+        {/* Paper Details Section - Accordion */}
+        <Card className="flex-1 flex flex-col">
+          <Accordion type="single" collapsible defaultValue="details" className="w-full flex-1 flex flex-col">
+            <AccordionItem value="details" className="border-0 flex-1 flex flex-col">
+              <AccordionTrigger className="px-4 py-3 hover:no-underline">
+                <h2 className="text-base font-semibold m-0">
+                  📄 {selectedNode ? (selectedNode.attributes?.title ? selectedNode.name : selectedNode.name) : "Paper Details"}
+                </h2>
+              </AccordionTrigger>
+              <AccordionContent className="flex-1 flex flex-col overflow-hidden">
+                <div className="flex-1 flex flex-col overflow-hidden">
+                  {/* Panel tabs */}
+                  {/* Feature Progress Log */}
+                  {featureLog.length > 0 && (
+                    <div style={{ 
+                      margin: "0.5rem", 
+                      backgroundColor: "#1a1a2e", 
+                      padding: "0.5rem", 
+                      borderRadius: "6px", 
+                      fontFamily: "monospace",
+                      fontSize: "0.625rem",
+                      maxHeight: "100px",
+                      overflowY: "auto",
+                    }}>
+                      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "0.25rem" }}>
+                        <span style={{ color: "#10b981", fontWeight: 600 }}>Log</span>
+                        <button 
+                          onClick={clearFeatureLog}
+                          style={{ 
+                            background: "none", 
+                            border: "none", 
+                            color: "#666", 
+                            cursor: "pointer",
+                            fontSize: "0.5rem",
+                          }}
+                        >
+                          Clear
+                        </button>
+                      </div>
+                      {featureLog.map((log, i) => (
+                        <div key={i} style={{ 
+                          color: log.includes("✓") ? "#10b981" : log.includes("✗") ? "#ef4444" : log.includes("Error") ? "#ef4444" : "#e5e5e5",
+                          lineHeight: 1.4,
+                        }}>
+                          {log}
+                        </div>
+                      ))}
+                    </div>
+                  )}
+
+                  {/* Dynamic panel content */}
+                  <div style={{ flex: 1, padding: "0.75rem", overflowY: "auto" }}>
+                    {selectedNode && (
+                  <Tabs 
+                    value={activePanel === "references" ? "refs" : activePanel} 
+                    onValueChange={(value) => setActivePanel(value === "refs" ? "references" : value as any)}
+                    className="w-full"
+                  >
+                    <TabsList className="grid w-full grid-cols-5 h-9 mb-4">
+                      <TabsTrigger value="details" className="text-xs">Details</TabsTrigger>
+                      <TabsTrigger value="repos" className="text-xs">Repos</TabsTrigger>
+                      <TabsTrigger value="refs" className="text-xs">Refs</TabsTrigger>
+                      <TabsTrigger value="similar" className="text-xs">Similar</TabsTrigger>
+                      <TabsTrigger value="query" className="text-xs">Query</TabsTrigger>
+                    </TabsList>
+                    
+                    {/* Details Panel */}
+                    <TabsContent value="details" className="mt-0">
+                      <h2 className="text-lg font-semibold mb-4">Paper Details</h2>
+                      {selectedNode?.attributes ? (
+                        <div>
+                          <h3 className="text-base font-semibold mb-2">{selectedNode.attributes.title || selectedNode.name}</h3>
+                          {selectedNode.attributes.arxivId && (
+                            <p className="text-sm text-gray-600 mb-2">
+                              <strong>arXiv:</strong>{" "}
+                              <a href={`https://arxiv.org/abs/${selectedNode.attributes.arxivId}`} target="_blank" rel="noopener noreferrer" className="text-blue-600 hover:underline">
+                                {selectedNode.attributes.arxivId}
+                              </a>
+                            </p>
+                          )}
+                          {selectedNode.attributes.authors && (
+                            <p className="text-sm text-gray-600 mb-2">
+                              <strong>Authors:</strong> {selectedNode.attributes.authors.slice(0, 3).join(", ")}
+                              {selectedNode.attributes.authors.length > 3 && ` +${selectedNode.attributes.authors.length - 3} more`}
+                            </p>
+                          )}
+                          {selectedNode.attributes.category && (
+                            <p className="text-sm text-gray-600 mb-4">
+                              <strong>Category:</strong> {selectedNode.attributes.category}
+                            </p>
+                          )}
+                          {/* Show structured analysis if available (from cached data), otherwise show regular summary */}
+                          {structuredAnalysis ? (
+                    <Card className="mt-4">
+                      <CardHeader>
+                        <CardTitle className="text-sm">
+                          Detailed Analysis ({structuredAnalysis.components.length} components)
+                        </CardTitle>
+                      </CardHeader>
+                      <CardContent>
+                        <Accordion type="single" collapsible defaultValue={structuredAnalysis.sections[0]?.component} className="w-full">
+                          {structuredAnalysis.sections.map((section, idx) => (
+                            <AccordionItem key={idx} value={section.component}>
+                              <AccordionTrigger className="text-sm font-semibold">{section.component}</AccordionTrigger>
+                              <AccordionContent>
+                                <div className="space-y-3 text-sm">
+                                  <div>
+                                    <strong className="text-indigo-600">Steps:</strong>
+                                    <div className="mt-1 whitespace-pre-wrap">
+                                      <TextWithMath text={section.steps} />
+                                    </div>
+                                  </div>
+                                  <div>
+                                    <strong className="text-emerald-600">Benefits:</strong>
+                                    <div className="mt-1">
+                                      <TextWithMath text={section.benefits} />
+                                    </div>
+                                  </div>
+                                  <div>
+                                    <strong className="text-amber-600">Rationale:</strong>
+                                    <div className="mt-1">
+                                      <TextWithMath text={section.rationale} />
+                                    </div>
+                                  </div>
+                                  <div>
+                                    <strong className="text-red-600">Results:</strong>
+                                    <div className="mt-1 whitespace-pre-wrap">
+                                      <TextWithMath text={section.results} />
+                                    </div>
+                                  </div>
+                                </div>
+                              </AccordionContent>
+                            </AccordionItem>
+                          ))}
+                        </Accordion>
+                      </CardContent>
+                    </Card>
                   ) : selectedNode.attributes.summary ? (() => {
                     // Try to parse as structured summary
                     let structured: { type: string; components: string[]; sections: Array<{
@@ -1893,414 +1762,328 @@ export default function Home() {
                     }
                     
                     if (structured) {
-                      // Render structured summary with collapsible sections
+                      // Render structured summary with accordion sections
                       return (
-                        <div>
-                          <h4 style={{ fontSize: "0.875rem", marginBottom: "0.5rem" }}>
-                            Summary ({structured.components.length} components)
-                          </h4>
-                          {structured.sections.map((section, idx) => (
-                            <CollapsibleSection
-                              key={idx}
-                              title={section.component}
-                              defaultOpen={idx === 0}
-                            >
-                              <div style={{ fontSize: "0.8rem", lineHeight: 1.5 }}>
-                                <div style={{ marginBottom: "0.5rem" }}>
-                                  <strong style={{ color: "#4f46e5" }}>Steps:</strong>
-                                  <div style={{ whiteSpace: "pre-wrap", marginTop: "0.25rem" }}>
-                                    <TextWithMath text={section.steps} />
-                                  </div>
-                                </div>
-                                <div style={{ marginBottom: "0.5rem" }}>
-                                  <strong style={{ color: "#059669" }}>Benefits:</strong>
-                                  <div style={{ marginTop: "0.25rem" }}>
-                                    <TextWithMath text={section.benefits} />
-                                  </div>
-                                </div>
-                                <div style={{ marginBottom: "0.5rem" }}>
-                                  <strong style={{ color: "#d97706" }}>Rationale:</strong>
-                                  <div style={{ marginTop: "0.25rem" }}>
-                                    <TextWithMath text={section.rationale} />
-                                  </div>
-                                </div>
-                                <div>
-                                  <strong style={{ color: "#dc2626" }}>Results:</strong>
-                                  <div style={{ whiteSpace: "pre-wrap", marginTop: "0.25rem" }}>
-                                    <TextWithMath text={section.results} />
-                                  </div>
-                                </div>
-                              </div>
-                            </CollapsibleSection>
-                          ))}
-                        </div>
+                        <Card className="mt-4">
+                          <CardHeader>
+                            <CardTitle className="text-sm">
+                              Summary ({structured.components.length} components)
+                            </CardTitle>
+                          </CardHeader>
+                          <CardContent>
+                            <Accordion type="single" collapsible defaultValue={structured.sections[0]?.component} className="w-full">
+                              {structured.sections.map((section, idx) => (
+                                <AccordionItem key={idx} value={section.component}>
+                                  <AccordionTrigger className="text-sm font-semibold">{section.component}</AccordionTrigger>
+                                  <AccordionContent>
+                                    <div className="space-y-3 text-sm">
+                                      <div>
+                                        <strong className="text-indigo-600">Steps:</strong>
+                                        <div className="mt-1 whitespace-pre-wrap">
+                                          <TextWithMath text={section.steps} />
+                                        </div>
+                                      </div>
+                                      <div>
+                                        <strong className="text-emerald-600">Benefits:</strong>
+                                        <div className="mt-1">
+                                          <TextWithMath text={section.benefits} />
+                                        </div>
+                                      </div>
+                                      <div>
+                                        <strong className="text-amber-600">Rationale:</strong>
+                                        <div className="mt-1">
+                                          <TextWithMath text={section.rationale} />
+                                        </div>
+                                      </div>
+                                      <div>
+                                        <strong className="text-red-600">Results:</strong>
+                                        <div className="mt-1 whitespace-pre-wrap">
+                                          <TextWithMath text={section.results} />
+                                        </div>
+                                      </div>
+                                    </div>
+                                  </AccordionContent>
+                                </AccordionItem>
+                              ))}
+                            </Accordion>
+                          </CardContent>
+                        </Card>
                       );
                     } else {
                       // Render plain text summary (legacy format)
                       return (
-                        <div>
-                          <h4 style={{ fontSize: "0.875rem", marginBottom: "0.5rem" }}>Summary</h4>
-                          <p style={{ fontSize: "0.875rem", lineHeight: 1.6, color: "#333", whiteSpace: "pre-wrap" }}>
-                            <TextWithMath text={selectedNode.attributes.summary} />
-                          </p>
-                        </div>
+                        <Card className="mt-4">
+                          <CardHeader>
+                            <CardTitle className="text-sm">Summary</CardTitle>
+                          </CardHeader>
+                          <CardContent>
+                            <p className="text-sm leading-relaxed text-gray-700 whitespace-pre-wrap">
+                              <TextWithMath text={selectedNode.attributes.summary} />
+                            </p>
+                          </CardContent>
+                        </Card>
                       );
                     }
                   })() : null}
-                  {/* Action buttons */}
-                  <div style={{ display: "flex", gap: "0.5rem", marginTop: "1rem", flexWrap: "wrap" }}>
-                    <button
-                      onClick={handleReabbreviate}
-                      disabled={isReabbreviating}
-                      style={{
-                        padding: "0.5rem 1rem",
-                        fontSize: "0.75rem",
-                        backgroundColor: isReabbreviating ? "#ccc" : "#6366f1",
-                        color: "white",
-                        border: "none",
-                        borderRadius: "4px",
-                        cursor: isReabbreviating ? "not-allowed" : "pointer",
-                      }}
-                    >
-                      {isReabbreviating ? "Updating..." : "🔄 Re-abbreviate"}
-                    </button>
-                    <button
-                      onClick={handleStructuredAnalysis}
-                      disabled={isLoadingStructured}
-                      style={{
-                        padding: "0.5rem 1rem",
-                        fontSize: "0.75rem",
-                        backgroundColor: isLoadingStructured ? "#ccc" : "#059669",
-                        color: "white",
-                        border: "none",
-                        borderRadius: "4px",
-                        cursor: isLoadingStructured ? "not-allowed" : "pointer",
-                      }}
-                    >
-                      {isLoadingStructured ? "Analyzing..." : "🔍 Detailed Analysis"}
-                    </button>
-                    <button
-                      onClick={handleDedupSummary}
-                      disabled={isDedupingSummary}
-                      style={{
-                        padding: "0.5rem 1rem",
-                        fontSize: "0.75rem",
-                        backgroundColor: isDedupingSummary ? "#ccc" : "#f59e0b",
-                        color: "white",
-                        border: "none",
-                        borderRadius: "4px",
-                        cursor: isDedupingSummary ? "not-allowed" : "pointer",
-                      }}
-                    >
-                      {isDedupingSummary ? "Deduping..." : "🧹 Dedup"}
-                    </button>
-                  </div>
-                  
-                  {/* Note: Structured Analysis is now shown above in the summary section */}
-                </div>
-              ) : selectedNode ? (
-                <div>
-                  <h3 style={{ fontSize: "1rem" }}>{selectedNode.name}</h3>
-                  {selectedNode.children && (
-                    <p style={{ fontSize: "0.875rem", color: "#666" }}>
-                      {selectedNode.children.length} paper{selectedNode.children.length !== 1 ? "s" : ""} in this category
-                    </p>
-                  )}
-                </div>
-              ) : (
-                <p style={{ color: "#999", fontSize: "0.875rem" }}>Click on a node in the tree to see details</p>
-              )}
-            </>
-          )}
-
-          {/* Repos Panel */}
-          {activePanel === "repos" && (
-            <>
-              <h2 style={{ marginTop: 0, fontSize: "1.125rem", fontWeight: 600 }}>GitHub Repositories</h2>
-              {isLoadingFeature ? (
-                <p style={{ color: "#666" }}>Searching...</p>
-              ) : repos.length > 0 ? (
-                <div>
-                  {repos.map((repo, i) => (
-                    <div key={i} style={{ padding: "0.75rem", borderBottom: "1px solid #eee" }}>
-                      <a href={repo.repo_url} target="_blank" rel="noopener noreferrer" style={{ color: "#0070f3", fontWeight: 500 }}>
-                        {repo.repo_name}
-                      </a>
-                      <div style={{ fontSize: "0.75rem", color: "#666", marginTop: "0.25rem" }}>
-                        {repo.is_official && <span style={{ color: "#10b981", marginRight: "0.5rem" }}>✓ Official</span>}
-                        <span>⭐ {repo.stars || 0}</span>
-                        <span style={{ marginLeft: "0.5rem" }}>via {repo.source}</span>
-                      </div>
-                    </div>
-                  ))}
-                </div>
-              ) : (
-                <p style={{ color: "#999", fontSize: "0.875rem" }}>No repositories found. Right-click on a paper and select "Find GitHub Repo".</p>
-              )}
-            </>
-          )}
-
-          {/* References Panel */}
-          {activePanel === "references" && (
-            <>
-              <h2 style={{ marginTop: 0, fontSize: "1.125rem", fontWeight: 600 }}>References</h2>
-              {isLoadingFeature ? (
-                <p style={{ color: "#666" }}>Loading references...</p>
-              ) : references.length > 0 ? (
-                <div>
-                  {references.map((ref) => (
-                    <div
-                      key={ref.id}
-                      style={{ padding: "0.75rem", borderBottom: "1px solid #eee", position: "relative" }}
-                      onMouseEnter={() => handleRefHover(ref)}
-                      onMouseLeave={handleRefLeave}
-                    >
-                      <div style={{ fontSize: "0.875rem", fontWeight: 500 }}>{ref.cited_title}</div>
-                      <div style={{ fontSize: "0.75rem", color: "#666", marginTop: "0.25rem" }}>
-                        {ref.cited_authors?.slice(0, 2).join(", ")}
-                        {ref.cited_authors && ref.cited_authors.length > 2 && " et al."}
-                        {ref.cited_year && ` (${ref.cited_year})`}
-                      </div>
-                      {ref.cited_arxiv_id && (
-                        <button
-                          onClick={() => handleAddReference(ref)}
-                          style={{
-                            marginTop: "0.5rem",
-                            padding: "0.25rem 0.5rem",
-                            fontSize: "0.75rem",
-                            backgroundColor: "#f0f0f0",
-                            border: "none",
-                            borderRadius: "4px",
-                            cursor: "pointer",
-                          }}
-                        >
-                          + Add to tree
-                        </button>
-                      )}
-                      
-                      {/* Hover tooltip */}
-                      {hoveredRefId === ref.id && (
-                        <div
-                          style={{
-                            position: "absolute",
-                            left: "100%",
-                            top: 0,
-                            marginLeft: "0.5rem",
-                            width: "300px",
-                            padding: "0.75rem",
-                            backgroundColor: "#333",
-                            color: "white",
-                            borderRadius: "4px",
-                            fontSize: "0.75rem",
-                            lineHeight: 1.5,
-                            zIndex: 100,
-                            boxShadow: "0 2px 8px rgba(0,0,0,0.2)",
-                          }}
-                        >
-                          {refExplanations[ref.id] || "Loading explanation..."}
-                        </div>
-                      )}
-                    </div>
-                  ))}
-                </div>
-              ) : (
-                <p style={{ color: "#999", fontSize: "0.875rem" }}>No references loaded. Right-click on a paper and select "Explain References".</p>
-              )}
-            </>
-          )}
-
-          {/* Similar Papers Panel */}
-          {activePanel === "similar" && (
-            <>
-              <h2 style={{ marginTop: 0, fontSize: "1.125rem", fontWeight: 600 }}>Similar Papers</h2>
-              <p style={{ fontSize: "0.75rem", color: "#666", marginBottom: "1rem" }}>
-                Recommended papers from Semantic Scholar (200M+ papers)
-              </p>
-              {isLoadingFeature ? (
-                <p style={{ color: "#666" }}>Searching the internet for similar papers...</p>
-              ) : similarPapers.length > 0 ? (
-                <div>
-                  {similarPapers.map((paper, i) => (
-                    <div key={i} style={{ padding: "0.75rem", borderBottom: "1px solid #eee" }}>
-                      <div style={{ fontSize: "0.875rem", fontWeight: 500 }}>
-                        {paper.url ? (
-                          <a href={paper.url} target="_blank" rel="noopener noreferrer" style={{ color: "#0070f3" }}>
-                            {paper.title}
-                          </a>
-                        ) : paper.title}
-                      </div>
-                      <div style={{ fontSize: "0.75rem", color: "#666", marginTop: "0.25rem" }}>
-                        {paper.year && <span>Year: {paper.year}</span>}
-                        {paper.citation_count !== undefined && (
-                          <span style={{ marginLeft: "0.5rem" }}>Citations: {paper.citation_count}</span>
-                        )}
-                        {paper.arxiv_id && (
-                          <span style={{ marginLeft: "0.5rem" }}>arXiv: {paper.arxiv_id}</span>
-                        )}
-                      </div>
-                      {paper.authors && paper.authors.length > 0 && (
-                        <div style={{ fontSize: "0.75rem", color: "#888", marginTop: "0.25rem" }}>
-                          {paper.authors.slice(0, 3).join(", ")}
-                          {paper.authors.length > 3 && ` +${paper.authors.length - 3} more`}
-                        </div>
-                      )}
-                      {paper.arxiv_id && (
-                        <button
-                          onClick={() => handleAddSimilarPaper(paper)}
-                          style={{
-                            marginTop: "0.5rem",
-                            padding: "0.25rem 0.5rem",
-                            fontSize: "0.75rem",
-                            backgroundColor: "#f0f0f0",
-                            border: "none",
-                            borderRadius: "4px",
-                            cursor: "pointer",
-                          }}
-                        >
-                          + Add to tree
-                        </button>
-                      )}
-                    </div>
-                  ))}
-                </div>
-              ) : (
-                <p style={{ color: "#999", fontSize: "0.875rem" }}>Right-click a paper to find similar.</p>
-              )}
-            </>
-          )}
-
-          {/* Query Panel */}
-          {activePanel === "query" && (
-            <>
-              <h2 style={{ marginTop: 0, fontSize: "1rem", fontWeight: 600 }}>Ask a Question</h2>
-              {selectedNode?.attributes?.arxivId ? (
-                <div>
-                  <p style={{ fontSize: "0.75rem", color: "#666", marginBottom: "0.75rem" }}>
-                    Ask questions about: {selectedNode.attributes.title || selectedNode.name}
-                  </p>
-                  <textarea
-                    value={queryInput}
-                    onChange={(e) => setQueryInput(e.target.value)}
-                    placeholder="e.g., What is the main contribution of this paper?"
-                    disabled={isQuerying}
-                    style={{
-                      width: "100%",
-                      height: "80px",
-                      padding: "0.5rem",
-                      fontSize: "0.875rem",
-                      border: "1px solid #ddd",
-                      borderRadius: "4px",
-                      resize: "vertical",
-                      boxSizing: "border-box",
-                    }}
-                  />
-                  <button
-                    onClick={handleQuery}
-                    disabled={isQuerying || !queryInput.trim()}
-                    style={{
-                      marginTop: "0.5rem",
-                      width: "100%",
-                      padding: "0.5rem",
-                      fontSize: "0.875rem",
-                      backgroundColor: isQuerying ? "#ccc" : "#0070f3",
-                      color: "white",
-                      border: "none",
-                      borderRadius: "4px",
-                      cursor: isQuerying ? "not-allowed" : "pointer",
-                    }}
-                  >
-                    {isQuerying ? "Searching..." : "Ask"}
-                  </button>
-                  {queryAnswer && (
-                    <div style={{ marginTop: "1rem", padding: "0.75rem", backgroundColor: "#f9f9f9", borderRadius: "4px" }}>
-                      <h4 style={{ fontSize: "0.75rem", marginTop: 0, marginBottom: "0.5rem", color: "#666" }}>Answer:</h4>
-                      <p style={{ fontSize: "0.875rem", lineHeight: 1.6, whiteSpace: "pre-wrap", margin: 0 }}>
-                        <TextWithMath text={queryAnswer} />
-                      </p>
-                    </div>
-                  )}
-                  
-                  {/* Query History */}
-                  {queryHistory.length > 0 && (
-                    <div style={{ marginTop: "1.5rem" }}>
-                      <h3 style={{ fontSize: "0.875rem", fontWeight: 600, marginBottom: "0.75rem", color: "#333" }}>
-                        Query History ({queryHistory.length})
-                        {selectedQueryIds.size > 0 && (
-                          <span style={{ fontWeight: 400, color: "#0070f3", marginLeft: "0.5rem" }}>
-                            ({selectedQueryIds.size} selected)
-                          </span>
-                        )}
-                      </h3>
-                      {queryHistory.map((q) => (
-                        <div 
-                          key={q.id} 
-                          onClick={() => toggleQuerySelection(q.id)}
-                          style={{ 
-                            marginBottom: "0.75rem", 
-                            padding: "0.75rem", 
-                            backgroundColor: selectedQueryIds.has(q.id) ? "#e3f2fd" : "#f5f5f5", 
-                            borderRadius: "4px",
-                            borderLeft: `3px solid ${selectedQueryIds.has(q.id) ? "#2196f3" : "#0070f3"}`,
-                            cursor: "pointer",
-                            transition: "all 0.15s ease",
-                          }}
-                        >
-                          <div style={{ display: "flex", alignItems: "flex-start", gap: "0.5rem" }}>
-                            <input
-                              type="checkbox"
-                              checked={selectedQueryIds.has(q.id)}
-                              onChange={() => toggleQuerySelection(q.id)}
-                              onClick={(e) => e.stopPropagation()}
-                              style={{ marginTop: "0.15rem", cursor: "pointer" }}
-                            />
-                            <div style={{ flex: 1 }}>
-                              <div style={{ fontSize: "0.75rem", color: "#666", marginBottom: "0.25rem" }}>
-                                {new Date(q.created_at).toLocaleString()}
-                              </div>
-                              <div style={{ fontSize: "0.8125rem", fontWeight: 500, marginBottom: "0.5rem" }}>
-                                Q: {q.question}
-                              </div>
-                              <div style={{ fontSize: "0.8125rem", color: "#444", whiteSpace: "pre-wrap" }}>
-                                A: <TextWithMath text={q.answer} />
-                              </div>
-                            </div>
+                          {/* Action buttons */}
+                          <div className="flex gap-2 mt-4 flex-wrap">
+                            <button
+                              onClick={handleReabbreviate}
+                              disabled={isReabbreviating}
+                              className="px-4 py-2 text-xs bg-indigo-600 text-white rounded disabled:bg-gray-400 disabled:cursor-not-allowed hover:bg-indigo-700"
+                            >
+                              {isReabbreviating ? "Updating..." : "🔄 Re-abbreviate"}
+                            </button>
+                            <button
+                              onClick={handleStructuredAnalysis}
+                              disabled={isLoadingStructured}
+                              className="px-4 py-2 text-xs bg-emerald-600 text-white rounded disabled:bg-gray-400 disabled:cursor-not-allowed hover:bg-emerald-700"
+                            >
+                              {isLoadingStructured ? "Analyzing..." : "🔍 Detailed Analysis"}
+                            </button>
+                            <button
+                              onClick={handleDedupSummary}
+                              disabled={isDedupingSummary}
+                              className="px-4 py-2 text-xs bg-amber-600 text-white rounded disabled:bg-gray-400 disabled:cursor-not-allowed hover:bg-amber-700"
+                            >
+                              {isDedupingSummary ? "Deduping..." : "🧹 Dedup"}
+                            </button>
                           </div>
                         </div>
-                      ))}
-                      
-                      {/* Add to Details button */}
-                      <button
-                        onClick={handleMergeQueries}
-                        disabled={selectedQueryIds.size === 0 || isMergingQueries}
-                        style={{
-                          marginTop: "0.5rem",
-                          width: "100%",
-                          padding: "0.5rem",
-                          backgroundColor: selectedQueryIds.size === 0 ? "#ccc" : "#4caf50",
-                          color: "white",
-                          border: "none",
-                          borderRadius: "4px",
-                          cursor: selectedQueryIds.size === 0 ? "not-allowed" : "pointer",
-                          fontSize: "0.8125rem",
-                          fontWeight: 500,
-                          transition: "background-color 0.15s ease",
-                        }}
-                      >
-                        {isMergingQueries ? "Merging..." : `Add to Details${selectedQueryIds.size > 0 ? ` (${selectedQueryIds.size})` : ""}`}
-                      </button>
-                    </div>
-                  )}
-                </div>
+                        ) : selectedNode ? (
+                          <div>
+                            <h3 className="text-base font-semibold">{selectedNode.name}</h3>
+                            {selectedNode.children && (
+                              <p className="text-sm text-gray-600 mt-1">
+                                {selectedNode.children.length} paper{selectedNode.children.length !== 1 ? "s" : ""} in this category
+                              </p>
+                            )}
+                          </div>
+                        ) : (
+                          <p className="text-gray-500 text-sm">Click on a node in the tree to see details</p>
+                        )}
+                    </TabsContent>
+
+                    {/* Repos Panel */}
+                    <TabsContent value="repos" className="mt-3">
+                      <h2 className="text-lg font-semibold mb-4">GitHub Repositories</h2>
+                      {isLoadingFeature ? (
+                        <p className="text-gray-600">Searching...</p>
+                      ) : repos.length > 0 ? (
+                        <div>
+                          {repos.map((repo, i) => (
+                            <div key={i} className="p-3 border-b border-gray-200">
+                              <a href={repo.repo_url} target="_blank" rel="noopener noreferrer" className="text-blue-600 font-medium hover:underline">
+                                {repo.repo_name}
+                              </a>
+                              <div className="text-xs text-gray-600 mt-1">
+                                {repo.is_official && <span className="text-emerald-600 mr-2">✓ Official</span>}
+                                <span>⭐ {repo.stars || 0}</span>
+                                <span className="ml-2">via {repo.source}</span>
+                              </div>
+                            </div>
+                          ))}
+                        </div>
+                      ) : (
+                        <p className="text-gray-500 text-sm">No repositories found. Right-click on a paper and select "Find GitHub Repo".</p>
+                      )}
+                    </TabsContent>
+
+                    {/* References Panel */}
+                    <TabsContent value="refs" className="mt-3">
+                      <h2 className="text-lg font-semibold mb-4">References</h2>
+                      {isLoadingFeature ? (
+                        <p className="text-gray-600">Loading references...</p>
+                      ) : references.length > 0 ? (
+                        <div>
+                          {references.map((ref) => (
+                            <div
+                              key={ref.id}
+                              className="p-3 border-b border-gray-200 relative"
+                              onMouseEnter={() => handleRefHover(ref)}
+                              onMouseLeave={handleRefLeave}
+                            >
+                              <div className="text-sm font-medium">{ref.cited_title}</div>
+                              <div className="text-xs text-gray-600 mt-1">
+                                {ref.cited_authors?.slice(0, 2).join(", ")}
+                                {ref.cited_authors && ref.cited_authors.length > 2 && " et al."}
+                                {ref.cited_year && ` (${ref.cited_year})`}
+                              </div>
+                              {ref.cited_arxiv_id && (
+                                <button
+                                  onClick={() => handleAddReference(ref)}
+                                  className="mt-2 px-2 py-1 text-xs bg-gray-100 border-none rounded cursor-pointer hover:bg-gray-200"
+                                >
+                                  + Add to tree
+                                </button>
+                              )}
+                              
+                              {/* Hover tooltip */}
+                              {hoveredRefId === ref.id && (
+                                <div className="absolute left-full top-0 ml-2 w-[300px] p-3 bg-gray-800 text-white rounded text-xs leading-relaxed z-50 shadow-lg">
+                                  {refExplanations[ref.id] || "Loading explanation..."}
+                                </div>
+                              )}
+                            </div>
+                          ))}
+                        </div>
               ) : (
-                <p style={{ color: "#999", fontSize: "0.875rem" }}>Select a paper to ask questions.</p>
+                <p className="text-gray-500 text-sm">No references loaded. Right-click on a paper and select "Explain References".</p>
               )}
-            </>
-          )}
-              </div>
-            </div>
-          )}
-        </div>
+                    </TabsContent>
+
+                    {/* Similar Papers Panel */}
+                    <TabsContent value="similar" className="mt-3">
+                      <h2 className="text-lg font-semibold mb-4">Similar Papers</h2>
+                      <p className="text-xs text-gray-600 mb-4">
+                        Recommended papers from Semantic Scholar (200M+ papers)
+                      </p>
+                      {isLoadingFeature ? (
+                        <p className="text-gray-600">Searching the internet for similar papers...</p>
+                      ) : similarPapers.length > 0 ? (
+                        <div>
+                          {similarPapers.map((paper, i) => (
+                            <div key={i} className="p-3 border-b border-gray-200">
+                              <div className="text-sm font-medium">
+                                {paper.url ? (
+                                  <a href={paper.url} target="_blank" rel="noopener noreferrer" className="text-blue-600 hover:underline">
+                                    {paper.title}
+                                  </a>
+                                ) : paper.title}
+                              </div>
+                              <div className="text-xs text-gray-600 mt-1">
+                                {paper.year && <span>Year: {paper.year}</span>}
+                                {paper.citation_count !== undefined && (
+                                  <span className="ml-2">Citations: {paper.citation_count}</span>
+                                )}
+                                {paper.arxiv_id && (
+                                  <span className="ml-2">arXiv: {paper.arxiv_id}</span>
+                                )}
+                              </div>
+                              {paper.authors && paper.authors.length > 0 && (
+                                <div className="text-xs text-gray-500 mt-1">
+                                  {paper.authors.slice(0, 3).join(", ")}
+                                  {paper.authors.length > 3 && ` +${paper.authors.length - 3} more`}
+                                </div>
+                              )}
+                              {paper.arxiv_id && (
+                                <button
+                                  onClick={() => handleAddSimilarPaper(paper)}
+                                  className="mt-2 px-2 py-1 text-xs bg-gray-100 border-none rounded cursor-pointer hover:bg-gray-200"
+                                >
+                                  + Add to tree
+                                </button>
+                              )}
+                            </div>
+                          ))}
+                        </div>
+                      ) : (
+                        <p className="text-gray-500 text-sm">Right-click a paper to find similar.</p>
+                      )}
+                    </TabsContent>
+
+                    {/* Query Panel */}
+                    <TabsContent value="query" className="mt-3">
+                      <h2 className="text-base font-semibold mb-4">Ask a Question</h2>
+                      {selectedNode?.attributes?.arxivId ? (
+                        <div>
+                          <p className="text-xs text-gray-600 mb-3">
+                            Ask questions about: {selectedNode.attributes.title || selectedNode.name}
+                          </p>
+                          <textarea
+                            value={queryInput}
+                            onChange={(e) => setQueryInput(e.target.value)}
+                            placeholder="e.g., What is the main contribution of this paper?"
+                            disabled={isQuerying}
+                            className="w-full h-20 p-2 text-sm border border-gray-300 rounded resize-y box-border"
+                          />
+                          <button
+                            onClick={handleQuery}
+                            disabled={isQuerying || !queryInput.trim()}
+                            className="mt-2 w-full py-2 text-sm bg-blue-600 text-white border-none rounded disabled:bg-gray-400 disabled:cursor-not-allowed hover:bg-blue-700"
+                          >
+                            {isQuerying ? "Searching..." : "Ask"}
+                          </button>
+                          {queryAnswer && (
+                            <Card className="mt-4">
+                              <CardContent className="pt-4">
+                                <h4 className="text-xs mb-2 text-gray-600">Answer:</h4>
+                                <p className="text-sm leading-relaxed whitespace-pre-wrap">
+                                  <TextWithMath text={queryAnswer} />
+                                </p>
+                              </CardContent>
+                            </Card>
+                          )}
+                  
+                          {/* Query History */}
+                          {queryHistory.length > 0 && (
+                            <div className="mt-6">
+                              <h3 className="text-sm font-semibold mb-3 text-gray-800">
+                                Query History ({queryHistory.length})
+                                {selectedQueryIds.size > 0 && (
+                                  <span className="font-normal text-blue-600 ml-2">
+                                    ({selectedQueryIds.size} selected)
+                                  </span>
+                                )}
+                              </h3>
+                              {queryHistory.map((q) => (
+                                <Card 
+                                  key={q.id} 
+                                  onClick={() => toggleQuerySelection(q.id)}
+                                  className={`mb-3 cursor-pointer transition-all ${
+                                    selectedQueryIds.has(q.id) ? "bg-blue-50 border-blue-300" : "bg-gray-50"
+                                  }`}
+                                >
+                                  <CardContent className="pt-4">
+                                    <div className="flex items-start gap-2">
+                                      <input
+                                        type="checkbox"
+                                        checked={selectedQueryIds.has(q.id)}
+                                        onChange={() => toggleQuerySelection(q.id)}
+                                        onClick={(e) => e.stopPropagation()}
+                                        className="mt-0.5 cursor-pointer"
+                                      />
+                                      <div className="flex-1">
+                                        <div className="text-xs text-gray-600 mb-1">
+                                          {new Date(q.created_at).toLocaleString()}
+                                        </div>
+                                        <div className="text-sm font-medium mb-2">
+                                          Q: {q.question}
+                                        </div>
+                                        <div className="text-sm text-gray-700 whitespace-pre-wrap">
+                                          A: <TextWithMath text={q.answer} />
+                                        </div>
+                                      </div>
+                                    </div>
+                                  </CardContent>
+                                </Card>
+                              ))}
+                              
+                              {/* Add to Details button */}
+                              <button
+                                onClick={handleMergeQueries}
+                                disabled={selectedQueryIds.size === 0 || isMergingQueries}
+                                className="mt-2 w-full py-2 text-sm bg-green-600 text-white border-none rounded disabled:bg-gray-400 disabled:cursor-not-allowed hover:bg-green-700 font-medium transition-colors"
+                              >
+                                {isMergingQueries ? "Merging..." : `Add to Details${selectedQueryIds.size > 0 ? ` (${selectedQueryIds.size})` : ""}`}
+                              </button>
+                            </div>
+                          )}
+                        </div>
+                      ) : (
+                        <p className="text-gray-500 text-sm">Select a paper to ask questions.</p>
+                      )}
+                    </TabsContent>
+                  </Tabs>
+                    )}
+                  </div>
+                </div>
+              </AccordionContent>
+            </AccordionItem>
+          </Accordion>
+        </Card>
       </div>
     </div>
+    </TooltipProvider>
   );
 }
