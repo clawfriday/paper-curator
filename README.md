@@ -1,3 +1,54 @@
+# Paper Curator
+
+AI-powered paper reading and curation pipeline with interactive GUI.
+
+## Quick Start
+
+### Prerequisites
+
+- **Python 3.11+** (for backend)
+- **Node.js 18+** and **npm** (for frontend)
+- **Docker** and **Docker Compose** (for running services)
+- **PostgreSQL** (via Docker)
+
+### Installation
+
+1. **Clone the repository**
+   ```bash
+   git clone <repository-url>
+   cd paper-curator
+   ```
+
+2. **Install all dependencies** (Python + npm)
+   ```bash
+   make install
+   ```
+   This will:
+   - Create a Python virtual environment (`.venv`)
+   - Install Python dependencies from `pyproject.toml`
+   - Install npm dependencies from `src/frontend/package.json` and `package-lock.json`
+
+3. **Start services**
+   ```bash
+   make run
+   ```
+   This starts all services (database, backend, frontend) via Docker Compose.
+
+4. **Access the application**
+   - Frontend: http://localhost:3000
+   - Backend API: http://localhost:8000
+   - Database: localhost:5432
+
+### Development
+
+- **Run tests**: `make test`
+- **Run backend locally**: `make run-local` (requires `.venv` activated)
+- **Build Docker images**: `make docker-build`
+- **Stop services**: `make docker-stop`
+- **Clean up**: `make clean`
+
+---
+
 # Project Scope
 
 This is a pipeline with interactive graphics to automate the workflow of AI paper reading and curation. The main graph is a tree which classifies the papers into different categories/sub-categories based on their topic. This tree diagram needs to be interactive, such that a new paper can be added into it, and the tree diagram will be update afterwards. It will also allow user to click on each paper to perform additional operations. It will contain the following requirements:

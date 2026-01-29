@@ -3,16 +3,23 @@ PYTHON := /Users/hyl/miniconda3/bin/python3.12
 VENV_DIR := .venv
 ACTIVATE := source $(VENV_DIR)/bin/activate
 
-.PHONY: install test run clean docker-build docker-run
+.PHONY: install install-frontend test run clean docker-build docker-run
 
 # Create virtual environment and install all dependencies
-install: $(VENV_DIR)/bin/activate
+install: $(VENV_DIR)/bin/activate install-frontend
 
 $(VENV_DIR)/bin/activate: pyproject.toml
 	test -d $(VENV_DIR) || $(PYTHON) -m venv $(VENV_DIR)
 	$(ACTIVATE) && pip install --upgrade pip
 	$(ACTIVATE) && pip install -e ".[dev]"
 	touch $(VENV_DIR)/bin/activate
+
+# Install frontend npm dependencies
+install-frontend:
+	@echo "Installing frontend dependencies..."
+	@command -v npm >/dev/null 2>&1 || { echo "Error: npm is not installed. Please install Node.js (https://nodejs.org/)"; exit 1; }
+	cd src/frontend && npm install
+	@echo "Frontend dependencies installed."
 
 # Run pytest tests
 test: install
