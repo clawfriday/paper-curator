@@ -1,16 +1,26 @@
 "use client";
 
 import { useState, useCallback, useMemo, useEffect, useRef } from "react";
-import dynamic from "next/dynamic";
-import type { RawNodeDatum, CustomNodeElementProps } from "react-d3-tree";
+import ReactFlow, { 
+  Node, 
+  Edge, 
+  Background, 
+  Controls, 
+  MiniMap,
+  useNodesState,
+  useEdgesState,
+  ConnectionMode,
+  Position,
+  NodeTypes,
+  EdgeTypes,
+} from "reactflow";
+import "reactflow/dist/style.css";
 import { InlineMath, BlockMath } from "react-katex";
 import "katex/dist/katex.min.css";
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
 import { Accordion, AccordionItem, AccordionTrigger, AccordionContent } from "@/components/ui/accordion";
 import { Card, CardHeader, CardTitle, CardDescription, CardContent } from "@/components/ui/card";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
-
-const Tree = dynamic(() => import("react-d3-tree"), { ssr: false });
 
 interface PaperNode {
   name: string;
@@ -143,20 +153,169 @@ function TextWithMath({ text, style }: { text: string; style?: React.CSSProperti
 
 // Note: CollapsibleSection replaced with Shadcn/ui Accordion component
 
-// Convert PaperNode to react-d3-tree compatible format
-function toTreeData(node: PaperNode): RawNodeDatum {
-  return {
-    name: node.name,
-    attributes: node.attributes
-      ? {
-          arxivId: node.attributes.arxivId || "",
-          title: node.attributes.title || "",
-          authors: node.attributes.authors?.join(", ") || "",
-          category: node.attributes.category || "",
+// Custom Paper Node Component for React Flow
+function PaperNodeComponent({ data }: { data: { node: PaperNode; onNodeClick: (name: string) => void; onNodeRightClick: (e: React.MouseEvent, name: string) => void } }) {
+  const { node, onNodeClick, onNodeRightClick } = data;
+  const hasArxivId = node.attributes && node.attributes.arxivId;
+  const isCategory = !node.attributes || !node.attributes.arxivId;
+  const isRoot = node.name === "AI Papers";
+  
+  // Show full name, wrap into multiple lines if needed
+  const name = node.name;
+  const maxCharsPerLine = 14;
+  const lines: string[] = [];
+  
+  // Simple word wrap
+  const words = name.split(/\s+/);
+  let currentLine = "";
+  for (const word of words) {
+    if ((currentLine + " " + word).trim().length <= maxCharsPerLine) {
+      currentLine = (currentLine + " " + word).trim();
+    } else {
+      if (currentLine) lines.push(currentLine);
+      currentLine = word.length > maxCharsPerLine ? word.slice(0, maxCharsPerLine - 2) + ".." : word;
+    }
+  }
+  if (currentLine) lines.push(currentLine);
+  
+  // Limit to 2 lines max
+  if (lines.length > 2) {
+    lines.splice(2);
+    lines[1] = lines[1].slice(0, maxCharsPerLine - 2) + "..";
+  }
+  
+  // Node sizing based on content
+  const fontSize = 11;
+  const lineHeight = 15;
+  const paddingX = 14;
+  const paddingY = 8;
+  const nodeWidth = Math.max(90, Math.min(130, Math.max(...lines.map(l => l.length)) * 7.5 + paddingX * 2));
+  const nodeHeight = lines.length * lineHeight + paddingY * 2;
+  
+  // Colors - high contrast: light backgrounds with dark text
+  const fillColor = isRoot ? "#1f2937" : (isCategory ? "#e0e7ff" : "#dbeafe");
+  const strokeColor = isRoot ? "#111827" : (isCategory ? "#6366f1" : "#3b82f6");
+  const textColor = isRoot ? "#ffffff" : (isCategory ? "#312e81" : "#1e3a8a");
+  
+  return (
+    <div
+      className="paper-node"
+      style={{
+        width: nodeWidth,
+        height: nodeHeight,
+        backgroundColor: fillColor,
+        border: `2px solid ${strokeColor}`,
+        borderRadius: "8px",
+        cursor: "pointer",
+        display: "flex",
+        flexDirection: "column",
+        justifyContent: "center",
+        alignItems: "center",
+        padding: `${paddingY}px ${paddingX}px`,
+        fontFamily: "-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif",
+      }}
+      onClick={() => onNodeClick(node.name)}
+      onContextMenu={(e) => {
+        if (hasArxivId) {
+          e.preventDefault();
+          onNodeRightClick(e, node.name);
         }
-      : undefined,
-    children: node.children?.map(toTreeData),
-  };
+      }}
+    >
+      {lines.map((line, i) => (
+        <div
+          key={i}
+          style={{
+            fontSize: `${fontSize}px`,
+            fontWeight: 500,
+            color: textColor,
+            textAlign: "center",
+            lineHeight: `${lineHeight}px`,
+            whiteSpace: "nowrap",
+            overflow: "hidden",
+            textOverflow: "ellipsis",
+            width: "100%",
+          }}
+        >
+          {line}
+        </div>
+      ))}
+    </div>
+  );
+}
+
+const nodeTypes: NodeTypes = {
+  paperNode: PaperNodeComponent,
+};
+
+// Convert PaperNode tree to React Flow nodes and edges
+function convertToReactFlow(
+  node: PaperNode,
+  parentId: string | null,
+  position: { x: number; y: number },
+  onNodeClick: (name: string) => void,
+  onNodeRightClick: (e: React.MouseEvent, name: string) => void,
+  collapsedCategories: Set<string>
+): { nodes: Node[]; edges: Edge[]; nextY: number } {
+  const nodes: Node[] = [];
+  const edges: Edge[] = [];
+  let currentY = position.y;
+  const nodeId = parentId ? `${parentId}-${node.name}` : node.name;
+  const isCategory = !node.attributes || !node.attributes.arxivId;
+  const isCollapsed = collapsedCategories.has(nodeId);
+  
+  // Create node
+  const nodeWidth = 130;
+  const nodeHeight = 50;
+  const horizontalSpacing = 200;
+  const verticalSpacing = 80;
+  
+  nodes.push({
+    id: nodeId,
+    type: "paperNode",
+    position: { x: position.x, y: currentY },
+    data: { node, onNodeClick, onNodeRightClick },
+    style: { width: nodeWidth, height: nodeHeight },
+  });
+  
+  // Add edge from parent if not root
+  if (parentId) {
+    edges.push({
+      id: `${parentId}-${nodeId}`,
+      source: parentId,
+      target: nodeId,
+      type: "smoothstep",
+      animated: false,
+      style: { stroke: "#94a3b8", strokeWidth: 1.5 },
+    });
+  }
+  
+  currentY += verticalSpacing;
+  
+  // Process children if not collapsed
+  if (!isCollapsed && node.children && node.children.length > 0) {
+    node.children.forEach((child, index) => {
+      const childPosition = {
+        x: position.x,
+        y: currentY,
+      };
+      
+      const result = convertToReactFlow(
+        child,
+        nodeId,
+        childPosition,
+        onNodeClick,
+        onNodeRightClick,
+        collapsedCategories
+      );
+      
+      nodes.push(...result.nodes);
+      edges.push(...result.edges);
+      currentY = result.nextY;
+    });
+  }
+  
+  return { nodes, edges, nextY: currentY };
 }
 
 const initialTaxonomy: PaperNode = {
@@ -233,6 +392,11 @@ export default function Home() {
   const [selectedQueryIds, setSelectedQueryIds] = useState<Set<number>>(new Set());
   const [isMergingQueries, setIsMergingQueries] = useState(false);
   const [isDedupingSummary, setIsDedupingSummary] = useState(false);
+  
+  // React Flow state
+  const [collapsedCategories, setCollapsedCategories] = useState<Set<string>>(new Set());
+  const [nodes, setNodes, onNodesChange] = useNodesState([]);
+  const [edges, setEdges, onEdgesChange] = useEdgesState([]);
   
   const hoverTimeoutRef = useRef<NodeJS.Timeout | null>(null);
   
@@ -651,7 +815,6 @@ export default function Home() {
   };
 
   // Convert taxonomy to tree-compatible format
-  const treeData = useMemo(() => toTreeData(taxonomy), [taxonomy]);
 
   // Find original node by name for details display
   const findNode = useCallback((tree: PaperNode, name: string): PaperNode | null => {
@@ -726,6 +889,39 @@ export default function Home() {
       });
     }
   }, [taxonomy, findNode]);
+
+  // Convert taxonomy to React Flow nodes and edges
+  const reactFlowData = useMemo(() => {
+    if (!taxonomy.children || taxonomy.children.length === 0) {
+      return { nodes: [], edges: [] };
+    }
+    
+    const allNodes: Node[] = [];
+    const allEdges: Edge[] = [];
+    let currentY = 50;
+    
+    taxonomy.children.forEach((category) => {
+      const result = convertToReactFlow(
+        category,
+        null,
+        { x: 300, y: currentY },
+        handleNodeClick,
+        handleNodeRightClick,
+        collapsedCategories
+      );
+      allNodes.push(...result.nodes);
+      allEdges.push(...result.edges);
+      currentY = result.nextY + 100; // Add spacing between categories
+    });
+    
+    return { nodes: allNodes, edges: allEdges };
+  }, [taxonomy, collapsedCategories, handleNodeClick, handleNodeRightClick]);
+  
+  // Update React Flow nodes and edges when data changes
+  useEffect(() => {
+    setNodes(reactFlowData.nodes);
+    setEdges(reactFlowData.edges);
+  }, [reactFlowData, setNodes, setEdges]);
 
   const handleRemoveNode = async (node: PaperNode) => {
     if (!node.attributes?.arxivId) return;
@@ -1251,92 +1447,18 @@ export default function Home() {
   };
 
   // Custom node renderer with right-click support - compact display
-  const renderCustomNode = useCallback(({ nodeDatum }: CustomNodeElementProps) => {
-    const hasArxivId = nodeDatum.attributes && nodeDatum.attributes.arxivId;
-    const isCategory = !nodeDatum.attributes || !nodeDatum.attributes.arxivId;
-    const isRoot = nodeDatum.name === "AI Papers";
-    
-    // Show full name, wrap into multiple lines if needed
-    const name = nodeDatum.name;
-    const maxCharsPerLine = 14;
-    const lines: string[] = [];
-    
-    // Simple word wrap
-    const words = name.split(/\s+/);
-    let currentLine = "";
-    for (const word of words) {
-      if ((currentLine + " " + word).trim().length <= maxCharsPerLine) {
-        currentLine = (currentLine + " " + word).trim();
+  // Toggle category collapse/expand
+  const toggleCategoryCollapse = useCallback((categoryId: string) => {
+    setCollapsedCategories((prev) => {
+      const next = new Set(prev);
+      if (next.has(categoryId)) {
+        next.delete(categoryId);
       } else {
-        if (currentLine) lines.push(currentLine);
-        currentLine = word.length > maxCharsPerLine ? word.slice(0, maxCharsPerLine - 2) + ".." : word;
+        next.add(categoryId);
       }
-    }
-    if (currentLine) lines.push(currentLine);
-    
-    // Limit to 2 lines max
-    if (lines.length > 2) {
-      lines.splice(2);
-      lines[1] = lines[1].slice(0, maxCharsPerLine - 2) + "..";
-    }
-    
-    // Node sizing based on content
-    const fontSize = 11;
-    const lineHeight = 15;
-    const paddingX = 14;
-    const paddingY = 8;
-    const nodeWidth = Math.max(90, Math.min(130, Math.max(...lines.map(l => l.length)) * 7.5 + paddingX * 2));
-    const nodeHeight = lines.length * lineHeight + paddingY * 2;
-    
-    // Colors - high contrast: light backgrounds with dark text
-    const fillColor = isRoot ? "#1f2937" : (isCategory ? "#e0e7ff" : "#dbeafe");
-    const strokeColor = isRoot ? "#111827" : (isCategory ? "#6366f1" : "#3b82f6");
-    const textColor = isRoot ? "#ffffff" : (isCategory ? "#312e81" : "#1e3a8a");
-    
-    return (
-      <g
-        style={{ cursor: "pointer" }}
-        onClick={() => handleNodeClick(nodeDatum.name)}
-        onContextMenu={(e) => {
-          if (hasArxivId) {
-            handleNodeRightClick(e, nodeDatum.name);
-          }
-        }}
-      >
-        {/* Rounded rectangle node */}
-        <rect
-          x={-nodeWidth / 2}
-          y={-nodeHeight / 2}
-          width={nodeWidth}
-          height={nodeHeight}
-          rx={8}
-          ry={8}
-          fill={fillColor}
-          stroke={strokeColor}
-          strokeWidth={2}
-        />
-        {/* Multi-line text with sharp rendering */}
-        {lines.map((line, i) => (
-          <text
-            key={i}
-            fill={textColor}
-            textAnchor="middle"
-            x={0}
-            y={-((lines.length - 1) * lineHeight) / 2 + i * lineHeight + 4}
-            style={{ 
-              fontSize: `${fontSize}px`, 
-              fontWeight: 500,
-              fontFamily: "-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif",
-              pointerEvents: "none",
-              textRendering: "optimizeLegibility",
-            }}
-          >
-            {line}
-          </text>
-        ))}
-      </g>
-    );
-  }, [handleNodeClick, handleNodeRightClick]);
+      return next;
+    });
+  }, []);
 
   return (
     <TooltipProvider>
@@ -1385,23 +1507,34 @@ export default function Home() {
         </div>
         <div 
           className="tree-container"
-          style={{ flex: 1, position: "relative", overflow: "auto" }}
+          style={{ flex: 1, position: "relative", overflow: "hidden" }}
           onContextMenu={(e) => e.preventDefault()}
         >
           {taxonomy.children && taxonomy.children.length > 0 ? (
-            <Tree
-              data={treeData}
-              orientation="vertical"
-              pathFunc="diagonal"
-              translate={{ x: 300, y: 50 }}
-              nodeSize={{ x: 140, y: 80 }}
-              separation={{ siblings: 1.0, nonSiblings: 1.3 }}
-              renderCustomNodeElement={renderCustomNode}
-              pathClassFunc={() => "tree-link"}
-              zoomable={true}
-              scaleExtent={{ min: 0.1, max: 3 }}
-              draggable={true}
-            />
+            <ReactFlow
+              nodes={nodes}
+              edges={edges}
+              onNodesChange={onNodesChange}
+              onEdgesChange={onEdgesChange}
+              nodeTypes={nodeTypes}
+              connectionMode={ConnectionMode.Loose}
+              fitView
+              minZoom={0.1}
+              maxZoom={3}
+              defaultViewport={{ x: 0, y: 0, zoom: 1 }}
+            >
+              <Background color="#f1f5f9" gap={16} />
+              <Controls />
+              <MiniMap 
+                nodeColor={(node) => {
+                  const data = node.data as { node: PaperNode };
+                  if (!data?.node) return "#94a3b8";
+                  const isCategory = !data.node.attributes || !data.node.attributes.arxivId;
+                  return isCategory ? "#e0e7ff" : "#dbeafe";
+                }}
+                maskColor="rgba(0, 0, 0, 0.1)"
+              />
+            </ReactFlow>
           ) : (
             <div style={{ display: "flex", alignItems: "center", justifyContent: "center", height: "100%", color: "#999" }}>
               <p>No papers yet. Add one using the panel on the right.</p>
