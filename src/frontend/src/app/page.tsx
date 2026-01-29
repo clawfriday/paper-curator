@@ -100,7 +100,7 @@ function TextWithMath({ text, style }: { text: string; style?: React.CSSProperti
         let lastIndex = 0;
         
         // Match both inline \(...\) and block \[...\] math
-        const mathRegex = /(\\(?:\[|\())(.*?)(\\(?:\)|\]))/gs;
+        const mathRegex = /(\\(?:\[|\())([\s\S]*?)(\\(?:\)|\]))/g;
         let match;
         
         while ((match = mathRegex.exec(line)) !== null) {
@@ -579,7 +579,7 @@ const initialTaxonomy: PaperNode = {
 };
 
 export default function Home() {
-  const [arxivUrl, setArxivUrl] = useState("");
+  const [unifiedIngestInput, setUnifiedIngestInput] = useState("");
   const [taxonomy, setTaxonomy] = useState<PaperNode>(initialTaxonomy);
   const [selectedNode, setSelectedNode] = useState<PaperNode | null>(null);
   const [isIngesting, setIsIngesting] = useState(false);
@@ -595,7 +595,7 @@ export default function Home() {
   });
   
   // Feature panel states
-  const [activePanel, setActivePanel] = useState<"details" | "repos" | "references" | "similar" | "query">("details");
+  const [activePanel, setActivePanel] = useState<"explorer" | "details" | "repos" | "references" | "similar" | "query">("explorer");
   const [repos, setRepos] = useState<RepoResult[]>([]);
   const [queryInput, setQueryInput] = useState("");
   const [queryAnswer, setQueryAnswer] = useState("");
@@ -622,8 +622,7 @@ export default function Home() {
   const [featureLog, setFeatureLog] = useState<string[]>([]);
   const [ingestLog, setIngestLog] = useState<string[]>([]);
   
-  // Batch ingest state
-  const [batchDirectory, setBatchDirectory] = useState("");
+  // Unified ingest state (replaces separate arxivUrl and batchDirectory)
   const [isBatchIngesting, setIsBatchIngesting] = useState(false);
   const [batchResults, setBatchResults] = useState<{
     total: number;
@@ -806,86 +805,104 @@ export default function Home() {
     }
   };
 
-  const handleBatchIngest = async () => {
-    if (!batchDirectory.trim()) return;
+  // Unified ingest handler with auto-detection
+  const handleUnifiedIngest = async () => {
+    if (!unifiedIngestInput.trim()) return;
     
-    setIsBatchIngesting(true);
-    setBatchResults(null);
-    clearIngestLog();
-    logIngest(`Starting batch ingest from: ${batchDirectory.trim()}`);
+    const input = unifiedIngestInput.trim();
     
-    try {
-      const res = await fetch("/api/papers/batch-ingest", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ directory: batchDirectory.trim(), skip_existing: true }),
-      });
-      
-      if (!res.ok) {
-        const errText = await res.text();
-        logIngest(`Error: HTTP ${res.status}`);
-        try {
-          const errJson = JSON.parse(errText);
-          logIngest(`Details: ${errJson.detail || errText}`);
-        } catch {
-          logIngest(`Details: ${errText.slice(0, 200)}`);
-        }
-        setIsBatchIngesting(false);
-        return;
-      }
-      
-      const data = await res.json();
-      setBatchResults(data);
-      logIngest(`Completed: ${data.success} success, ${data.skipped} skipped, ${data.errors} errors`);
-      
-      // Refresh tree
-      const treeRes = await fetch("/api/tree");
-      if (treeRes.ok) {
-        const treeData = await treeRes.json();
-        setTaxonomy(treeData);
-        logIngest("Tree refreshed");
-      }
-    } catch (err) {
-      logIngest(`Error: ${err}`);
-    } finally {
-      setIsBatchIngesting(false);
+    // Detect input type
+    const isUrl = input.startsWith("http://") || input.startsWith("https://") || input.includes("arxiv.org");
+    const isArxivId = /^\d{4}\.\d{4,5}(v\d+)?$/.test(input) || /^arxiv:\/\/(abs|pdf)\/\d{4}\.\d{4,5}(v\d+)?/.test(input);
+    const isSlackChannel = input.startsWith("#") || input.includes("slack.com");
+    
+    // Check if it's a directory path (local folder)
+    // Simple heuristic: if it starts with / or contains \ and doesn't look like a URL
+    const isDirectory = (input.startsWith("/") || input.includes("\\")) && !isUrl && !isArxivId;
+    
+    if (isSlackChannel) {
+      // TODO: Implement Slack integration later
+      logIngest("Slack channel ingestion not yet implemented");
+      return;
     }
-  };
+    
+    if (isDirectory) {
+      // Batch ingest
+      setIsBatchIngesting(true);
+      setBatchResults(null);
+      clearIngestLog();
+      logIngest(`Starting batch ingest from: ${input}`);
+      
+      try {
+        const res = await fetch("/api/papers/batch-ingest", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ directory: input, skip_existing: true }),
+        });
+        
+        if (!res.ok) {
+          const errText = await res.text();
+          logIngest(`Error: HTTP ${res.status}`);
+          try {
+            const errJson = JSON.parse(errText);
+            logIngest(`Details: ${errJson.detail || errText}`);
+          } catch {
+            logIngest(`Details: ${errText.slice(0, 200)}`);
+          }
+          setIsBatchIngesting(false);
+          return;
+        }
+        
+        const data = await res.json();
+        setBatchResults(data);
+        logIngest(`Completed: ${data.success} success, ${data.skipped} skipped, ${data.errors} errors`);
+        
+        // Refresh tree
+        const treeRes = await fetch("/api/tree");
+        if (treeRes.ok) {
+          const treeData = await treeRes.json();
+          setTaxonomy(treeData);
+          logIngest("Tree refreshed");
+        }
+      } catch (err) {
+        logIngest(`Error: ${err}`);
+      } finally {
+        setIsBatchIngesting(false);
+        logIngest("Done");
+      }
+    } else {
+      // Single ingest (URL or arXiv ID)
+      setIsIngesting(true);
+      clearIngestLog();
+      logIngest(`Starting ingestion for: ${input}`);
+      setSteps([
+        { name: "Resolve arXiv", status: "pending" },
+        { name: "Download PDF", status: "pending" },
+        { name: "Extract text", status: "pending" },
+        { name: "Classify (LLM)", status: "pending" },
+        { name: "Abbreviate (LLM)", status: "pending" },
+        { name: "Summarize (LLM)", status: "pending" },
+        { name: "Save", status: "pending" },
+      ]);
 
-  const handleIngest = async () => {
-    if (!arxivUrl.trim()) return;
+      let arxivId = "";
+      let title = "";
+      let authors: string[] = [];
+      let abstract = "";
+      let pdfPath = "";
+      let latexPath = "";
+      let pdfUrl = "";
+      let published = "";
+      let category = "";
+      let abbreviation = "";
+      let summary = "";
 
-    setIsIngesting(true);
-    clearIngestLog();
-    logIngest(`Starting ingestion for: ${arxivUrl.trim()}`);
-    setSteps([
-      { name: "Resolve arXiv", status: "pending" },
-      { name: "Download PDF", status: "pending" },
-      { name: "Extract text", status: "pending" },
-      { name: "Classify (LLM)", status: "pending" },
-      { name: "Abbreviate (LLM)", status: "pending" },
-      { name: "Summarize (LLM)", status: "pending" },
-      { name: "Save", status: "pending" },
-    ]);
-
-    let arxivId = "";
-    let title = "";
-    let authors: string[] = [];
-    let abstract = "";
-    let pdfPath = "";
-    let latexPath = "";
-    let pdfUrl = "";
-    let published = "";
-    let category = "";
-    let abbreviation = "";
-    let summary = "";
-
-    // Step 1: Resolve
-    updateStep(0, { status: "running" });
-    logIngest("Resolving arXiv metadata...");
-    // Detect if input is URL or plain arXiv ID
-    const inputValue = arxivUrl.trim();
-    const isUrl = inputValue.includes("arxiv.org") || inputValue.startsWith("http");
+      // Step 1: Resolve
+      updateStep(0, { status: "running" });
+      logIngest("Resolving arXiv metadata...");
+      // Detect if input is URL or plain arXiv ID
+      const inputValue = input;
+      const isUrl = inputValue.includes("arxiv.org") || inputValue.startsWith("http");
     const resolveRes = await fetch("/api/arxiv/resolve", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -1076,8 +1093,9 @@ export default function Home() {
       body: JSON.stringify({ arxiv_id: arxivId, title }),
     }).catch(() => {}); // Ignore errors, this is optional
 
-    setArxivUrl("");
-    setIsIngesting(false);
+      setUnifiedIngestInput("");
+      setIsIngesting(false);
+    }
   };
 
   // Convert taxonomy to tree-compatible format
@@ -1560,24 +1578,22 @@ export default function Home() {
   const handleAddSimilarPaper = async (paper: SimilarPaper) => {
     if (!paper.arxiv_id) return;
     // Auto-trigger ingestion
-    setArxivUrl(paper.arxiv_id);
-    setActivePanel("details");
+    setUnifiedIngestInput(paper.arxiv_id);
+    setActivePanel("explorer");
     // Trigger ingestion after a short delay to allow state update
     setTimeout(() => {
-      const ingestBtn = document.getElementById("ingest-btn");
-      if (ingestBtn) ingestBtn.click();
+      handleUnifiedIngest();
     }, 100);
   };
 
   const handleAddReference = async (ref: Reference) => {
     if (!ref.cited_arxiv_id) return;
     // Auto-trigger ingestion
-    setArxivUrl(ref.cited_arxiv_id);
-    setActivePanel("details");
+    setUnifiedIngestInput(ref.cited_arxiv_id);
+    setActivePanel("explorer");
     // Trigger ingestion after a short delay to allow state update
     setTimeout(() => {
-      const ingestBtn = document.getElementById("ingest-btn");
-      if (ingestBtn) ingestBtn.click();
+      handleUnifiedIngest();
     }, 100);
   };
 
@@ -2086,7 +2102,7 @@ export default function Home() {
         </div>
       </div>
 
-      {/* Context Menu */}
+      {/* Context Menu - Only Remove Paper option remains */}
       {contextMenu.visible && contextMenu.node && (
         <div
           style={{
@@ -2105,32 +2121,8 @@ export default function Home() {
         >
           <div style={{ padding: "0.5rem 1rem", borderBottom: "1px solid #eee", backgroundColor: "#f9f9f9" }}>
             <strong style={{ fontSize: "0.75rem", color: "#666" }}>
-              {contextMenu.node.attributes?.arxivId}
+              {contextMenu.node.attributes?.arxivId || contextMenu.node.name}
             </strong>
-          </div>
-          <div
-            style={{ padding: "0.75rem 1rem", cursor: "pointer", display: "flex", alignItems: "center", gap: "0.5rem" }}
-            onClick={() => { handleFindRepos(contextMenu.node!); setContextMenu({ ...contextMenu, visible: false }); }}
-            onMouseEnter={(e) => (e.currentTarget.style.backgroundColor = "#f5f5f5")}
-            onMouseLeave={(e) => (e.currentTarget.style.backgroundColor = "white")}
-          >
-            <span>🔗</span> Find GitHub Repo
-          </div>
-          <div
-            style={{ padding: "0.75rem 1rem", cursor: "pointer", display: "flex", alignItems: "center", gap: "0.5rem" }}
-            onClick={() => { handleFetchReferences(contextMenu.node!); setContextMenu({ ...contextMenu, visible: false }); }}
-            onMouseEnter={(e) => (e.currentTarget.style.backgroundColor = "#f5f5f5")}
-            onMouseLeave={(e) => (e.currentTarget.style.backgroundColor = "white")}
-          >
-            <span>📚</span> Explain References
-          </div>
-          <div
-            style={{ padding: "0.75rem 1rem", cursor: "pointer", display: "flex", alignItems: "center", gap: "0.5rem" }}
-            onClick={() => { handleFindSimilar(contextMenu.node!); setContextMenu({ ...contextMenu, visible: false }); }}
-            onMouseEnter={(e) => (e.currentTarget.style.backgroundColor = "#f5f5f5")}
-            onMouseLeave={(e) => (e.currentTarget.style.backgroundColor = "white")}
-          >
-            <span>🔍</span> Find Similar Papers
           </div>
           <div
             style={{ 
@@ -2139,7 +2131,6 @@ export default function Home() {
               display: "flex", 
               alignItems: "center", 
               gap: "0.5rem",
-              borderTop: "1px solid #eee",
               color: "#dc2626",
             }}
             onClick={() => { handleRemoveNode(contextMenu.node!); setContextMenu({ ...contextMenu, visible: false }); }}
@@ -2185,124 +2176,6 @@ export default function Home() {
       
       {/* Right panel: Details and ingest */}
       <div style={{ ...panelStyles.right, padding: isMobile ? "1rem" : "1.5rem", display: "flex", flexDirection: "column", backgroundColor: "#f9fafb", overflowY: "auto", position: "relative" }}>
-        {/* Ingest section - Accordion */}
-        <Card className="mb-4">
-          <Accordion type="single" collapsible defaultValue="ingest" className="w-full">
-            <AccordionItem value="ingest" className="border-0">
-              <AccordionTrigger className="px-4 py-3 hover:no-underline">
-                <h2 className="text-base font-semibold m-0">📥 Ingest Paper</h2>
-              </AccordionTrigger>
-              <AccordionContent>
-                <div className="p-4">
-                  <input
-                    type="text"
-                    value={arxivUrl}
-                    onChange={(e) => setArxivUrl(e.target.value)}
-                    placeholder="arXiv URL or ID (e.g., 1706.03762)"
-                    disabled={isIngesting}
-                    className="w-full px-2 py-2 mb-2 border border-gray-300 rounded text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 disabled:bg-gray-100"
-                  />
-                  <button
-                    id="ingest-btn"
-                    onClick={handleIngest}
-                    disabled={isIngesting || !arxivUrl.trim()}
-                    className="w-full px-2 py-2 bg-blue-600 text-white rounded text-sm font-medium disabled:bg-gray-400 disabled:cursor-not-allowed hover:bg-blue-700 transition-colors"
-                  >
-                    {isIngesting ? "Ingesting..." : "Ingest"}
-                  </button>
-
-                  {/* Progress steps */}
-                  {steps.length > 0 && (
-                    <div className="mt-3">
-                      {steps.map((step, i) => (
-                        <div key={i} className="flex items-start mb-1">
-                          <span className="mr-1.5 text-xs" style={{ color: getStepColor(step.status) }}>
-                            {getStepIcon(step.status)}
-                          </span>
-                          <div className="flex-1">
-                            <span className={`text-xs ${step.status === "error" ? "text-red-500" : "text-gray-800"}`}>
-                              {step.name}
-                            </span>
-                            {step.message && (
-                              <p className={`mt-0.5 text-[10px] ${step.status === "error" ? "text-red-500" : "text-gray-600"}`}>
-                                {step.message}
-                              </p>
-                            )}
-                          </div>
-                        </div>
-                      ))}
-                    </div>
-                  )}
-                  
-                  {/* Batch Ingest */}
-                  <div className="mt-4 pt-4 border-t border-gray-200">
-                    <h3 className="m-0 mb-2 text-sm font-medium text-gray-600">
-                      📁 Batch Ingest (Local PDFs)
-                    </h3>
-                    <input
-                      type="text"
-                      value={batchDirectory}
-                      onChange={(e) => setBatchDirectory(e.target.value)}
-                      placeholder="Directory path (e.g., /Users/you/papers)"
-                      disabled={isBatchIngesting}
-                      className="w-full px-2 py-2 mb-2 border border-gray-300 rounded text-xs focus:outline-none focus:ring-2 focus:ring-green-500 disabled:bg-gray-100"
-                    />
-                    <button
-                      onClick={handleBatchIngest}
-                      disabled={isBatchIngesting || !batchDirectory.trim()}
-                      className="w-full px-2 py-2 bg-green-600 text-white rounded text-xs font-medium disabled:bg-gray-400 disabled:cursor-not-allowed hover:bg-green-700 transition-colors"
-                    >
-                      {isBatchIngesting ? "Processing..." : "Batch Ingest"}
-                    </button>
-                    
-                    {/* Batch results */}
-                    {batchResults && (
-                      <div className="mt-2 text-[11px]">
-                        <div className="text-green-600">✓ {batchResults.success} ingested</div>
-                        {batchResults.skipped > 0 && (
-                          <div className="text-amber-500">⏭ {batchResults.skipped} skipped (existing)</div>
-                        )}
-                        {batchResults.errors > 0 && (
-                          <div className="text-red-500">✗ {batchResults.errors} errors</div>
-                        )}
-                      </div>
-                    )}
-                  </div>
-                  
-                  {/* Rebalance Categories */}
-                  <div className="mt-4 pt-4 border-t border-gray-200">
-                    <h3 className="m-0 mb-2 text-sm font-medium text-gray-600">
-                      ⚖️ Rebalance Categories
-                    </h3>
-                    <p className="text-[11px] text-gray-500 mb-2">
-                      Reclassify papers in crowded categories (10+ papers)
-                    </p>
-                    <button
-                      onClick={handleRebalanceCategories}
-                      disabled={isRebalancing}
-                      className="w-full px-2 py-2 bg-purple-600 text-white rounded text-xs font-medium disabled:bg-gray-400 disabled:cursor-not-allowed hover:bg-purple-700 transition-colors"
-                    >
-                      {isRebalancing ? "Rebalancing..." : "Rebalance Now"}
-                    </button>
-                    
-                    {/* Rebalance results */}
-                    {rebalanceResult && (
-                      <div className="mt-2 text-[11px]">
-                        <div className="text-purple-600">{rebalanceResult.message}</div>
-                        {rebalanceResult.reclassified?.length > 0 && (
-                          <div className="text-green-600 mt-1">
-                            ✓ Moved {rebalanceResult.reclassified.length} papers
-                          </div>
-                        )}
-                      </div>
-                    )}
-                  </div>
-                  
-                </div>
-              </AccordionContent>
-            </AccordionItem>
-          </Accordion>
-        </Card>
 
         {/* Paper Details Section - Accordion */}
         <Card className="flex-1 flex flex-col">
@@ -2331,16 +2204,145 @@ export default function Home() {
                     {selectedNode && !isLoadingCachedData && (
                   <Tabs 
                     value={activePanel === "references" ? "refs" : activePanel} 
-                    onValueChange={(value) => setActivePanel(value === "refs" ? "references" : value as any)}
+                    onValueChange={(value) => {
+                      if (value === "refs") {
+                        setActivePanel("references");
+                      } else {
+                        setActivePanel(value as any);
+                      }
+                    }}
                     className="w-full"
                   >
-                    <TabsList className="grid w-full grid-cols-5 h-9 mb-4">
+                    <TabsList className="grid w-full grid-cols-6 h-9 mb-4">
+                      <TabsTrigger value="explorer" className="text-xs">Explorer</TabsTrigger>
                       <TabsTrigger value="details" className="text-xs">Details</TabsTrigger>
                       <TabsTrigger value="repos" className="text-xs">Repos</TabsTrigger>
                       <TabsTrigger value="refs" className="text-xs">Refs</TabsTrigger>
                       <TabsTrigger value="similar" className="text-xs">Similar</TabsTrigger>
                       <TabsTrigger value="query" className="text-xs">Query</TabsTrigger>
                     </TabsList>
+                    
+                    {/* Explorer Panel */}
+                    <TabsContent value="explorer" className="mt-0">
+                      <h2 className="text-lg font-semibold mb-4">Explorer</h2>
+                      
+                      {/* Unified Ingest Input */}
+                      <div className="mb-4">
+                        <label className="block text-sm font-medium mb-2">
+                          📥 Ingest Paper
+                        </label>
+                        <input
+                          type="text"
+                          value={unifiedIngestInput}
+                          onChange={(e) => setUnifiedIngestInput(e.target.value)}
+                          onKeyDown={(e) => {
+                            if (e.key === "Enter" && !isIngesting && !isBatchIngesting && unifiedIngestInput.trim()) {
+                              handleUnifiedIngest();
+                            }
+                          }}
+                          placeholder="arXiv URL/ID, local file path, or folder path"
+                          disabled={isIngesting || isBatchIngesting}
+                          className="w-full px-3 py-2 mb-2 border border-gray-300 rounded text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 disabled:bg-gray-100"
+                        />
+                        <button
+                          onClick={handleUnifiedIngest}
+                          disabled={isIngesting || isBatchIngesting || !unifiedIngestInput.trim()}
+                          className="w-full px-3 py-2 bg-blue-600 text-white rounded text-sm font-medium disabled:bg-gray-400 disabled:cursor-not-allowed hover:bg-blue-700 transition-colors"
+                        >
+                          {(isIngesting || isBatchIngesting) ? "Processing..." : "Ingest"}
+                        </button>
+                        
+                        {/* Progress steps */}
+                        {steps.length > 0 && (
+                          <div className="mt-3">
+                            {steps.map((step, i) => (
+                              <div key={i} className="flex items-start mb-1">
+                                <span className="mr-1.5 text-xs" style={{ color: getStepColor(step.status) }}>
+                                  {getStepIcon(step.status)}
+                                </span>
+                                <div className="flex-1">
+                                  <span className={`text-xs ${step.status === "error" ? "text-red-500" : "text-gray-800"}`}>
+                                    {step.name}
+                                  </span>
+                                  {step.message && (
+                                    <p className={`mt-0.5 text-[10px] ${step.status === "error" ? "text-red-500" : "text-gray-600"}`}>
+                                      {step.message}
+                                    </p>
+                                  )}
+                                </div>
+                              </div>
+                            ))}
+                          </div>
+                        )}
+                        
+                        {/* Batch results */}
+                        {batchResults && (
+                          <div className="mt-2 text-sm">
+                            <div className="text-green-600">✓ {batchResults.success} ingested</div>
+                            {batchResults.skipped > 0 && (
+                              <div className="text-amber-500">⏭ {batchResults.skipped} skipped (existing)</div>
+                            )}
+                            {batchResults.errors > 0 && (
+                              <div className="mt-2">
+                                <div className="text-red-500 font-medium">✗ {batchResults.errors} errors</div>
+                                <Accordion type="single" collapsible className="w-full mt-2">
+                                  <AccordionItem value="error-details" className="border-0">
+                                    <AccordionTrigger className="px-0 py-1 hover:no-underline text-xs text-red-600">
+                                      Show error details
+                                    </AccordionTrigger>
+                                    <AccordionContent className="px-0">
+                                      <div className="bg-red-50 rounded p-2 max-h-60 overflow-y-auto text-xs space-y-2">
+                                        {batchResults.results
+                                          .filter((r) => r.status === "error")
+                                          .map((result, idx) => (
+                                            <div key={idx} className="border-b border-red-200 pb-2 last:border-0 last:pb-0">
+                                              <div className="font-medium text-red-800">{result.file}</div>
+                                              <div className="text-red-600 mt-0.5">{result.reason || "Unknown error"}</div>
+                                            </div>
+                                          ))}
+                                      </div>
+                                    </AccordionContent>
+                                  </AccordionItem>
+                                </Accordion>
+                              </div>
+                            )}
+                          </div>
+                        )}
+                      </div>
+                      
+                      {/* Rebalance Button */}
+                      <div className="mb-4 pt-4 border-t border-gray-200">
+                        <div className="flex items-center justify-between">
+                          <div>
+                            <h3 className="text-sm font-medium text-gray-700 mb-1">
+                              ⚖️ Rebalance Categories
+                            </h3>
+                            <p className="text-xs text-gray-500">
+                              Reclassify papers in crowded categories (10+ papers)
+                            </p>
+                          </div>
+                          <button
+                            onClick={handleRebalanceCategories}
+                            disabled={isRebalancing}
+                            className="px-3 py-1.5 bg-purple-600 text-white rounded text-xs font-medium disabled:bg-gray-400 disabled:cursor-not-allowed hover:bg-purple-700 transition-colors whitespace-nowrap"
+                          >
+                            {isRebalancing ? "Rebalancing..." : "Rebalance"}
+                          </button>
+                        </div>
+                        
+                        {/* Rebalance results */}
+                        {rebalanceResult && (
+                          <div className="mt-2 text-xs">
+                            <div className="text-purple-600">{rebalanceResult.message}</div>
+                            {rebalanceResult.reclassified?.length > 0 && (
+                              <div className="text-green-600 mt-1">
+                                ✓ Moved {rebalanceResult.reclassified.length} papers
+                              </div>
+                            )}
+                          </div>
+                        )}
+                      </div>
+                    </TabsContent>
                     
                     {/* Details Panel */}
                     <TabsContent value="details" className="mt-0">
@@ -2536,7 +2538,18 @@ export default function Home() {
 
                     {/* Repos Panel */}
                     <TabsContent value="repos" className="mt-3">
-                      <h2 className="text-lg font-semibold mb-4">GitHub Repositories</h2>
+                      <div className="flex items-center justify-between mb-4">
+                        <h2 className="text-lg font-semibold">GitHub Repositories</h2>
+                        {selectedNode && selectedNode.attributes?.arxivId && (
+                          <button
+                            onClick={() => handleFindRepos(selectedNode)}
+                            disabled={isLoadingFeature}
+                            className="px-3 py-1.5 bg-blue-600 text-white rounded text-xs font-medium disabled:bg-gray-400 disabled:cursor-not-allowed hover:bg-blue-700 transition-colors"
+                          >
+                            🔗 Find Repos
+                          </button>
+                        )}
+                      </div>
                       {isLoadingFeature ? (
                         <div className="space-y-3 animate-pulse">
                           <div className="h-16 bg-gray-200 rounded"></div>
@@ -2559,13 +2572,24 @@ export default function Home() {
                           ))}
                         </div>
                       ) : (
-                        <p className="text-gray-500 text-sm">No repositories found. Right-click on a paper and select "Find GitHub Repo".</p>
+                        <p className="text-gray-500 text-sm">Click "Find Repos" to search for GitHub repositories related to this paper.</p>
                       )}
                     </TabsContent>
 
                     {/* References Panel */}
                     <TabsContent value="refs" className="mt-3">
-                      <h2 className="text-lg font-semibold mb-4">References</h2>
+                      <div className="flex items-center justify-between mb-4">
+                        <h2 className="text-lg font-semibold">References</h2>
+                        {selectedNode && selectedNode.attributes?.arxivId && (
+                          <button
+                            onClick={() => handleFetchReferences(selectedNode)}
+                            disabled={isLoadingFeature}
+                            className="px-3 py-1.5 bg-blue-600 text-white rounded text-xs font-medium disabled:bg-gray-400 disabled:cursor-not-allowed hover:bg-blue-700 transition-colors"
+                          >
+                            📚 Explain References
+                          </button>
+                        )}
+                      </div>
                       {isLoadingFeature ? (
                         <p className="text-gray-600">Loading references...</p>
                       ) : references.length > 0 ? (
@@ -2602,16 +2626,29 @@ export default function Home() {
                           ))}
                         </div>
               ) : (
-                <p className="text-gray-500 text-sm">No references loaded. Right-click on a paper and select "Explain References".</p>
+                <p className="text-gray-500 text-sm">Click "Explain References" to load and explain references from this paper.</p>
               )}
                     </TabsContent>
 
                     {/* Similar Papers Panel */}
                     <TabsContent value="similar" className="mt-3">
-                      <h2 className="text-lg font-semibold mb-4">Similar Papers</h2>
-                      <p className="text-xs text-gray-600 mb-4">
-                        Recommended papers from Semantic Scholar (200M+ papers)
-                      </p>
+                      <div className="flex items-center justify-between mb-4">
+                        <div>
+                          <h2 className="text-lg font-semibold">Similar Papers</h2>
+                          <p className="text-xs text-gray-600 mt-1">
+                            Recommended papers from Semantic Scholar (200M+ papers)
+                          </p>
+                        </div>
+                        {selectedNode && selectedNode.attributes?.arxivId && (
+                          <button
+                            onClick={() => handleFindSimilar(selectedNode)}
+                            disabled={isLoadingFeature}
+                            className="px-3 py-1.5 bg-blue-600 text-white rounded text-xs font-medium disabled:bg-gray-400 disabled:cursor-not-allowed hover:bg-blue-700 transition-colors whitespace-nowrap"
+                          >
+                            🔍 Find Similar
+                          </button>
+                        )}
+                      </div>
                       {isLoadingFeature ? (
                         <p className="text-gray-600">Searching the internet for similar papers...</p>
                       ) : similarPapers.length > 0 ? (
