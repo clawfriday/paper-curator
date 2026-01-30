@@ -24,3 +24,6 @@ numpy
 
 # HTTP client for external APIs
 httpx
+
+# Slack API
+slack-sdk

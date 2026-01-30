@@ -630,7 +630,13 @@ export default function Home() {
     skipped: number;
     errors: number;
     results: Array<{ file: string; status: string; reason?: string; title?: string; category?: string }>;
+    progress_log?: string[];
   } | null>(null);
+  
+  // Slack credential prompt state
+  const [showSlackCredentialPrompt, setShowSlackCredentialPrompt] = useState(false);
+  const [pendingSlackChannel, setPendingSlackChannel] = useState("");
+  const [slackToken, setSlackToken] = useState("");
   
   // Rebalance state
   const [isRebalancing, setIsRebalancing] = useState(false);
@@ -814,15 +820,17 @@ export default function Home() {
     // Detect input type
     const isUrl = input.startsWith("http://") || input.startsWith("https://") || input.includes("arxiv.org");
     const isArxivId = /^\d{4}\.\d{4,5}(v\d+)?$/.test(input) || /^arxiv:\/\/(abs|pdf)\/\d{4}\.\d{4,5}(v\d+)?/.test(input);
-    const isSlackChannel = input.startsWith("#") || input.includes("slack.com");
+    // Slack channel: starts with #, contains slack.com, or is a Slack channel ID (starts with C followed by alphanumeric)
+    const isSlackChannel = input.startsWith("#") || input.includes("slack.com") || /^C[A-Z0-9]{8,}$/.test(input);
     
     // Check if it's a directory path (local folder)
     // Simple heuristic: if it starts with / or contains \ and doesn't look like a URL
-    const isDirectory = (input.startsWith("/") || input.includes("\\")) && !isUrl && !isArxivId;
+    const isDirectory = (input.startsWith("/") || input.includes("\\")) && !isUrl && !isArxivId && !isSlackChannel;
     
     if (isSlackChannel) {
-      // TODO: Implement Slack integration later
-      logIngest("Slack channel ingestion not yet implemented");
+      // Show credential prompt for Slack channel
+      setPendingSlackChannel(input);
+      setShowSlackCredentialPrompt(true);
       return;
     }
     
@@ -1095,6 +1103,81 @@ export default function Home() {
 
       setUnifiedIngestInput("");
       setIsIngesting(false);
+    }
+  };
+
+  const handleSlackIngest = async () => {
+    if (!slackToken.trim()) {
+      logIngest("Error: Slack token is required");
+      return;
+    }
+
+    setIsBatchIngesting(true);
+    setBatchResults(null);
+    clearIngestLog();
+    setShowSlackCredentialPrompt(false);
+    logIngest(`Starting Slack channel ingest from: ${pendingSlackChannel}`);
+
+    try {
+      const res = await fetch("/api/papers/batch-ingest", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          slack_channel: pendingSlackChannel,
+          slack_token: slackToken,
+          skip_existing: true,
+        }),
+      });
+
+      if (!res.ok) {
+        const errText = await res.text();
+        logIngest(`Error: HTTP ${res.status}`);
+        try {
+          const errJson = JSON.parse(errText);
+          // Display progress_log if available (for Slack ingestion errors)
+          if (errJson.detail?.progress_log && Array.isArray(errJson.detail.progress_log)) {
+            errJson.detail.progress_log.forEach((logMessage: string) => {
+              logIngest(logMessage);
+            });
+          }
+          // Display error message
+          const errorMsg = errJson.detail?.message || errJson.detail || errText;
+          logIngest(`Details: ${errorMsg}`);
+        } catch {
+          logIngest(`Details: ${errText.slice(0, 200)}`);
+        }
+        setIsBatchIngesting(false);
+        return;
+      }
+
+      const data = await res.json();
+      
+      // Display progress log if available (for Slack ingestion)
+      if (data.progress_log && Array.isArray(data.progress_log)) {
+        data.progress_log.forEach((logMessage: string) => {
+          logIngest(logMessage);
+        });
+      }
+      
+      setBatchResults(data);
+      logIngest(`Completed: ${data.success} success, ${data.skipped} skipped, ${data.errors} errors`);
+
+      // Refresh tree
+      const treeRes = await fetch("/api/tree");
+      if (treeRes.ok) {
+        const treeData = await treeRes.json();
+        setTaxonomy(treeData);
+        logIngest("Tree refreshed");
+      }
+
+      // Clear token and pending channel
+      setSlackToken("");
+      setPendingSlackChannel("");
+    } catch (err) {
+      logIngest(`Error: ${err}`);
+    } finally {
+      setIsBatchIngesting(false);
+      logIngest("Done");
     }
   };
 
@@ -2138,6 +2221,102 @@ export default function Home() {
             onMouseLeave={(e) => (e.currentTarget.style.backgroundColor = "white")}
           >
             <span>🗑️</span> Remove Paper
+          </div>
+        </div>
+      )}
+
+      {/* Slack Credential Prompt Modal */}
+      {showSlackCredentialPrompt && (
+        <div
+          style={{
+            position: "fixed",
+            top: 0,
+            left: 0,
+            right: 0,
+            bottom: 0,
+            backgroundColor: "rgba(0, 0, 0, 0.5)",
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
+            zIndex: 2000,
+          }}
+          onClick={() => {
+            setShowSlackCredentialPrompt(false);
+            setPendingSlackChannel("");
+            setSlackToken("");
+          }}
+        >
+          <div
+            style={{
+              backgroundColor: "white",
+              borderRadius: "8px",
+              padding: "24px",
+              maxWidth: "500px",
+              width: "90%",
+              boxShadow: "0 8px 24px rgba(0,0,0,0.2)",
+            }}
+            onClick={(e) => e.stopPropagation()}
+          >
+            <h2 className="text-lg font-semibold mb-4">Slack Channel Access</h2>
+            <p className="text-sm text-gray-600 mb-4">
+              Enter your Slack User OAuth Token to access the channel:
+            </p>
+            <div className="mb-4">
+              <label className="block text-sm font-medium mb-2">
+                Channel: <span className="font-mono text-xs">{pendingSlackChannel}</span>
+              </label>
+              <label className="block text-sm font-medium mb-2">
+                Slack Token (xoxp-...)
+              </label>
+              <input
+                type="password"
+                value={slackToken}
+                onChange={(e) => setSlackToken(e.target.value)}
+                placeholder="xoxp-..."
+                className="w-full px-3 py-2 border border-gray-300 rounded text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+                onKeyDown={(e) => {
+                  if (e.key === "Enter" && slackToken.trim()) {
+                    handleSlackIngest();
+                  }
+                  if (e.key === "Escape") {
+                    setShowSlackCredentialPrompt(false);
+                    setPendingSlackChannel("");
+                    setSlackToken("");
+                  }
+                }}
+                autoFocus
+              />
+              <p className="text-xs text-gray-500 mt-2">
+                Token is not persisted and will be cleared after use. Get your token from{" "}
+                <a
+                  href="https://api.slack.com/apps"
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="text-blue-600 hover:underline"
+                >
+                  api.slack.com/apps
+                </a>
+              </p>
+            </div>
+            <div className="flex gap-2 justify-end">
+              <button
+                onClick={() => {
+                  setShowSlackCredentialPrompt(false);
+                  setPendingSlackChannel("");
+                  setSlackToken("");
+                }}
+                className="px-4 py-2 text-sm border border-gray-300 rounded hover:bg-gray-50 transition-colors"
+              >
+                Cancel
+              </button>
+              <button
+                onClick={handleSlackIngest}
+                disabled={!slackToken.trim() || isBatchIngesting}
+                className="px-4 py-2 text-sm bg-blue-600 text-white rounded disabled:bg-gray-400 disabled:cursor-not-allowed hover:bg-blue-700 transition-colors"
+              >
+                {isBatchIngesting ? "Processing..." : "Ingest"}
+              </button>
+            </div>
           </div>
         </div>
       )}

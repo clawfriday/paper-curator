@@ -136,7 +136,9 @@ class SavePaperRequest(BaseModel):
 
 
 class BatchIngestRequest(BaseModel):
-    directory: str = Field(description="Local directory containing PDF files")
+    directory: Optional[str] = Field(default=None, description="Local directory containing PDF files")
+    slack_channel: Optional[str] = Field(default=None, description="Slack channel identifier (#channel-name, channel ID, or URL)")
+    slack_token: Optional[str] = Field(default=None, description="Slack User OAuth Token (xoxp-...) - not persisted")
     skip_existing: bool = Field(default=True, description="Skip PDFs already in database")
 
 
@@ -220,7 +222,6 @@ def get_prompt(prompt_id: str, **kwargs: Any) -> str:
     
     template = prompts[prompt_id]["template"]
     return template.format(**kwargs)
-    return _load_config_cached(config_path.stat().st_mtime)
 
 
 def _convert_localhost_for_docker(url: str) -> str:
@@ -317,6 +318,183 @@ def _require_identifier(arxiv_id: Optional[str], url: Optional[str]) -> str:
             return match.group(1).replace(".pdf", "")
         raise HTTPException(status_code=400, detail=f"Could not extract arXiv ID from URL: {url}")
     raise HTTPException(status_code=400, detail="Provide arxiv_id or url.")
+
+
+def _extract_arxiv_ids_from_text(text: str) -> list[str]:
+    """Extract all arXiv IDs/URLs from text.
+    
+    Returns list of arXiv IDs (format: YYYY.NNNNN or YYYY.NNNNNvN).
+    Handles:
+    - arXiv URLs: https://arxiv.org/abs/1234.5678
+    - arXiv PDF URLs: https://arxiv.org/pdf/1234.5678.pdf
+    - Plain arXiv IDs: 1234.5678 or 1234.5678v1
+    """
+    arxiv_ids = set()
+    
+    # Match arXiv URLs
+    url_pattern = r"arxiv\.org/(?:abs|pdf|html)/([0-9]{4}\.[0-9]{4,5}(?:v[0-9]+)?)"
+    for match in re.finditer(url_pattern, text, re.IGNORECASE):
+        arxiv_id = match.group(1)
+        # Remove .pdf extension if present
+        arxiv_id = arxiv_id.replace(".pdf", "")
+        arxiv_ids.add(arxiv_id)
+    
+    # Match standalone arXiv IDs (format: YYYY.NNNNN or YYYY.NNNNNvN)
+    id_pattern = r"\b([0-9]{4}\.[0-9]{4,5}(?:v[0-9]+)?)\b"
+    for match in re.finditer(id_pattern, text):
+        arxiv_id = match.group(1)
+        arxiv_ids.add(arxiv_id)
+    
+    return sorted(list(arxiv_ids))
+
+
+def _resolve_slack_channel_id(client, channel_input: str) -> str:
+    """Resolve Slack channel ID from various input formats.
+    
+    Supports:
+    - Channel ID: C1234567890
+    - Channel name: #general or general
+    - Slack URL: https://workspace.slack.com/archives/C1234567890
+    """
+    channel_input = channel_input.strip()
+    
+    # If it's already a channel ID (starts with C)
+    if channel_input.startswith("C") and len(channel_input) > 1:
+        return channel_input
+    
+    # Extract channel ID from URL (supports multiple Slack URL formats)
+    # Format 1: https://workspace.slack.com/archives/C1234567890
+    url_match = re.search(r"/archives/(C[A-Z0-9]+)", channel_input)
+    if url_match:
+        return url_match.group(1)
+    
+    # Format 2: https://join.slack.com/share/... (Slack Connect share link - extract workspace/channel from it)
+    # Note: These share links don't directly give us channel ID, but we can try to resolve via name
+    
+    # Extract channel name (remove # if present, handle spaces)
+    channel_name = channel_input.lstrip("#").strip()
+    
+    # First, try to access the channel directly by name using conversations.info
+    # Try multiple variants of the channel name to handle formatting differences
+    channel_name_variants = [
+        channel_name,  # Original (already stripped #)
+        f"#{channel_name}",  # With # prefix
+        channel_name.replace(" ", ""),  # Without spaces
+        channel_name.replace("-", "_"),  # Hyphens to underscores
+        channel_name.replace("_", "-"),  # Underscores to hyphens
+    ]
+    
+    for variant in channel_name_variants:
+        try:
+            info_response = client.conversations_info(channel=variant)
+            if info_response.get("ok") and info_response.get("channel"):
+                channel_data = info_response["channel"]
+                # Check if channel is archived
+                if channel_data.get("is_archived"):
+                    raise HTTPException(
+                        status_code=400,
+                        detail=f"Channel '{channel_input}' is archived. Archived channels cannot be accessed."
+                    )
+                return channel_data["id"]
+            elif not info_response.get("ok"):
+                error = info_response.get("error", "Unknown error")
+                if error == "missing_scope":
+                    raise HTTPException(
+                        status_code=403,
+                        detail=f"Slack token missing required scope 'channels:read' or 'groups:read'"
+                    )
+                # For other errors (like channel_not_found), try next variant
+        except HTTPException:
+            raise
+        except Exception:
+            # If this variant fails, try next one
+            continue
+    
+    # List all channels and find matching one
+    try:
+        response = client.conversations_list(types="public_channel,private_channel", limit=1000, exclude_archived=True)
+        if not response["ok"]:
+            error_msg = response.get("error", "Unknown error")
+            # Provide helpful error messages for common issues
+            if error_msg == "missing_scope":
+                raise HTTPException(
+                    status_code=403,
+                    detail=f"Slack token missing required scopes. Please add 'channels:read' and 'groups:read' scopes to your Slack app. Error: {error_msg}"
+                )
+            elif error_msg == "invalid_auth":
+                raise HTTPException(
+                    status_code=401,
+                    detail=f"Invalid Slack token. Please check your token and ensure it's a valid User OAuth Token (xoxp-...). Error: {error_msg}"
+                )
+            else:
+                raise HTTPException(status_code=400, detail=f"Slack API error: {error_msg}")
+        
+        channels = response.get("channels", [])
+        if not channels:
+            raise HTTPException(
+                status_code=404,
+                detail=f"No channels found. This might indicate insufficient permissions. Channel name: '{channel_input}'"
+            )
+        
+        # Normalize channel name for matching (remove special chars, lowercase)
+        def normalize_name(name: str) -> str:
+            return name.lower().replace("-", "").replace("_", "").replace(" ", "")
+        
+        normalized_target = normalize_name(channel_name)
+        
+        # Try exact match first
+        for channel in channels:
+            if channel["name"] == channel_name:
+                return channel["id"]
+        
+        # Try case-insensitive match
+        for channel in channels:
+            if channel["name"].lower() == channel_name.lower():
+                return channel["id"]
+        
+        # Try normalized match (handles hyphens, underscores, spaces, case differences)
+        for channel in channels:
+            if normalize_name(channel["name"]) == normalized_target:
+                return channel["id"]
+        
+        # Try fuzzy match - check if target is contained in any channel name
+        for channel in channels:
+            if normalized_target in normalize_name(channel["name"]) or normalize_name(channel["name"]) in normalized_target:
+                return channel["id"]
+        
+        # If still not found, provide helpful error with available channels and search for similar ones
+        available_channels = [ch["name"] for ch in channels[:20]]  # Show first 20
+        similar_channels = [
+            ch["name"] for ch in channels 
+            if normalized_target[:5] in normalize_name(ch["name"]) or normalize_name(ch["name"])[:5] in normalized_target
+        ]
+        
+        # Also try to find channels containing "model", "training", "paper", or "weights"
+        keyword_matches = [
+            ch["name"] for ch in channels 
+            if any(keyword in normalize_name(ch["name"]) for keyword in ["model", "training", "paper", "weight"])
+        ]
+        
+        error_msg = f"Channel '{channel_input}' not found in accessible channels. "
+        if similar_channels:
+            error_msg += f"Similar channels: {', '.join(similar_channels[:5])}. "
+        if keyword_matches:
+            error_msg += f"Channels with related keywords: {', '.join(keyword_matches[:5])}. "
+        error_msg += f"Available channels (first 20): {', '.join(available_channels)}. "
+        error_msg += "\n\nTroubleshooting:\n"
+        error_msg += "1. Verify the channel name is correct (check for typos, spaces, or different formatting)\n"
+        error_msg += "2. IMPORTANT: If using a User OAuth Token (xoxp-...), the USER whose token it is must be a member of the channel.\n"
+        error_msg += "   Adding the app/bot to the channel is not enough - the user must also join the channel.\n"
+        error_msg += "3. Alternatively, use a Bot Token (xoxb-...) and ensure the bot is added to the channel\n"
+        error_msg += "4. Check if the channel is archived (archived channels may not appear)\n"
+        error_msg += "5. Verify you're using the token for the correct Slack workspace\n"
+        error_msg += "6. Try using the channel ID instead: Right-click channel → Copy link → Use the C1234567890 ID from the URL"
+        
+        raise HTTPException(status_code=404, detail=error_msg)
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error resolving Slack channel: {e}")
 
 
 def _load_prompt() -> tuple[str, str, str]:
@@ -641,6 +819,44 @@ def _clean_paperqa_citations(text: str) -> str:
     # Also clean up any double spaces left behind
     cleaned = re.sub(r'  +', ' ', cleaned)
     return cleaned.strip()
+
+
+async def _download_arxiv_pdf(arxiv_id: str, pdf_url: str) -> str:
+    """Download arXiv PDF and return local path with retry logic."""
+    output_dir = pathlib.Path("storage/downloads")
+    output_dir.mkdir(parents=True, exist_ok=True)
+    
+    # Use arxiv library to download with retry
+    max_retries = 3
+    last_error = None
+    
+    for attempt in range(max_retries):
+        try:
+            client = arxiv.Client()
+            search = arxiv.Search(id_list=[arxiv_id])
+            results = list(client.results(search))
+            
+            if not results:
+                raise HTTPException(status_code=404, detail=f"arXiv paper not found: {arxiv_id}")
+            
+            result = results[0]
+            pdf_path = result.download_pdf(dirpath=str(output_dir))
+            return str(pdf_path)
+        except Exception as e:
+            last_error = e
+            if attempt < max_retries - 1:
+                import asyncio
+                await asyncio.sleep(2 ** attempt)  # Exponential backoff: 1s, 2s, 4s
+                continue
+            else:
+                # Last attempt failed, raise with context
+                error_msg = str(e)
+                if "retrieval incomplete" in error_msg or "urlopen error" in error_msg:
+                    raise Exception(f"PDF download failed after {max_retries} attempts: {error_msg}. The PDF may be too large or the connection was interrupted.")
+                raise Exception(f"PDF download failed after {max_retries} attempts: {error_msg}")
+    
+    # Should never reach here, but just in case
+    raise Exception(f"PDF download failed: {last_error}")
 
 
 async def _paperqa_extract_pdf_async(pdf_path: pathlib.Path) -> dict[str, Any]:
@@ -1444,48 +1660,73 @@ async def save_paper(payload: SavePaperRequest) -> dict[str, Any]:
     }
 
 
+async def _fetch_slack_messages(client, channel_id: str) -> list[dict[str, Any]]:
+    """Fetch all messages from a Slack channel with pagination.
+    
+    Returns list of message objects containing 'text' field.
+    Uses asyncio.to_thread to avoid blocking the event loop.
+    """
+    all_messages = []
+    cursor = None
+    
+    while True:
+        try:
+            # Wrap blocking Slack API call in thread executor
+            response = await asyncio.to_thread(
+                client.conversations_history,
+                channel=channel_id,
+                cursor=cursor,
+                limit=200,  # Max per request
+            )
+            
+            if not response["ok"]:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"Slack API error: {response.get('error', 'Unknown error')}"
+                )
+            
+            messages = response.get("messages", [])
+            all_messages.extend(messages)
+            
+            # Check if there are more messages
+            response_metadata = response.get("response_metadata", {})
+            cursor = response_metadata.get("next_cursor")
+            
+            if not cursor:
+                break
+            
+            # Rate limiting: Slack allows 1 request per second for conversations.history
+            await asyncio.sleep(1.1)
+            
+        except HTTPException:
+            raise
+        except Exception as e:
+            raise HTTPException(status_code=500, detail=f"Error fetching Slack messages: {e}")
+    
+    return all_messages
+
+
 @app.post("/papers/batch-ingest")
 async def batch_ingest(payload: BatchIngestRequest) -> dict[str, Any]:
-    """Batch ingest PDFs from a local directory.
+    """Batch ingest PDFs from a local directory or arXiv papers from a Slack channel.
     
-    For each PDF:
-    1. Extract text to get title (from first page)
-    2. Classify into category
-    3. Generate abbreviation
-    4. Summarize
-    5. Save to database
+    For directory:
+    - For each PDF:
+      1. Extract text to get title (from first page)
+      2. Classify into category
+      3. Generate abbreviation
+      4. Summarize
+      5. Save to database
+    
+    For Slack channel:
+    - Fetch all messages from channel
+    - Extract arXiv IDs/URLs from messages
+    - Ingest each arXiv paper found
     """
     import glob
     import shutil
-    
-    # Handle paths: /Users/hyl/xxx becomes /host_home/xxx in Docker
-    # The Docker compose mounts $HOME to /host_home
-    dir_path = payload.directory
-    home_dir = os.environ.get("HOME", "/root")
-    
-    # Check if running in Docker (home is /root) and path starts with typical macOS path
-    if home_dir == "/root" and dir_path.startswith("/Users/"):
-        # Extract the path after /Users/username/
-        parts = dir_path.split("/")
-        if len(parts) > 3:
-            # /Users/username/rest -> /host_home/rest
-            docker_path = "/host_home/" + "/".join(parts[3:])
-            directory = pathlib.Path(docker_path)
-        else:
-            directory = pathlib.Path(dir_path)
-    else:
-        directory = pathlib.Path(dir_path)
-    
-    if not directory.exists():
-        raise HTTPException(
-            status_code=400, 
-            detail=f"Directory not found: {payload.directory} (mapped to {directory})"
-        )
-    
-    # Find all PDFs
-    pdf_files = list(directory.glob("*.pdf")) + list(directory.glob("*.PDF"))
-    if not pdf_files:
-        raise HTTPException(status_code=400, detail=f"No PDF files found in: {payload.directory}")
+    from slack_sdk import WebClient
+    from slack_sdk.errors import SlackApiError
     
     results = []
     endpoint_config = _get_endpoint_config()
@@ -1504,164 +1745,495 @@ async def batch_ingest(payload: BatchIngestRequest) -> dict[str, Any]:
     except Exception as e:
         raise HTTPException(status_code=503, detail=f"Embedding endpoint not available: {e}")
     
-    client = _get_async_openai_client(base_url, api_key)
+    llm_client = _get_async_openai_client(base_url, api_key)
     
-    for pdf_file in pdf_files:
-        # Reset LiteLLM callbacks to prevent MAX_CALLBACKS limit (30) accumulation
+    # Progress logging for Slack ingestion
+    progress_log = []
+    
+    def log_progress(message: str):
+        """Log progress message (for debugging and user feedback)."""
+        progress_log.append(message)
+        print(f"[Slack Ingest] {message}")  # Also print to Docker logs
+    
+    # Determine source type
+    if payload.slack_channel:
+        # Slack channel ingestion - wrap entire block to capture progress_log in errors
         try:
-            import litellm
-            litellm.input_callback = []
-            litellm.success_callback = []
-            litellm.failure_callback = []
-            litellm._async_success_callback = []
-            litellm._async_failure_callback = []
-        except Exception:
-            pass  # Ignore if litellm not available or attributes don't exist
-        
-        try:
-            # Generate a unique ID based on filename
-            filename = pdf_file.stem  # filename without extension
-            paper_id = f"local_{hashlib.md5(filename.encode()).hexdigest()[:12]}"
+            log_progress("Starting Slack channel ingestion...")
+            if not payload.slack_token:
+                raise HTTPException(status_code=400, detail="Slack token is required for Slack channel ingestion")
             
-            # Check if already exists
-            if payload.skip_existing and db.get_paper_by_arxiv_id(paper_id):
-                results.append({
-                    "file": pdf_file.name,
-                    "status": "skipped",
-                    "reason": "already exists",
-                })
-                continue
+            # Initialize Slack client
+            log_progress("Initializing Slack client...")
+            slack_client = WebClient(token=payload.slack_token)
             
-            # Copy PDF to storage
-            storage_dir = pathlib.Path("storage/downloads")
-            storage_dir.mkdir(parents=True, exist_ok=True)
-            dest_path = storage_dir / f"{paper_id}.pdf"
-            shutil.copy2(pdf_file, dest_path)
-            pdf_path = str(dest_path)
-            
-            # Extract text from PDF using the async version
+            # Test token validity first
+            log_progress("Testing Slack token validity...")
             try:
-                extract_result = await _paperqa_extract_pdf_async(pdf_file)
-                first_chunk = extract_result.get("text", "")[:2000]
-            except Exception as ex:
-                results.append({
-                    "file": pdf_file.name,
-                    "status": "error",
-                    "reason": f"Could not extract text from PDF: {ex}",
-                })
-                continue
+                auth_test = await asyncio.to_thread(slack_client.auth_test)
+                if not auth_test["ok"]:
+                    raise HTTPException(status_code=401, detail=f"Invalid Slack token: {auth_test.get('error', 'Unknown error')}")
+                log_progress(f"✓ Token valid (workspace: {auth_test.get('team', 'Unknown')})")
+            except HTTPException:
+                raise
+            except Exception as e:
+                raise HTTPException(status_code=401, detail=f"Failed to authenticate with Slack: {e}")
             
-            if not first_chunk:
-                results.append({
-                    "file": pdf_file.name,
-                    "status": "error",
-                    "reason": "PDF extraction returned empty text",
-                })
-                continue
-            
-            # Use filename as title (clean it up)
-            title = filename.replace("_", " ").replace("-", " ").strip()
-            
-            # Get existing categories for classification
-            tree = db.get_tree()
-            existing_categories = [n["name"] for n in tree if n["node_type"] == "category"]
-            
-            # Classify
-            classify_prompt = get_prompt("classify", 
-                title=title, 
-                abstract=first_chunk[:500],
-                existing_categories=", ".join(existing_categories) if existing_categories else "None"
-            )
-            classify_resp = await client.chat.completions.create(
-                model=model,
-                messages=[{"role": "user", "content": classify_prompt}],
-                max_tokens=50,
-                temperature=0.1,
-            )
-            category = classify_resp.choices[0].message.content.strip().strip('"\'')
-            
-            # Abbreviate
-            abbrev_prompt = get_prompt("abbreviate", title=title)
-            abbrev_resp = await client.chat.completions.create(
-                model=model,
-                messages=[{"role": "user", "content": abbrev_prompt}],
-                max_tokens=20,
-                temperature=0.1,
-            )
-            abbreviation = abbrev_resp.choices[0].message.content.strip().strip('"\'')
-            
-            # Summarize (this also indexes the PDF) - use async version
-            prompt_id, prompt_hash, prompt_body = _load_prompt()
-            summary = await _paperqa_answer_async(
-                None,
-                pdf_path,
-                prompt_body,
-                base_url,
-                embed_base_url,
-                api_key,
-                f"openai/{model}",
-                f"openai/{embed_model}",
-                arxiv_id=paper_id,
-            )
-            
-            # Save to database
-            db_paper_id = db.create_paper(
-                arxiv_id=paper_id,
-                title=title,
-                authors=[],  # No author info from local PDFs
-                abstract=first_chunk[:1000],
-                summary=summary,
-                pdf_path=pdf_path,
-            )
-            
-            # Add to tree
-            category_exists = any(n["name"] == category and n["node_type"] == "category" for n in tree)
-            if not category_exists:
-                category_node_id = f"cat_{uuid.uuid4().hex[:8]}"
-                db.add_tree_node(
-                    node_id=category_node_id,
-                    name=category,
-                    node_type="category",
-                    parent_id="root",
+            # Resolve channel ID (wrap blocking call)
+            log_progress(f"Resolving channel: {payload.slack_channel}")
+            try:
+                channel_id = await asyncio.to_thread(
+                    _resolve_slack_channel_id,
+                    slack_client,
+                    payload.slack_channel
                 )
+                log_progress(f"✓ Channel resolved: {channel_id}")
+            except HTTPException:
+                raise
+            except Exception as e:
+                raise HTTPException(status_code=400, detail=f"Error resolving Slack channel: {e}")
+            
+            # Fetch all messages
+            log_progress("Fetching messages from Slack channel (this may take a while for large channels)...")
+            try:
+                messages = await _fetch_slack_messages(slack_client, channel_id)
+                log_progress(f"✓ Fetched {len(messages)} messages from channel")
+                if not messages:
+                    return {
+                        "total": 0,
+                        "success": 0,
+                        "skipped": 0,
+                        "errors": 0,
+                        "results": [],
+                        "progress_log": progress_log,
+                        "message": "No messages found in channel",
+                    }
+            except HTTPException:
+                raise
+            except Exception as e:
+                import traceback
+                error_detail = f"Error fetching Slack messages: {str(e)}\n{traceback.format_exc()}"
+                log_progress(f"✗ Error fetching messages: {error_detail}")
+                raise HTTPException(status_code=500, detail=error_detail)
+            
+            # Extract arXiv IDs from all messages
+            log_progress("Extracting arXiv IDs from messages...")
+            all_arxiv_ids = set()
+            try:
+                for i, message in enumerate(messages):
+                    if (i + 1) % 100 == 0:
+                        log_progress(f"  Processing message {i+1}/{len(messages)}...")
+                    text = message.get("text", "")
+                    arxiv_ids = _extract_arxiv_ids_from_text(text)
+                    all_arxiv_ids.update(arxiv_ids)
+                log_progress(f"✓ Found {len(all_arxiv_ids)} unique arXiv papers")
+            except Exception as e:
+                import traceback
+                error_detail = f"Error extracting arXiv IDs from messages: {str(e)}\n{traceback.format_exc()}"
+                log_progress(f"✗ Error extracting arXiv IDs: {error_detail}")
+                raise HTTPException(status_code=500, detail=error_detail)
+            
+            if not all_arxiv_ids:
+                return {
+                    "total": 0,
+                    "success": 0,
+                    "skipped": 0,
+                    "errors": 0,
+                    "results": [],
+                    "progress_log": progress_log,
+                }
+            
+            # Process each arXiv ID
+            arxiv_ids_list = sorted(list(all_arxiv_ids))
+            log_progress(f"Starting ingestion of {len(arxiv_ids_list)} papers...")
+            for idx, arxiv_id in enumerate(arxiv_ids_list):
+                log_progress(f"Processing paper {idx+1}/{len(arxiv_ids_list)}: {arxiv_id}")
+                # Rate limiting: process in batches with delay
+                await asyncio.sleep(0.5)  # Small delay between papers
+                
+                # Reset LiteLLM callbacks
+                try:
+                    import litellm
+                    litellm.input_callback = []
+                    litellm.success_callback = []
+                    litellm.failure_callback = []
+                    litellm._async_success_callback = []
+                    litellm._async_failure_callback = []
+                except Exception:
+                    pass
+                
+                try:
+                    # Check if already exists
+                    log_progress(f"  [{arxiv_id}] Checking if paper already exists...")
+                    if payload.skip_existing and db.get_paper_by_arxiv_id(arxiv_id):
+                        log_progress(f"  [{arxiv_id}] ⏭ Skipped (already exists)")
+                        results.append({
+                            "file": arxiv_id,
+                            "status": "skipped",
+                            "reason": "already exists",
+                        })
+                        continue
+                    
+                    # Download and ingest arXiv paper (reuse existing single ingest logic)
+                    log_progress(f"  [{arxiv_id}] Fetching metadata from arXiv...")
+                    arxiv_client = arxiv.Client()
+                    search = arxiv.Search(id_list=[arxiv_id])
+                    arxiv_results = list(arxiv_client.results(search))
+                    
+                    if not arxiv_results:
+                        log_progress(f"  [{arxiv_id}] ✗ arXiv paper not found")
+                        results.append({
+                            "file": arxiv_id,
+                            "status": "error",
+                            "reason": f"arXiv paper not found: {arxiv_id}",
+                        })
+                        continue
+                    
+                    arxiv_result = arxiv_results[0]
+                    title = arxiv_result.title
+                    authors = [author.name for author in arxiv_result.authors]
+                    abstract = arxiv_result.summary
+                    pdf_url = arxiv_result.pdf_url
+                    log_progress(f"  [{arxiv_id}] ✓ Found: {title}")
+                    
+                    # Download PDF
+                    log_progress(f"  [{arxiv_id}] Downloading PDF...")
+                    pdf_path = await _download_arxiv_pdf(arxiv_id, pdf_url)
+                    log_progress(f"  [{arxiv_id}] ✓ PDF downloaded")
+                    
+                    # Get existing categories
+                    log_progress(f"  [{arxiv_id}] Classifying paper...")
+                    tree = db.get_tree()
+                    existing_categories = [n["name"] for n in tree if n["node_type"] == "category"]
+                    
+                    # Classify
+                    classify_prompt = get_prompt("classify",
+                        title=title,
+                        abstract=abstract[:500],
+                        existing_categories=", ".join(existing_categories) if existing_categories else "None"
+                    )
+                    classify_resp = await llm_client.chat.completions.create(
+                        model=model,
+                        messages=[{"role": "user", "content": classify_prompt}],
+                        max_tokens=50,
+                        temperature=0.1,
+                    )
+                    category = classify_resp.choices[0].message.content.strip().strip('"\'')
+                    log_progress(f"  [{arxiv_id}] ✓ Classified as: {category}")
+                    
+                    # Abbreviate
+                    log_progress(f"  [{arxiv_id}] Generating abbreviation...")
+                    abbrev_prompt = get_prompt("abbreviate", title=title)
+                    abbrev_resp = await llm_client.chat.completions.create(
+                        model=model,
+                        messages=[{"role": "user", "content": abbrev_prompt}],
+                        max_tokens=20,
+                        temperature=0.1,
+                    )
+                    abbreviation = abbrev_resp.choices[0].message.content.strip().strip('"\'')
+                    log_progress(f"  [{arxiv_id}] ✓ Abbreviation: {abbreviation}")
+                    
+                    # Summarize
+                    log_progress(f"  [{arxiv_id}] Summarizing paper (this may take a while)...")
+                    prompt_id, prompt_hash, prompt_body = _load_prompt()
+                    summary = await _paperqa_answer_async(
+                        None,
+                        pdf_path,
+                        prompt_body,
+                        base_url,
+                        embed_base_url,
+                        api_key,
+                        f"openai/{model}",
+                        f"openai/{embed_model}",
+                        arxiv_id=arxiv_id,
+                    )
+                    log_progress(f"  [{arxiv_id}] ✓ Summary generated")
+                    
+                    # Save to database
+                    log_progress(f"  [{arxiv_id}] Saving to database...")
+                    db_paper_id = db.create_paper(
+                        arxiv_id=arxiv_id,
+                        title=title,
+                        authors=authors,
+                        abstract=abstract[:1000],
+                        summary=summary,
+                        pdf_path=pdf_path,
+                    )
+                    
+                    # Add to tree
+                    category_exists = any(n["name"] == category and n["node_type"] == "category" for n in tree)
+                    if not category_exists:
+                        category_node_id = f"cat_{uuid.uuid4().hex[:8]}"
+                        db.add_tree_node(
+                            node_id=category_node_id,
+                            name=category,
+                            node_type="category",
+                            parent_id="root",
+                        )
+                        log_progress(f"  [{arxiv_id}] ✓ Created new category: {category}")
+                    else:
+                        category_node_id = next(n["node_id"] for n in tree if n["name"] == category and n["node_type"] == "category")
+                    
+                    paper_node_id = f"paper_{arxiv_id.replace('.', '_')}"
+                    db.add_tree_node(
+                        node_id=paper_node_id,
+                        name=abbreviation,
+                        node_type="paper",
+                        parent_id=category_node_id,
+                        paper_id=db_paper_id,
+                    )
+                    
+                    log_progress(f"  [{arxiv_id}] ✓ Successfully ingested!")
+                    results.append({
+                        "file": arxiv_id,
+                        "status": "success",
+                        "paper_id": arxiv_id,
+                        "title": title,
+                        "category": category,
+                        "abbreviation": abbreviation,
+                    })
+                    
+                except Exception as e:
+                    import traceback
+                    error_msg = str(e)
+                    log_progress(f"  [{arxiv_id}] ✗ Error: {error_msg}")
+                    # Include traceback for debugging, but truncate if too long
+                    tb = traceback.format_exc()
+                    if len(tb) > 500:
+                        tb = tb[:500] + "... (truncated)"
+                    results.append({
+                        "file": arxiv_id,
+                        "status": "error",
+                        "reason": f"{error_msg}\n{tb}",
+                    })
+        except HTTPException as e:
+            # Include progress_log in HTTPException response
+            import json
+            detail = e.detail
+            if isinstance(detail, str):
+                detail = {"message": detail, "progress_log": progress_log}
+            elif isinstance(detail, dict):
+                detail["progress_log"] = progress_log
             else:
-                category_node_id = next(n["node_id"] for n in tree if n["name"] == category and n["node_type"] == "category")
-            
-            paper_node_id = f"paper_{paper_id.replace('.', '_')}"
-            db.add_tree_node(
-                node_id=paper_node_id,
-                name=abbreviation,
-                node_type="paper",
-                parent_id=category_node_id,
-                paper_id=db_paper_id,
-            )
-            
-            results.append({
-                "file": pdf_file.name,
-                "status": "success",
-                "paper_id": paper_id,
-                "title": title,
-                "category": category,
-                "abbreviation": abbreviation,
-            })
-            
+                detail = {"message": str(detail), "progress_log": progress_log}
+            raise HTTPException(status_code=e.status_code, detail=detail)
         except Exception as e:
-            results.append({
-                "file": pdf_file.name,
-                "status": "error",
-                "reason": str(e),
-            })
+            # Catch any unexpected errors and include progress_log
+            import traceback
+            error_detail = f"Unexpected error during Slack ingestion: {str(e)}\n{traceback.format_exc()}"
+            log_progress(f"✗ Fatal error: {error_detail}")
+            raise HTTPException(
+                status_code=500,
+                detail={
+                    "message": error_detail,
+                    "progress_log": progress_log
+                }
+            )
     
+    elif payload.directory:
+        # Directory ingestion (existing logic)
+        # Handle paths: /Users/hyl/xxx becomes /host_home/xxx in Docker
+        dir_path = payload.directory
+        home_dir = os.environ.get("HOME", "/root")
+        
+        # Check if running in Docker (home is /root) and path starts with typical macOS path
+        if home_dir == "/root" and dir_path.startswith("/Users/"):
+            # Extract the path after /Users/username/
+            parts = dir_path.split("/")
+            if len(parts) > 3:
+                # /Users/username/rest -> /host_home/rest
+                docker_path = "/host_home/" + "/".join(parts[3:])
+                directory = pathlib.Path(docker_path)
+            else:
+                directory = pathlib.Path(dir_path)
+        else:
+            directory = pathlib.Path(dir_path)
+        
+        if not directory.exists():
+            raise HTTPException(
+                status_code=400,
+                detail=f"Directory not found: {payload.directory} (mapped to {directory})"
+            )
+        
+        # Find all PDFs
+        pdf_files = list(directory.glob("*.pdf")) + list(directory.glob("*.PDF"))
+        if not pdf_files:
+            raise HTTPException(status_code=400, detail=f"No PDF files found in: {payload.directory}")
+        
+        for pdf_file in pdf_files:
+            # Reset LiteLLM callbacks to prevent MAX_CALLBACKS limit (30) accumulation
+            try:
+                import litellm
+                litellm.input_callback = []
+                litellm.success_callback = []
+                litellm.failure_callback = []
+                litellm._async_success_callback = []
+                litellm._async_failure_callback = []
+            except Exception:
+                pass  # Ignore if litellm not available or attributes don't exist
+            
+            try:
+                # Generate a unique ID based on filename
+                filename = pdf_file.stem  # filename without extension
+                paper_id = f"local_{hashlib.md5(filename.encode()).hexdigest()[:12]}"
+                
+                # Check if already exists
+                if payload.skip_existing and db.get_paper_by_arxiv_id(paper_id):
+                    results.append({
+                        "file": pdf_file.name,
+                        "status": "skipped",
+                        "reason": "already exists",
+                    })
+                    continue
+                
+                # Copy PDF to storage
+                storage_dir = pathlib.Path("storage/downloads")
+                storage_dir.mkdir(parents=True, exist_ok=True)
+                dest_path = storage_dir / f"{paper_id}.pdf"
+                shutil.copy2(pdf_file, dest_path)
+                pdf_path = str(dest_path)
+                
+                # Extract text from PDF using the async version
+                try:
+                    extract_result = await _paperqa_extract_pdf_async(pdf_file)
+                    first_chunk = extract_result.get("text", "")[:2000]
+                except Exception as ex:
+                    results.append({
+                        "file": pdf_file.name,
+                        "status": "error",
+                        "reason": f"Could not extract text from PDF: {ex}",
+                    })
+                    continue
+                
+                if not first_chunk:
+                    results.append({
+                        "file": pdf_file.name,
+                        "status": "error",
+                        "reason": "PDF extraction returned empty text",
+                    })
+                    continue
+                
+                # Use filename as title (clean it up)
+                title = filename.replace("_", " ").replace("-", " ").strip()
+                
+                # Get existing categories for classification
+                tree = db.get_tree()
+                existing_categories = [n["name"] for n in tree if n["node_type"] == "category"]
+                
+                # Classify
+                classify_prompt = get_prompt("classify", 
+                    title=title, 
+                    abstract=first_chunk[:500],
+                    existing_categories=", ".join(existing_categories) if existing_categories else "None"
+                )
+                classify_resp = await llm_client.chat.completions.create(
+                    model=model,
+                    messages=[{"role": "user", "content": classify_prompt}],
+                    max_tokens=50,
+                    temperature=0.1,
+                )
+                category = classify_resp.choices[0].message.content.strip().strip('"\'')
+                
+                # Abbreviate
+                abbrev_prompt = get_prompt("abbreviate", title=title)
+                abbrev_resp = await llm_client.chat.completions.create(
+                    model=model,
+                    messages=[{"role": "user", "content": abbrev_prompt}],
+                    max_tokens=20,
+                    temperature=0.1,
+                )
+                abbreviation = abbrev_resp.choices[0].message.content.strip().strip('"\'')
+                
+                # Summarize (this also indexes the PDF) - use async version
+                prompt_id, prompt_hash, prompt_body = _load_prompt()
+                summary = await _paperqa_answer_async(
+                    None,
+                    pdf_path,
+                    prompt_body,
+                    base_url,
+                    embed_base_url,
+                    api_key,
+                    f"openai/{model}",
+                    f"openai/{embed_model}",
+                    arxiv_id=paper_id,
+                )
+                
+                # Save to database
+                db_paper_id = db.create_paper(
+                    arxiv_id=paper_id,
+                    title=title,
+                    authors=[],  # No author info from local PDFs
+                    abstract=first_chunk[:1000],
+                    summary=summary,
+                    pdf_path=pdf_path,
+                )
+                
+                # Add to tree
+                category_exists = any(n["name"] == category and n["node_type"] == "category" for n in tree)
+                if not category_exists:
+                    category_node_id = f"cat_{uuid.uuid4().hex[:8]}"
+                    db.add_tree_node(
+                        node_id=category_node_id,
+                        name=category,
+                        node_type="category",
+                        parent_id="root",
+                    )
+                else:
+                    category_node_id = next(n["node_id"] for n in tree if n["name"] == category and n["node_type"] == "category")
+                
+                paper_node_id = f"paper_{paper_id.replace('.', '_')}"
+                db.add_tree_node(
+                    node_id=paper_node_id,
+                    name=abbreviation,
+                    node_type="paper",
+                    parent_id=category_node_id,
+                    paper_id=db_paper_id,
+                )
+                
+                results.append({
+                    "file": pdf_file.name,
+                    "status": "success",
+                    "paper_id": paper_id,
+                    "title": title,
+                    "category": category,
+                    "abbreviation": abbreviation,
+                })
+                
+            except Exception as e:
+                results.append({
+                    "file": pdf_file.name,
+                    "status": "error",
+                    "reason": str(e),
+                })
+    else:
+        # Neither slack_channel nor directory provided
+        raise HTTPException(status_code=400, detail="Either 'directory' or 'slack_channel' must be provided")
+    
+    # Calculate summary statistics
     success_count = sum(1 for r in results if r["status"] == "success")
     skip_count = sum(1 for r in results if r["status"] == "skipped")
     error_count = sum(1 for r in results if r["status"] == "error")
     
+    # Determine total count based on source
+    if payload.slack_channel:
+        # For Slack, total is the number of unique arXiv IDs found
+        total = len(set(r.get("file", "") for r in results if r["status"] != "skipped"))
+    elif payload.directory:
+        total = len(pdf_files)
+    else:
+        total = 0
+    
+    # Add final summary to progress log
+    if payload.slack_channel:
+        log_progress(f"✓ Completed: {success_count} success, {skip_count} skipped, {error_count} errors")
+    
     return {
-        "total": len(pdf_files),
+        "total": total,
         "success": success_count,
         "skipped": skip_count,
         "errors": error_count,
         "results": results,
+        "progress_log": progress_log if payload.slack_channel else [],
     }
 
 
