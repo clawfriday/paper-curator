@@ -191,59 +191,191 @@ def find_similar_papers(embedding: list[float], limit: int = 5, exclude_id: Opti
 # Tree CRUD
 # =============================================================================
 
-def get_tree() -> list[dict[str, Any]]:
-    """Get full tree structure."""
+def get_tree() -> dict[str, Any]:
+    """Get full tree structure from JSONB and enrich with paper metadata.
+    
+    Returns:
+        Frontend format tree structure with paper metadata:
+        {
+            "name": "AI Papers",
+            "children": [
+                {
+                    "name": "Category Name",
+                    "node_id": "cluster_abc",
+                    "node_type": "category",
+                    "children": [...]
+                },
+                {
+                    "name": "Paper Name",
+                    "node_id": "cluster_def",
+                    "node_type": "paper",
+                    "paper_id": 123,
+                    "attributes": {
+                        "arxivId": "...",
+                        "title": "...",
+                        ...
+                    }
+                }
+            ]
+        }
+    """
+    import json
+    
     with get_db() as conn:
         with conn.cursor(cursor_factory=RealDictCursor) as cur:
-            cur.execute(
-                """
-                SELECT tn.*, p.arxiv_id, p.title as paper_title, p.authors, p.summary, p.pdf_path
-                FROM tree_nodes tn
-                LEFT JOIN papers p ON tn.paper_id = p.id
-                ORDER BY tn.parent_id NULLS FIRST, tn.position
-                """
-            )
-            return [dict(row) for row in cur.fetchall()]
+            cur.execute("SELECT tree_data FROM tree_state WHERE id = 1")
+            row = cur.fetchone()
+            if not row or not row.get("tree_data"):
+                return {"name": "AI Papers", "children": []}
+            
+            tree_data = row["tree_data"]
+            tree_structure = tree_data if isinstance(tree_data, dict) else json.loads(tree_data)
+    
+    # Enrich tree with paper metadata
+    def enrich_node(node: dict[str, Any]) -> dict[str, Any]:
+        """Recursively enrich nodes with paper metadata."""
+        if node.get("node_type") == "paper" and node.get("paper_id"):
+            # Fetch paper data from database
+            paper = get_paper_by_id(node["paper_id"])
+            if paper:
+                node["attributes"] = {
+                    "arxivId": paper.get("arxiv_id"),
+                    "title": paper.get("title"),
+                    "authors": paper.get("authors") or [],
+                    "summary": paper.get("summary"),
+                    "pdfPath": paper.get("pdf_path"),
+                }
+        
+        # Recursively enrich children
+        if node.get("children"):
+            node["children"] = [enrich_node(child) for child in node["children"]]
+        
+        return node
+    
+    return enrich_node(tree_structure)
 
 
-def add_tree_node(
-    node_id: str,
-    name: str,
-    node_type: str,
-    parent_id: Optional[str] = None,
-    paper_id: Optional[int] = None,
-    position: int = 0,
-) -> None:
-    """Add a node to the tree."""
+def save_tree(tree_structure: dict[str, Any], node_names: dict[str, str] | None = None) -> None:
+    """Save tree structure to database as JSONB.
+    
+    Args:
+        tree_structure: Frontend format tree structure {name, children: [...]}
+        node_names: Optional dictionary mapping cluster_id to node name
+    """
+    import json
+    
+    if node_names is None:
+        node_names = {}
+        def extract_names(node: dict[str, Any]):
+            if node.get("node_id"):
+                node_names[node["node_id"]] = node.get("name", "")
+            if node.get("children"):
+                for child in node["children"]:
+                    extract_names(child)
+        extract_names(tree_structure)
+    
     with get_db() as conn:
         with conn.cursor() as cur:
+            # Lock the row to prevent concurrent updates
+            cur.execute("SELECT * FROM tree_state WHERE id = 1 FOR UPDATE")
+            
             cur.execute(
                 """
-                INSERT INTO tree_nodes (node_id, name, node_type, parent_id, paper_id, position)
-                VALUES (%s, %s, %s, %s, %s, %s)
-                ON CONFLICT (node_id) DO UPDATE SET
-                    name = EXCLUDED.name,
-                    parent_id = EXCLUDED.parent_id,
-                    paper_id = EXCLUDED.paper_id,
-                    position = EXCLUDED.position
+                UPDATE tree_state 
+                SET tree_data = %s::jsonb, node_names = %s::jsonb, updated_at = NOW()
+                WHERE id = 1
                 """,
-                (node_id, name, node_type, parent_id, paper_id, position)
+                (json.dumps(tree_structure), json.dumps(node_names))
             )
             conn.commit()
 
 
-def delete_tree_node(node_id: str) -> None:
-    """Delete a tree node and its children."""
+def get_tree_node_names() -> dict[str, str]:
+    """Get node names mapping from database.
+    
+    Returns:
+        Dictionary mapping cluster_id -> name
+    """
+    import json
+    
     with get_db() as conn:
-        with conn.cursor() as cur:
-            # First delete children recursively
+        with conn.cursor(cursor_factory=RealDictCursor) as cur:
+            cur.execute("SELECT node_names FROM tree_state WHERE id = 1")
+            row = cur.fetchone()
+            if not row or not row.get("node_names"):
+                return {}
+            
+            node_names_data = row["node_names"]
+            return node_names_data if isinstance(node_names_data, dict) else json.loads(node_names_data)
+
+
+def find_paper_cluster_id(paper_id: int) -> str | None:
+    """Find the cluster_id for a paper in the tree.
+    
+    Args:
+        paper_id: Integer paper ID
+        
+    Returns:
+        Cluster ID if found, None otherwise
+    """
+    tree = get_tree()
+    
+    def search_node(node: dict[str, Any]) -> str | None:
+        if node.get("node_type") == "paper" and node.get("paper_id") == paper_id:
+            return node.get("node_id")
+        if node.get("children"):
+            for child in node["children"]:
+                result = search_node(child)
+                if result:
+                    return result
+        return None
+    
+    return search_node(tree)
+
+
+def update_tree_node_name(cluster_id: str, name: str) -> None:
+    """Update a tree node's display name in JSONB structure.
+    
+    Args:
+        cluster_id: Cluster/node ID to update
+        name: New name for the node
+    """
+    import json
+    
+    with get_db() as conn:
+        with conn.cursor(cursor_factory=RealDictCursor) as cur:
+            # Lock the row to prevent concurrent updates
+            cur.execute("SELECT tree_data, node_names FROM tree_state WHERE id = 1 FOR UPDATE")
+            row = cur.fetchone()
+            if not row:
+                return
+            
+            tree_data_raw = row["tree_data"]
+            node_names_raw = row["node_names"]
+            tree_data = tree_data_raw if isinstance(tree_data_raw, dict) else json.loads(tree_data_raw)
+            node_names = node_names_raw if isinstance(node_names_raw, dict) else json.loads(node_names_raw)
+            
+            # Update name in tree structure
+            def update_name_in_tree(node: dict[str, Any]) -> None:
+                if node.get("node_id") == cluster_id:
+                    node["name"] = name
+                if node.get("children"):
+                    for child in node["children"]:
+                        update_name_in_tree(child)
+            
+            update_name_in_tree(tree_data)
+            
+            # Update node_names mapping
+            node_names[cluster_id] = name
+            
+            # Save back
             cur.execute(
-                "DELETE FROM tree_nodes WHERE parent_id = %s",
-                (node_id,)
-            )
-            cur.execute(
-                "DELETE FROM tree_nodes WHERE node_id = %s",
-                (node_id,)
+                """
+                UPDATE tree_state 
+                SET tree_data = %s::jsonb, node_names = %s::jsonb, updated_at = NOW()
+                WHERE id = 1
+                """,
+                (json.dumps(tree_data), json.dumps(node_names))
             )
             conn.commit()
 
@@ -263,86 +395,136 @@ def delete_paper(paper_id: int) -> None:
             conn.commit()
 
 
-def update_tree_node_name(node_id: str, name: str) -> None:
-    """Update a tree node's display name."""
-    with get_db() as conn:
-        with conn.cursor() as cur:
-            cur.execute(
-                "UPDATE tree_nodes SET name = %s WHERE node_id = %s",
-                (name, node_id)
-            )
-            conn.commit()
 
 
 def get_all_categories_with_counts() -> list[dict[str, Any]]:
-    """Get all categories with their paper counts."""
-    with get_db() as conn:
-        with conn.cursor(cursor_factory=RealDictCursor) as cur:
-            cur.execute(
-                """
-                SELECT c.node_id, c.name, COUNT(p.node_id) as paper_count
-                FROM tree_nodes c
-                LEFT JOIN tree_nodes p ON p.parent_id = c.node_id AND p.node_type = 'paper'
-                WHERE c.node_type = 'category'
-                GROUP BY c.node_id, c.name
-                ORDER BY paper_count DESC
-                """
-            )
-            return [dict(row) for row in cur.fetchall()]
+    """Get all categories with their paper counts from tree structure."""
+    tree = get_tree()
+    categories = []
+    
+    def traverse(node: dict[str, Any]) -> None:
+        if node.get("node_type") == "category":
+            # Count papers in this category
+            paper_count = 0
+            def count_papers(n: dict[str, Any]) -> int:
+                count = 0
+                if n.get("node_type") == "paper":
+                    return 1
+                if n.get("children"):
+                    for child in n["children"]:
+                        count += count_papers(child)
+                return count
+            
+            paper_count = count_papers(node)
+            categories.append({
+                "node_id": node.get("node_id"),
+                "name": node.get("name"),
+                "paper_count": paper_count,
+            })
+        
+        if node.get("children"):
+            for child in node["children"]:
+                traverse(child)
+    
+    traverse(tree)
+    return sorted(categories, key=lambda x: x["paper_count"], reverse=True)
 
 
 def get_category_paper_count(category_name: str) -> int:
-    """Get number of papers in a category."""
-    with get_db() as conn:
-        with conn.cursor() as cur:
-            cur.execute(
-                """
-                SELECT COUNT(*) FROM tree_nodes
-                WHERE parent_id = (SELECT node_id FROM tree_nodes WHERE name = %s AND node_type = 'category')
-                AND node_type = 'paper'
-                """,
-                (category_name,)
-            )
-            return cur.fetchone()[0]
+    """Get number of papers in a category by name."""
+    tree = get_tree()
+    
+    def find_category(node: dict[str, Any]) -> dict[str, Any] | None:
+        if node.get("node_type") == "category" and node.get("name") == category_name:
+            return node
+        if node.get("children"):
+            for child in node["children"]:
+                result = find_category(child)
+                if result:
+                    return result
+        return None
+    
+    category = find_category(tree)
+    if not category:
+        return 0
+    
+    def count_papers(n: dict[str, Any]) -> int:
+        count = 0
+        if n.get("node_type") == "paper":
+            return 1
+        if n.get("children"):
+            for child in n["children"]:
+                count += count_papers(child)
+        return count
+    
+    return count_papers(category)
 
 
 def get_category_paper_count_by_id(category_node_id: str) -> int:
     """Get number of papers in a category by node_id."""
-    with get_db() as conn:
-        with conn.cursor() as cur:
-            cur.execute(
-                "SELECT COUNT(*) FROM tree_nodes WHERE parent_id = %s AND node_type = 'paper'",
-                (category_node_id,)
-            )
-            return cur.fetchone()[0]
+    tree = get_tree()
+    
+    def find_category(node: dict[str, Any]) -> dict[str, Any] | None:
+        if node.get("node_id") == category_node_id:
+            return node
+        if node.get("children"):
+            for child in node["children"]:
+                result = find_category(child)
+                if result:
+                    return result
+        return None
+    
+    category = find_category(tree)
+    if not category:
+        return 0
+    
+    def count_papers(n: dict[str, Any]) -> int:
+        count = 0
+        if n.get("node_type") == "paper":
+            return 1
+        if n.get("children"):
+            for child in n["children"]:
+                count += count_papers(child)
+        return count
+    
+    return count_papers(category)
 
 
 def get_papers_in_category(category_node_id: str) -> list[dict[str, Any]]:
     """Get all papers in a category with their details."""
-    with get_db() as conn:
-        with conn.cursor(cursor_factory=RealDictCursor) as cur:
-            cur.execute(
-                """
-                SELECT tn.node_id, tn.name as display_name, p.*
-                FROM tree_nodes tn
-                JOIN papers p ON tn.paper_id = p.id
-                WHERE tn.parent_id = %s AND tn.node_type = 'paper'
-                ORDER BY tn.position
-                """,
-                (category_node_id,)
-            )
-            return [dict(row) for row in cur.fetchall()]
+    tree = get_tree()
+    papers = []
+    
+    def find_category(node: dict[str, Any]) -> dict[str, Any] | None:
+        if node.get("node_id") == category_node_id:
+            return node
+        if node.get("children"):
+            for child in node["children"]:
+                result = find_category(child)
+                if result:
+                    return result
+        return None
+    
+    category = find_category(tree)
+    if not category:
+        return []
+    
+    def collect_papers(n: dict[str, Any]) -> None:
+        if n.get("node_type") == "paper" and n.get("paper_id"):
+            paper = get_paper_by_id(n["paper_id"])
+            if paper:
+                papers.append({
+                    "node_id": n.get("node_id"),
+                    "display_name": n.get("name"),
+                    **paper,
+                })
+        if n.get("children"):
+            for child in n["children"]:
+                collect_papers(child)
+    
+    collect_papers(category)
+    return papers
 
-
-def move_paper_to_category(paper_node_id: str, new_category_node_id: str) -> None:
-    """Move a paper to a different category."""
-    with get_db() as conn:
-        with conn.cursor() as cur:
-            cur.execute(
-                "UPDATE tree_nodes SET parent_id = %s WHERE node_id = %s",
-                (new_category_node_id, paper_node_id)
-            )
-            conn.commit()
 
 
 # =============================================================================

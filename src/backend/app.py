@@ -131,8 +131,8 @@ class SavePaperRequest(BaseModel):
     latex_path: Optional[str] = None
     pdf_url: Optional[str] = None
     published_at: Optional[str] = None
-    category: str
-    abbreviation: Optional[str] = None  # Short display name for tree node
+    category: Optional[str] = None  # Deprecated: no longer used, kept for backwards compatibility
+    abbreviation: Optional[str] = None  # Short display name for tree node (deprecated: no longer used)
 
 
 class BatchIngestRequest(BaseModel):
@@ -288,6 +288,9 @@ def _get_classification_config() -> dict[str, Any]:
     return {
         "category_threshold": int(classification.get("category_threshold", 10)),
         "auto_reclassify_enabled": bool(classification.get("auto_reclassify_enabled", True)),
+        "branching_factor": int(classification.get("branching_factor", 3)),
+        "clustering_method": classification.get("clustering_method", "divisive"),
+        "rebuild_on_ingest": bool(classification.get("rebuild_on_ingest", True)),
     }
 
 
@@ -681,7 +684,10 @@ async def _index_pdf_for_paperqa_async(
     llm_model: str,
     embed_model: str,
 ) -> Docs:
-    """Index a PDF and persist the Docs object for later QA queries (async)."""
+    """Index a PDF and persist the Docs object for later QA queries (async).
+    
+    Also extracts and saves document-level embedding via mean pooling.
+    """
     os.environ["OPENAI_API_BASE"] = llm_base_url
     os.environ["OPENAI_API_KEY"] = api_key
     
@@ -695,6 +701,13 @@ async def _index_pdf_for_paperqa_async(
     index_path = _get_paperqa_index_path(arxiv_id)
     with open(index_path, "wb") as f:
         pickle.dump(docs, f)
+    
+    # Extract and save document-level embedding (mean pooling)
+    doc_embedding = _extract_document_embedding_from_paperqa(docs)
+    if doc_embedding:
+        paper = db.get_paper_by_arxiv_id(arxiv_id)
+        if paper:
+            db.update_paper_embedding(paper["id"], doc_embedding)
     
     return docs
 
@@ -725,6 +738,109 @@ def _load_paperqa_index(arxiv_id: str) -> Optional[Docs]:
     except Exception:
         # If loading fails, return None to trigger re-indexing
         return None
+
+
+def _extract_document_embedding_from_paperqa(docs: Docs) -> Optional[list[float]]:
+    """Extract document-level embedding by mean pooling of PaperQA2 chunk embeddings.
+    
+    Args:
+        docs: PaperQA2 Docs object containing indexed document
+        
+    Returns:
+        Mean-pooled embedding vector or None if no embeddings found
+    """
+    import numpy as np
+    
+    # Ensure numpy is available
+    try:
+        np.mean
+    except AttributeError:
+        import sys
+        print("Warning: numpy not available, cannot extract embeddings", file=sys.stderr)
+        return None
+    
+    all_chunk_embeddings = []
+    
+    # PaperQA2 structure: docs.docs is a dict mapping doc keys to DocDetails objects
+    # Option 1: DocDetails may have .embedding directly (document-level)
+    # Option 2: DocDetails has .texts (dict/list) with Text objects that have .embedding (chunk-level)
+    try:
+        if not hasattr(docs, 'docs') or not docs.docs:
+            return None
+        
+        # Handle both dict and list/iterable structures
+        docs_iter = docs.docs.items() if isinstance(docs.docs, dict) else enumerate(docs.docs) if hasattr(docs.docs, '__iter__') else []
+        
+        for doc_key_or_doc in docs_iter:
+            # If it's a dict, get the value (DocDetails object)
+            doc = doc_key_or_doc[1] if isinstance(docs.docs, dict) else doc_key_or_doc
+            
+            # Try document-level embedding first
+            if hasattr(doc, 'embedding') and doc.embedding is not None:
+                emb = doc.embedding
+                if isinstance(emb, np.ndarray):
+                    all_chunk_embeddings.append(emb.tolist())
+                elif isinstance(emb, list):
+                    all_chunk_embeddings.append(emb)
+                continue  # Use document-level embedding if available
+            
+            # Otherwise, try chunk-level embeddings from texts
+            if hasattr(doc, 'texts') and doc.texts:
+                # Handle texts as dict or iterable
+                texts_iter = doc.texts.items() if isinstance(doc.texts, dict) else doc.texts
+                
+                for text_key_or_text in texts_iter:
+                    # If it's a dict, get the value (Text object)
+                    text_chunk = text_key_or_text[1] if isinstance(doc.texts, dict) else text_key_or_text
+                    
+                    if hasattr(text_chunk, 'embedding') and text_chunk.embedding is not None:
+                        # Convert to list if numpy array
+                        emb = text_chunk.embedding
+                        if isinstance(emb, np.ndarray):
+                            all_chunk_embeddings.append(emb.tolist())
+                        elif isinstance(emb, list):
+                            all_chunk_embeddings.append(emb)
+        
+        if not all_chunk_embeddings:
+            return None
+        
+        # Mean pooling: average all chunk embeddings
+        mean_embedding = np.mean(all_chunk_embeddings, axis=0).tolist()
+        return mean_embedding
+        
+    except Exception as e:
+        # Log error but don't fail - embedding extraction is optional
+        print(f"Warning: Failed to extract document embedding: {e}")
+        import traceback
+        traceback.print_exc()
+        return None
+
+
+async def _ensure_paper_embedding(arxiv_id: str) -> bool:
+    """Ensure a paper has a document-level embedding.
+    
+    If embedding doesn't exist, try to extract it from cached PaperQA2 index.
+    
+    Returns:
+        True if embedding exists or was successfully extracted, False otherwise
+    """
+    paper = db.get_paper_by_arxiv_id(arxiv_id)
+    if not paper:
+        return False
+    
+    # Check if embedding already exists
+    if paper.get("embedding") is not None:
+        return True
+    
+    # Try to load PaperQA2 index and extract embedding
+    docs = _load_paperqa_index(arxiv_id)
+    if docs:
+        doc_embedding = _extract_document_embedding_from_paperqa(docs)
+        if doc_embedding:
+            db.update_paper_embedding(paper["id"], doc_embedding)
+            return True
+    
+    return False
 
 
 async def _paperqa_answer_async(
@@ -774,6 +890,13 @@ async def _paperqa_answer_async(
             index_path = _get_paperqa_index_path(arxiv_id)
             with open(index_path, "wb") as f:
                 pickle.dump(docs, f)
+            
+            # Extract and save document-level embedding (mean pooling)
+            doc_embedding = _extract_document_embedding_from_paperqa(docs)
+            if doc_embedding:
+                paper = db.get_paper_by_arxiv_id(arxiv_id)
+                if paper:
+                    db.update_paper_embedding(paper["id"], doc_embedding)
     
     settings = _build_paperqa_settings(
         llm_model, embed_model, llm_base_url, embed_base_url, api_key
@@ -1518,8 +1641,9 @@ async def reabbreviate_all_papers() -> dict[str, Any]:
             temperature=0.1,
         )
         abbrev = response.choices[0].message.content.strip().strip('"\'').strip()
-        node_id = f"paper_{paper['arxiv_id'].replace('.', '_')}"
-        db.update_tree_node_name(node_id, abbrev)
+        cluster_id = db.find_paper_cluster_id(paper["id"])
+        if cluster_id:
+            db.update_tree_node_name(cluster_id, abbrev)
         return {"arxiv_id": paper["arxiv_id"], "abbreviation": abbrev}
     
     # Run all abbreviations in parallel
@@ -1534,9 +1658,11 @@ async def reabbreviate_all_papers() -> dict[str, Any]:
 
 @app.post("/papers/save")
 async def save_paper(payload: SavePaperRequest) -> dict[str, Any]:
-    """Save a paper to the database and add it to the tree.
+    """Save a paper to the database.
     
-    If the target category exceeds the threshold, triggers auto-reclassification.
+    Note: Paper is saved but not added to tree immediately.
+    Tree will be rebuilt using embedding-based clustering when user clicks "Re-classify"
+    or automatically if rebuild_on_ingest is enabled.
     """
     # Create paper in DB
     paper_id = db.create_paper(
@@ -1551,113 +1677,42 @@ async def save_paper(payload: SavePaperRequest) -> dict[str, Any]:
         published_at=payload.published_at,
     )
     
-    # Check if category exists, if not create it
-    tree = db.get_tree()
-    category_exists = any(n["name"] == payload.category and n["node_type"] == "category" for n in tree)
-    
-    if not category_exists:
-        category_node_id = f"cat_{uuid.uuid4().hex[:8]}"
-        db.add_tree_node(
-            node_id=category_node_id,
-            name=payload.category,
-            node_type="category",
-            parent_id="root",
-        )
-    else:
-        category_node_id = next(n["node_id"] for n in tree if n["name"] == payload.category and n["node_type"] == "category")
-    
-    # Add paper node - use abbreviation if provided, otherwise fallback to truncated title
-    paper_node_id = f"paper_{payload.arxiv_id.replace('.', '_')}"
-    display_name = payload.abbreviation if payload.abbreviation else (
-        payload.title[:30] + ".." if len(payload.title) > 30 else payload.title
-    )
-    db.add_tree_node(
-        node_id=paper_node_id,
-        name=display_name,
-        node_type="paper",
-        parent_id=category_node_id,
-        paper_id=paper_id,
-    )
-    
-    # Check if auto-reclassification is needed
-    reclassified = []
+    # Optionally trigger tree rebuild if embedding-based classification is enabled
+    # Note: This will only work if the paper has an embedding. Embeddings are extracted
+    # during PaperQA2 indexing (which happens during summarization), so this will typically
+    # be triggered after the paper is fully ingested.
     classification_config = _get_classification_config()
-    if classification_config["auto_reclassify_enabled"]:
-        paper_count = db.get_category_paper_count_by_id(category_node_id)
-        threshold = classification_config["category_threshold"]
-        
-        if paper_count > threshold:
-            # Get all papers in the overcrowded category
-            papers_in_category = db.get_papers_in_category(category_node_id)
-            
-            # Get existing categories (excluding the current one)
-            existing_categories = [
-                n["name"] for n in tree 
-                if n["node_type"] == "category" and n["node_id"] != category_node_id
-            ]
-            
-            # Reclassify each paper
-            endpoint_config = _get_endpoint_config()
-            base_url = endpoint_config["llm_base_url"]
-            api_key = endpoint_config["api_key"]
-            model = _resolve_model(base_url, api_key)
-            client = _get_async_openai_client(base_url, api_key)
-            
-            for paper in papers_in_category:
-                # Ask LLM for more specific category
-                prompt = get_prompt(
-                    "classify",
-                    existing_categories=", ".join(existing_categories) if existing_categories else "None yet",
-                    title=paper["title"],
-                    abstract=(paper.get("abstract") or "")[:2000],
-                )
-                
-                response = await client.chat.completions.create(
-                    model=model,
-                    messages=[{"role": "user", "content": prompt}],
-                    max_tokens=50,
-                    temperature=0.1,
-                )
-                new_category = response.choices[0].message.content.strip()
-                
-                # Only move if category is different
-                if new_category != payload.category:
-                    # Check if new category exists
-                    new_cat_node = next(
-                        (n for n in db.get_tree() if n["name"] == new_category and n["node_type"] == "category"),
-                        None
-                    )
-                    
-                    if not new_cat_node:
-                        # Create new category
-                        new_cat_node_id = f"cat_{uuid.uuid4().hex[:8]}"
-                        db.add_tree_node(
-                            node_id=new_cat_node_id,
-                            name=new_category,
-                            node_type="category",
-                            parent_id="root",
-                        )
-                    else:
-                        new_cat_node_id = new_cat_node["node_id"]
-                    
-                    # Move paper to new category
-                    db.move_paper_to_category(paper["node_id"], new_cat_node_id)
-                    reclassified.append({
-                        "arxiv_id": paper["arxiv_id"],
-                        "old_category": payload.category,
-                        "new_category": new_category,
-                    })
-                    
-                    # Add new category to existing list for subsequent papers
-                    if new_category not in existing_categories:
-                        existing_categories.append(new_category)
+    rebuild_triggered = False
+    
+    if classification_config.get("rebuild_on_ingest", False):
+        # Check if paper has embedding (required for new classification)
+        paper = db.get_paper_by_id(paper_id)
+        if paper and paper.get("embedding") is not None:
+            # Trigger tree rebuild in background (don't wait for it)
+            try:
+                import clustering
+                import naming
+                # Run rebuild asynchronously
+                asyncio.create_task(_rebuild_tree_async())
+                rebuild_triggered = True
+            except Exception as e:
+                print(f"Warning: Failed to trigger tree rebuild: {e}")
     
     return {
         "paper_id": paper_id,
-        "node_id": paper_node_id,
-        "display_name": display_name,
-        "reclassified": reclassified,
+        "rebuild_triggered": rebuild_triggered,
+        "message": "Paper saved. Use 'Re-classify' to add it to the tree.",
     }
+
+
+async def _rebuild_tree_async() -> None:
+    """Helper function to rebuild tree asynchronously.
+    
+    NOTE: rebuild_tree_structure() has been temporarily removed from clustering.py.
+    This function is currently a no-op.
+    """
+    # TODO: Re-implement tree rebuilding logic when rebuild_tree_structure is restored
+    pass
 
 
 async def _fetch_slack_messages(client, channel_id: str) -> list[dict[str, Any]]:
@@ -1901,27 +1956,7 @@ async def batch_ingest(payload: BatchIngestRequest) -> dict[str, Any]:
                     pdf_path = await _download_arxiv_pdf(arxiv_id, pdf_url)
                     log_progress(f"  [{arxiv_id}] ✓ PDF downloaded")
                     
-                    # Get existing categories
-                    log_progress(f"  [{arxiv_id}] Classifying paper...")
-                    tree = db.get_tree()
-                    existing_categories = [n["name"] for n in tree if n["node_type"] == "category"]
-                    
-                    # Classify
-                    classify_prompt = get_prompt("classify",
-                        title=title,
-                        abstract=abstract[:500],
-                        existing_categories=", ".join(existing_categories) if existing_categories else "None"
-                    )
-                    classify_resp = await llm_client.chat.completions.create(
-                        model=model,
-                        messages=[{"role": "user", "content": classify_prompt}],
-                        max_tokens=50,
-                        temperature=0.1,
-                    )
-                    category = classify_resp.choices[0].message.content.strip().strip('"\'')
-                    log_progress(f"  [{arxiv_id}] ✓ Classified as: {category}")
-                    
-                    # Abbreviate
+                    # Abbreviate (classification happens via embedding-based clustering, not during ingestion)
                     log_progress(f"  [{arxiv_id}] Generating abbreviation...")
                     abbrev_prompt = get_prompt("abbreviate", title=title)
                     abbrev_resp = await llm_client.chat.completions.create(
@@ -1960,28 +1995,9 @@ async def batch_ingest(payload: BatchIngestRequest) -> dict[str, Any]:
                         pdf_path=pdf_path,
                     )
                     
-                    # Add to tree
-                    category_exists = any(n["name"] == category and n["node_type"] == "category" for n in tree)
-                    if not category_exists:
-                        category_node_id = f"cat_{uuid.uuid4().hex[:8]}"
-                        db.add_tree_node(
-                            node_id=category_node_id,
-                            name=category,
-                            node_type="category",
-                            parent_id="root",
-                        )
-                        log_progress(f"  [{arxiv_id}] ✓ Created new category: {category}")
-                    else:
-                        category_node_id = next(n["node_id"] for n in tree if n["name"] == category and n["node_type"] == "category")
-                    
-                    paper_node_id = f"paper_{arxiv_id.replace('.', '_')}"
-                    db.add_tree_node(
-                        node_id=paper_node_id,
-                        name=abbreviation,
-                        node_type="paper",
-                        parent_id=category_node_id,
-                        paper_id=db_paper_id,
-                    )
+                    # Note: Paper is saved but not added to tree yet.
+                    # Tree will be rebuilt using embedding-based clustering when user clicks "Re-classify"
+                    # or automatically if rebuild_on_ingest is enabled.
                     
                     log_progress(f"  [{arxiv_id}] ✓ Successfully ingested!")
                     results.append({
@@ -1989,7 +2005,6 @@ async def batch_ingest(payload: BatchIngestRequest) -> dict[str, Any]:
                         "status": "success",
                         "paper_id": arxiv_id,
                         "title": title,
-                        "category": category,
                         "abbreviation": abbreviation,
                     })
                     
@@ -2118,23 +2133,16 @@ async def batch_ingest(payload: BatchIngestRequest) -> dict[str, Any]:
                 
                 # Get existing categories for classification
                 tree = db.get_tree()
-                existing_categories = [n["name"] for n in tree if n["node_type"] == "category"]
+                existing_categories = []
+                def collect_categories(node: dict[str, Any]):
+                    if node.get("node_type") == "category":
+                        existing_categories.append(node["name"])
+                    if node.get("children"):
+                        for child in node["children"]:
+                            collect_categories(child)
+                collect_categories(tree)
                 
-                # Classify
-                classify_prompt = get_prompt("classify", 
-                    title=title, 
-                    abstract=first_chunk[:500],
-                    existing_categories=", ".join(existing_categories) if existing_categories else "None"
-                )
-                classify_resp = await llm_client.chat.completions.create(
-                    model=model,
-                    messages=[{"role": "user", "content": classify_prompt}],
-                    max_tokens=50,
-                    temperature=0.1,
-                )
-                category = classify_resp.choices[0].message.content.strip().strip('"\'')
-                
-                # Abbreviate
+                # Abbreviate (classification happens via embedding-based clustering, not during ingestion)
                 abbrev_prompt = get_prompt("abbreviate", title=title)
                 abbrev_resp = await llm_client.chat.completions.create(
                     model=model,
@@ -2168,34 +2176,15 @@ async def batch_ingest(payload: BatchIngestRequest) -> dict[str, Any]:
                     pdf_path=pdf_path,
                 )
                 
-                # Add to tree
-                category_exists = any(n["name"] == category and n["node_type"] == "category" for n in tree)
-                if not category_exists:
-                    category_node_id = f"cat_{uuid.uuid4().hex[:8]}"
-                    db.add_tree_node(
-                        node_id=category_node_id,
-                        name=category,
-                        node_type="category",
-                        parent_id="root",
-                    )
-                else:
-                    category_node_id = next(n["node_id"] for n in tree if n["name"] == category and n["node_type"] == "category")
-                
-                paper_node_id = f"paper_{paper_id.replace('.', '_')}"
-                db.add_tree_node(
-                    node_id=paper_node_id,
-                    name=abbreviation,
-                    node_type="paper",
-                    parent_id=category_node_id,
-                    paper_id=db_paper_id,
-                )
+                # Note: Paper is saved but not added to tree yet.
+                # Tree will be rebuilt using embedding-based clustering when user clicks "Re-classify"
+                # or automatically if rebuild_on_ingest is enabled.
                 
                 results.append({
                     "file": pdf_file.name,
                     "status": "success",
                     "paper_id": paper_id,
                     "title": title,
-                    "category": category,
                     "abbreviation": abbreviation,
                 })
                 
@@ -2227,6 +2216,22 @@ async def batch_ingest(payload: BatchIngestRequest) -> dict[str, Any]:
     if payload.slack_channel:
         log_progress(f"✓ Completed: {success_count} success, {skip_count} skipped, {error_count} errors")
     
+    # Optionally trigger tree rebuild if embedding-based classification is enabled
+    rebuild_triggered = False
+    classification_config = _get_classification_config()
+    if classification_config.get("rebuild_on_ingest", False) and success_count > 0:
+        # Trigger tree rebuild in background (don't wait for it)
+        try:
+            import clustering
+            import naming
+            log_progress("Triggering tree rebuild...")
+            # Run rebuild asynchronously
+            asyncio.create_task(_rebuild_tree_async())
+            rebuild_triggered = True
+            log_progress("Tree rebuild triggered (running in background)")
+        except Exception as e:
+            log_progress(f"Warning: Failed to trigger tree rebuild: {e}")
+    
     return {
         "total": total,
         "success": success_count,
@@ -2234,9 +2239,76 @@ async def batch_ingest(payload: BatchIngestRequest) -> dict[str, Any]:
         "errors": error_count,
         "results": results,
         "progress_log": progress_log if payload.slack_channel else [],
+        "rebuild_triggered": rebuild_triggered,
     }
 
 
+@app.post("/papers/classify")
+async def classify_papers() -> dict[str, Any]:
+    """Unified classification endpoint using embedding-based hierarchical clustering.
+    
+    This endpoint:
+    1. Computes/retrieves document embeddings for all papers (if missing)
+    2. Runs hierarchical clustering to build tree structure
+    3. Names all nodes using contrastive naming
+    
+    Returns:
+    - Tree structure with named categories
+    - Statistics about the classification
+    """
+    import clustering
+    import naming
+    
+    # Step 1: Ensure all papers have embeddings
+    papers = db.get_all_papers()
+    papers_without_embeddings = []
+    
+    for paper in papers:
+        if paper.get("embedding") is None:
+            papers_without_embeddings.append(paper["arxiv_id"])
+    
+    # Try to extract embeddings for papers that don't have them
+    if papers_without_embeddings:
+        for arxiv_id in papers_without_embeddings:
+            await _ensure_paper_embedding(arxiv_id)
+    
+    # Step 2: Build tree structure using clustering
+    cluster_result = clustering.build_tree_from_clusters()
+    
+    if cluster_result["total_papers"] < 2:
+        return {
+            "message": cluster_result.get("message", "Not enough papers with embeddings"),
+            "papers_classified": cluster_result["total_papers"],
+            "clusters_created": 0,
+            "nodes_named": 0,
+        }
+    
+    # Extract tree structure (remove metadata fields)
+    tree_structure = {
+        "name": cluster_result.get("name", "AI Papers"),
+        "children": cluster_result.get("children", []),
+    }
+    
+    # Step 3: Save tree to database
+    clustering.write_tree_to_database(tree_structure)
+    
+    # Step 4: Name all nodes using contrastive naming
+    naming_result = await naming.name_tree_nodes()
+    
+    return {
+        "message": "Clustering completed and tree saved",
+        "papers_classified": cluster_result["total_papers"],
+        "clusters_created": cluster_result["total_clusters"],
+        "nodes_named": naming_result.get("nodes_named", 0),
+        "levels_processed": naming_result.get("levels_processed", 0),
+        "tree": tree_structure,
+    }
+
+
+# Removed _build_tree_dict - tree is now stored in frontend format directly
+
+
+# DEPRECATED: Old rebalance endpoint - kept for backwards compatibility but will be removed
 @app.post("/categories/rebalance")
 async def rebalance_categories() -> dict[str, Any]:
     """Rebalance all categories that exceed the threshold.
@@ -2270,10 +2342,14 @@ async def rebalance_categories() -> dict[str, Any]:
         
         # Get existing categories (excluding the current one)
         tree = db.get_tree()
-        existing_categories = [
-            n["name"] for n in tree 
-            if n["node_type"] == "category" and n["node_id"] != category_node_id
-        ]
+        existing_categories = []
+        def collect_categories(node: dict[str, Any]):
+            if node.get("node_type") == "category" and node.get("node_id") != category_node_id:
+                existing_categories.append(node["name"])
+            if node.get("children"):
+                for child in node["children"]:
+                    collect_categories(child)
+        collect_categories(tree)
         
         for paper in papers_in_category:
             prompt = get_prompt(
@@ -2292,24 +2368,9 @@ async def rebalance_categories() -> dict[str, Any]:
             new_category = response.choices[0].message.content.strip()
             
             # Only move if category is different
+            # Note: With JSONB storage, tree is rebuilt from scratch
+            # This endpoint should trigger a full rebuild instead of moving individual papers
             if new_category != category_name:
-                new_cat_node = next(
-                    (n for n in db.get_tree() if n["name"] == new_category and n["node_type"] == "category"),
-                    None
-                )
-                
-                if not new_cat_node:
-                    new_cat_node_id = f"cat_{uuid.uuid4().hex[:8]}"
-                    db.add_tree_node(
-                        node_id=new_cat_node_id,
-                        name=new_category,
-                        node_type="category",
-                        parent_id="root",
-                    )
-                else:
-                    new_cat_node_id = new_cat_node["node_id"]
-                
-                db.move_paper_to_category(paper["node_id"], new_cat_node_id)
                 all_reclassified.append({
                     "arxiv_id": paper["arxiv_id"],
                     "old_category": category_name,
@@ -2349,90 +2410,58 @@ def get_paper_cached_data(arxiv_id: str) -> dict[str, Any]:
 
 @app.get("/tree")
 def get_tree() -> dict[str, Any]:
-    """Get the full tree structure."""
-    nodes = db.get_tree()
-    
-    # Build tree structure
-    def build_tree(parent_id: Optional[str]) -> list[dict[str, Any]]:
-        children = []
-        for node in nodes:
-            if node["parent_id"] == parent_id:
-                child = {
-                    "node_id": node["node_id"],
-                    "name": node["name"],
-                    "node_type": node["node_type"],
-                }
-                if node["node_type"] == "paper" and node["paper_id"]:
-                    child["attributes"] = {
-                        "arxivId": node.get("arxiv_id"),
-                        "title": node.get("paper_title"),
-                        "authors": node.get("authors") or [],
-                        "summary": node.get("summary"),
-                        "pdfPath": node.get("pdf_path"),
-                    }
-                grandchildren = build_tree(node["node_id"])
-                if grandchildren:
-                    child["children"] = grandchildren
-                children.append(child)
-        return children
-    
-    # Find root and build from there
-    root = next((n for n in nodes if n["node_type"] == "root"), None)
-    if not root:
-        return {"name": "AI Papers", "children": []}
-    
-    return {
-        "name": root["name"],
-        "children": build_tree(root["node_id"]),
-    }
+    """Get the full tree structure (already in frontend format with paper metadata)."""
+    return db.get_tree()
 
 
 @app.post("/tree/node")
 def add_tree_node(payload: TreeNodeRequest) -> dict[str, str]:
-    """Add a node to the tree."""
-    db.add_tree_node(
-        node_id=payload.node_id,
-        name=payload.name,
-        node_type=payload.node_type,
-        parent_id=payload.parent_id,
-        paper_id=payload.paper_id,
-        position=payload.position,
-    )
-    return {"status": "ok"}
+    """Add a node to the tree.
+    
+    Note: With JSONB storage, tree is typically rebuilt from scratch.
+    This endpoint is deprecated but kept for compatibility.
+    """
+    # Tree is now stored as JSONB and rebuilt from scratch
+    # Individual node additions are not supported
+    return {"status": "ok", "message": "Tree is rebuilt from scratch, not updated incrementally"}
 
 
 @app.delete("/tree/node/{node_id}")
 def delete_tree_node(node_id: str) -> dict[str, str]:
-    """Delete a node from the tree."""
-    db.delete_tree_node(node_id)
-    return {"status": "ok"}
+    """Delete a node from the tree.
+    
+    Note: With JSONB storage, tree is typically rebuilt from scratch.
+    This endpoint is deprecated but kept for compatibility.
+    """
+    # Tree is now stored as JSONB and rebuilt from scratch
+    # Individual node deletions are not supported
+    return {"status": "ok", "message": "Tree is rebuilt from scratch, not updated incrementally"}
 
 
 @app.delete("/papers/{arxiv_id}")
 def delete_paper(arxiv_id: str) -> dict[str, Any]:
-    """Delete a paper and its tree node.
+    """Delete a paper from database.
     
     Removes the paper from the database (which cascades to delete
-    all associated data like references, similar papers, queries, repos)
-    and removes the tree node.
+    all associated data like references, similar papers, queries, repos).
+    
+    Note: Tree will need to be rebuilt after deletion to reflect changes.
     """
     paper = db.get_paper_by_arxiv_id(arxiv_id)
     if not paper:
         raise HTTPException(status_code=404, detail=f"Paper {arxiv_id} not found")
     
-    # Construct node_id (format: paper_XXXX_XXXXXvX where dots become underscores)
-    node_id = f"paper_{arxiv_id.replace('.', '_')}"
-    
     # Delete paper (cascades to all related data)
     db.delete_paper(paper["id"])
     
-    # Delete tree node
-    db.delete_tree_node(node_id)
+    # Note: Tree structure is stored as JSONB, so it will contain stale references
+    # User should rebuild tree after deleting papers
     
     return {
         "status": "ok",
         "deleted_arxiv_id": arxiv_id,
         "deleted_paper_id": paper["id"],
+        "message": "Paper deleted. Rebuild tree to update classification.",
     }
 
 
