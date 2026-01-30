@@ -298,4 +298,98 @@ This follows your ordering: **(1) package OSS as FastAPI services**, **(2) build
 - it will prompt user for access credential to access the slack channel each time. But this credential should not be persisted
 - it will read all historical paper shared into the channel, and ingest them all
 
-### 
+### Milestone 10 - classification logic
+- use document-level embedding, instead of abstract-only LLM call
+- remove the 'reclassification' backend endpoint, leave with only the unified 'classification' endpoint
+- remove the pre-defined category, use only dynamic definition of category name
+- the classification algorithm goes in two main stages:
+- Stage 1: tree building
+  - obtain document-level embedding from each full pdf (it not already available)
+  - hierarchical clustering based on document-level embedding
+    - run clustering algorithm based on the document-level embedding of each pdf
+    - each cluster will be assigned a cluster id, and built as a node in the tree diagram
+    - whenever a cluster has > 3 ("Branching Factor" predefined in config) children nodes, branch it into sub-clusters
+    - apply the branching to each cluster/ recursively, until a tree is built
+    - each leaf node in the tree is a paper
+- Stage 2: naming the nodes
+  - a summary of each pdf should be available (from earlier steps during ingestion)
+  - from bottom level upwards, the lowest level (level i) parent node will take the summary of all leave node (level i+1), to contrast with the summary of all other leave nodes under the same grandparent node (level i-1), and come up with a proper node-name for itself.
+  - once done, the next higher level parent node (level i-1) will take the node-name (instead of summary) of all children node (level i) under it, to contrast with the other node-names under the same grandparent node (level i-2), and come up with proper node-name for itself
+  - it will run this iteratively upward to the top level
+
+## Implementation Plan: Milestone 10 - Embedding-Based Classification
+
+### Overview
+Replace LLM-based classification with embedding-based hierarchical clustering. Use mean pooling of PaperQA2 chunk embeddings for document-level representation.
+
+### Phase 1: Foundation - Embedding Extraction & Infrastructure
+1. **Add dependencies** (`src/backend/requirements.txt`):
+   - `scikit-learn` (for divisive clustering)
+   - `scipy` (for distance metrics)
+
+2. **Add configuration** (`config/paperqa.yaml`):
+   ```yaml
+   classification:
+     branching_factor: 3  # Max children before branching
+     clustering_method: "divisive"  # Top-down divisive clustering
+     rebuild_on_ingest: true  # Auto-rebuild tree on new paper
+   ```
+
+3. **Add mean pooling function** (`src/backend/app.py`):
+   - Extract chunk embeddings from PaperQA2 `Docs` object (access via `docs.docs[].texts[].embedding`)
+   - Compute mean pooling: `doc_embedding = mean([chunk.embedding for chunk in all_chunks])`
+   - Store in `papers.embedding` column using `db.update_paper_embedding()`
+
+4. **Integrate into ingestion workflow**:
+   - After PaperQA2 indexing in `_index_pdf_for_paperqa_async()`, extract and save document embedding
+   - Update both single ingest (`/papers/ingest`) and batch ingest (`/papers/batch-ingest`)
+   - Reuse existing embedding if already computed (check DB before computing)
+
+### Phase 2: Core Algorithm - Clustering & Naming
+**New files**: `src/backend/clustering.py`, `src/backend/naming.py`
+
+1. **Divisive clustering & tree building** (`clustering.py`):
+   - Load all papers with embeddings from DB
+   - Use top-down divisive clustering (recursive k-means or similar)
+   - Build tree structure recursively:
+     - Start with all papers as root cluster
+     - If cluster size > `branching_factor`, split into sub-clusters
+     - Recursively apply to each sub-cluster
+     - Create category nodes for each cluster
+     - Link papers to their cluster nodes
+   - Tree rebuild function: Clear all existing category nodes, run clustering, rebuild `tree_nodes` table
+
+2. **Contrastive naming** (`naming.py`):
+   - Add prompt template `node_naming` in `prompts.json`: Takes children summaries/names and sibling summaries/names, outputs distinguishing category name
+   - Bottom-up naming function:
+     - Traverse tree level by level (bottom-up)
+     - For each parent node: collect summaries/names of children and siblings, call LLM with contrastive prompt, update node name
+
+### Phase 3: Integration - Endpoints, Frontend & Migration
+1. **New unified endpoint** (`src/backend/app.py`):
+   - `POST /papers/classify`: Optional `arxiv_id` input, runs clustering + tree building + naming, returns tree structure
+   - Update ingestion flow: After ingesting, if `rebuild_on_ingest: true`, trigger tree rebuild
+   - Remove old classification: Remove `classify` prompt usage, remove `/categories/rebalance` endpoint, remove auto-reclassification logic
+
+2. **Frontend integration** (`src/frontend/src/app/page.tsx`):
+   - Add "Re-classify" button in Explorer/Ingest tab (calls `POST /papers/classify`, shows progress, refreshes tree)
+   - Remove "Rebalance" button if exists
+
+3. **Migration** (`migrations/migrate_to_embedding_classification.py`):
+   - For all existing papers: compute document embeddings (mean pooling from PaperQA2 index if available)
+   - Clear all category nodes, rebuild tree from scratch, name all nodes
+
+### File Changes Summary
+
+**New files**:
+- `src/backend/clustering.py` - Clustering and tree building
+- `src/backend/naming.py` - Contrastive naming logic
+- `migrations/migrate_to_embedding_classification.py` - Migration script
+
+**Modified files**:
+- `src/backend/app.py` - Add embedding extraction, new endpoint, remove old classification
+- `src/backend/db.py` - Helper functions for tree operations
+- `src/backend/prompts/prompts.json` - Add `node_naming`, remove `classify`
+- `src/backend/requirements.txt` - Add scikit-learn, scipy
+- `config/paperqa.yaml` - Add clustering config
+- `src/frontend/src/app/page.tsx` - Add "Re-classify" button, remove "Rebalance"

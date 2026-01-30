@@ -34,6 +34,12 @@
     "template": "What are the quantifiable results or metrics reported for the following component/method?\n\nComponent: {component}\n\nRules:\n- Include specific numbers, percentages, or comparisons\n- If no specific metrics for this component, state 'No specific metrics reported'\n- Be concise (1-3 bullet points)\n\nRespond with the results only, no preamble.",
     "variables": ["component"]
   },
+  "node_naming": {
+    "id": "node_naming_v1",
+    "description": "Generate a distinguishing name for a tree node based on its children and siblings",
+    "template": "You are naming a category node in a research paper taxonomy tree.\n\nGiven the summaries/names of children nodes under this category, and the summaries/names of sibling categories (other categories at the same level), generate a concise, descriptive name (2-5 words) that:\n1. Captures what distinguishes this group of children from the siblings\n2. Is specific enough to be meaningful\n3. Uses standard AI research terminology when possible\n\nChildren under this category:\n{children_summaries}\n\nSibling categories (for contrast):\n{sibling_summaries}\n\nRespond with ONLY the category name (2-5 words), nothing else. Do not include explanations, punctuation, or quotes.",
+    "variables": ["children_summaries", "sibling_summaries"]
+  },
   "classify": {
     "id": "classify_v1",
     "description": "Classify a paper into a category",

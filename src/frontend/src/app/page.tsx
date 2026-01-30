@@ -16,6 +16,7 @@ import ReactFlow, {
   Handle,
 } from "reactflow";
 import "reactflow/dist/style.css";
+import ELK from "elkjs/lib/elk.bundled.js";
 import { InlineMath, BlockMath } from "react-katex";
 import "katex/dist/katex.min.css";
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
@@ -379,177 +380,48 @@ const nodeTypes: NodeTypes = {
   paperNode: PaperNodeComponent,
 };
 
-// Convert PaperNode tree to React Flow nodes and edges
-// Layout: Categories on rows by level, papers in columns below their category
-function convertToReactFlow(
+// Initialize ELK layout engine
+const elk = new ELK();
+
+// ELK layout options for hierarchical tree layout
+const elkOptions = {
+  'elk.algorithm': 'layered',
+  'elk.direction': 'DOWN',
+  'elk.layered.spacing.nodeNodeBetweenLayers': '150',
+  'elk.spacing.nodeNode': '100',
+  'elk.layered.nodePlacement.strategy': 'BRANDES_KOEPF',
+  'elk.layered.crossingMinimization.strategy': 'LAYER_SWEEP',
+  'elk.edgeRouting': 'ORTHOGONAL',
+  'elk.spacing.edgeNode': '50',
+  'elk.spacing.edgeEdge': '20',
+};
+
+// Convert PaperNode tree to nodes and edges (without positions)
+function buildTreeNodesAndEdges(
   node: PaperNode,
   parentId: string | null,
-  depth: number, // Track depth level (0 = root, 1 = first level categories, etc.)
-  rowY: number, // Y position for this row (categories at same depth share same Y)
-  columnX: number, // X position for this column (papers stack vertically in columns)
   onNodeClick: (name: string) => void,
   onNodeRightClick: (e: React.MouseEvent, name: string) => void,
-  collapsedCategories: Set<string>,
-  levelPositions: Map<number, { currentX: number; rowY: number }> // Track X positions per level
-): { nodes: Node[]; edges: Edge[]; columnWidth: number; columnHeight: number } {
+  collapsedCategories: Set<string>
+): { nodes: Node[]; edges: Edge[] } {
   const nodes: Node[] = [];
   const edges: Edge[] = [];
   const nodeId = parentId ? `${parentId}-${node.name}` : node.name;
   const isCategory = !node.attributes || !node.attributes.arxivId;
   const isCollapsed = collapsedCategories.has(nodeId);
   
-  // Create node
   const nodeWidth = 130;
   const nodeHeight = 50;
-  const horizontalSpacing = 200; // Space between sibling categories (horizontal)
-  const verticalSpacing = 80; // Space between papers (vertical)
-  const rowSpacing = 150; // Space between category rows
   
   // Determine handle positions based on node type
-  // Categories: Bottom/Top handles (for category-to-category connections)
-  // Papers: Left handles (for category-to-paper connections)
   const sourcePosition = isCategory ? Position.Bottom : Position.Left;
   const targetPosition = isCategory ? Position.Top : Position.Left;
   
-  // Process children first to calculate their bounds for centering
-  let columnWidth = nodeWidth;
-  let columnHeight = nodeHeight;
-  let childrenMinX = Infinity;
-  let childrenMaxX = -Infinity;
-  let finalNodeX = columnX; // Will be updated if centering is needed
-  
-  if (!isCollapsed && node.children && node.children.length > 0) {
-    // Separate children into categories and papers
-    const categoryChildren: PaperNode[] = [];
-    const paperChildren: PaperNode[] = [];
-    
-    node.children.forEach(child => {
-      const childIsCategory = !child.attributes || !child.attributes.arxivId;
-      if (childIsCategory) {
-        categoryChildren.push(child);
-      } else {
-        paperChildren.push(child);
-      }
-    });
-    
-    // Position categories horizontally on the next row (same level)
-    if (categoryChildren.length > 0) {
-      const nextDepth = depth + 1;
-      const nextRowY = rowY + rowSpacing;
-      
-      // Initialize level position if needed
-      if (!levelPositions.has(nextDepth)) {
-        levelPositions.set(nextDepth, { currentX: 50, rowY: nextRowY });
-      }
-      
-      const levelPos = levelPositions.get(nextDepth)!;
-      let currentX = levelPos.currentX;
-      
-      categoryChildren.forEach((child) => {
-        const childX = currentX;
-        const result = convertToReactFlow(
-          child,
-          nodeId,
-          nextDepth,
-          nextRowY,
-          childX,
-          onNodeClick,
-          onNodeRightClick,
-          collapsedCategories,
-          levelPositions
-        );
-        
-        nodes.push(...result.nodes);
-        edges.push(...result.edges);
-        
-        // Create edge from parent to child category: bottom of parent to top of child
-        // Parent has category children, so use bottom handle
-        const childNodeId = `${nodeId}-${child.name}`;
-        edges.push({
-          id: `${nodeId}-${childNodeId}`,
-          source: nodeId,
-          target: childNodeId,
-          sourceHandle: "bottom",
-          targetHandle: "top",
-          type: "smoothstep",
-          animated: false,
-          style: { stroke: "#94a3b8", strokeWidth: 2 },
-        });
-        
-        // Track children bounds for centering
-        childrenMinX = Math.min(childrenMinX, childX);
-        childrenMaxX = Math.max(childrenMaxX, childX + result.columnWidth);
-        
-        // Move to next position horizontally
-        currentX += result.columnWidth + horizontalSpacing;
-        levelPos.currentX = currentX; // Update for next sibling
-      });
-    }
-    
-    // Position papers vertically below this category (in a column)
-    if (paperChildren.length > 0) {
-      const paperStartY = rowY + nodeHeight + verticalSpacing;
-      let currentPaperY = paperStartY;
-      
-      // Papers are in a column, so they share the same X (columnX)
-      // Track bounds for centering
-      childrenMinX = Math.min(childrenMinX, columnX);
-      childrenMaxX = Math.max(childrenMaxX, columnX + nodeWidth);
-      
-      paperChildren.forEach((child, index) => {
-        const result = convertToReactFlow(
-          child,
-          nodeId,
-          depth + 1000, // Use high depth to indicate paper (not a category level)
-          currentPaperY, // Pass Y position directly for papers
-          columnX, // X position: papers are in columns, use parent's columnX
-          onNodeClick,
-          onNodeRightClick,
-          collapsedCategories,
-          levelPositions
-        );
-        
-        nodes.push(...result.nodes);
-        edges.push(...result.edges);
-        
-        // Create edge from parent to child paper: left of parent to left of leaf
-        // Parent only has papers (bottom-level category), so use left handle
-        const childNodeId = `${nodeId}-${child.name}`;
-        edges.push({
-          id: `${nodeId}-${childNodeId}`,
-          source: nodeId,
-          target: childNodeId,
-          sourceHandle: "left",
-          targetHandle: "left",
-          type: "smoothstep",
-          animated: false,
-          style: { stroke: "#94a3b8", strokeWidth: 2 },
-        });
-        
-        // Move to next paper position vertically
-        currentPaperY += result.columnHeight + verticalSpacing;
-        columnHeight = Math.max(columnHeight, currentPaperY - rowY);
-      });
-    }
-    
-    // Center parent node horizontally over its children (for categories only)
-    if (isCategory && (categoryChildren.length > 0 || paperChildren.length > 0) && childrenMinX !== Infinity && childrenMaxX !== -Infinity) {
-      const childrenCenterX = (childrenMinX + childrenMaxX) / 2;
-      finalNodeX = childrenCenterX - (nodeWidth / 2);
-      columnWidth = Math.max(nodeWidth, childrenMaxX - childrenMinX);
-    }
-  }
-  
-  // Position node: 
-  // - Categories: use rowY (same row for same depth), finalNodeX for X (centered over children)
-  // - Papers: use columnX for X, and if depth > 100, rowY parameter contains the Y position
-  const nodeX = finalNodeX; // Use finalNodeX which may be centered for categories
-  const nodeY = isCategory ? rowY : (depth > 100 ? rowY : rowY + nodeHeight + verticalSpacing); // Categories: rowY, Papers: if depth>100, rowY is Y position
-  
+  // Create node (without position - ELK will calculate it)
   nodes.push({
     id: nodeId,
     type: "paperNode",
-    position: { x: nodeX, y: nodeY },
+    position: { x: 0, y: 0 }, // Temporary, will be set by ELK
     data: { node, onNodeClick, onNodeRightClick },
     style: { 
       width: nodeWidth, 
@@ -562,15 +434,88 @@ function convertToReactFlow(
     targetPosition,
   });
   
-  // Note: Edges are created when processing parent's children, not here
-  // This ensures we know what type of children the parent has
+  // Process children if not collapsed
+  if (!isCollapsed && node.children && node.children.length > 0) {
+    node.children.forEach((child) => {
+      const childResult = buildTreeNodesAndEdges(
+        child,
+        nodeId,
+        onNodeClick,
+        onNodeRightClick,
+        collapsedCategories
+      );
+      
+      nodes.push(...childResult.nodes);
+      edges.push(...childResult.edges);
+      
+      // Create edge from parent to child
+      const childNodeId = `${nodeId}-${child.name}`;
+      const childIsCategory = !child.attributes || !child.attributes.arxivId;
+      
+      edges.push({
+        id: `${nodeId}-${childNodeId}`,
+        source: nodeId,
+        target: childNodeId,
+        sourceHandle: isCategory ? "bottom" : "left",
+        targetHandle: childIsCategory ? "top" : "left",
+        type: "smoothstep",
+        animated: false,
+        style: { stroke: "#94a3b8", strokeWidth: 2 },
+      });
+    });
+  }
   
-  return { 
-    nodes, 
-    edges, 
-    columnWidth: columnWidth,
-    columnHeight: columnHeight,
+  return { nodes, edges };
+}
+
+// Apply ELK layout to nodes and edges
+async function applyElkLayout(
+  nodes: Node[],
+  edges: Edge[]
+): Promise<{ nodes: Node[]; edges: Edge[] }> {
+  const nodeWidth = 130;
+  const nodeHeight = 50;
+  
+  const graph = {
+    id: 'root',
+    layoutOptions: elkOptions,
+    children: nodes.map((node) => {
+      // Extract numeric width/height from style
+      const width = typeof node.style?.width === 'number' 
+        ? node.style.width 
+        : (typeof node.style?.width === 'string' ? parseFloat(node.style.width) || nodeWidth : nodeWidth);
+      const height = typeof node.style?.height === 'number'
+        ? node.style.height
+        : (typeof node.style?.height === 'string' ? parseFloat(node.style.height) || nodeHeight : nodeHeight);
+      
+      return {
+        id: node.id,
+        width: width,
+        height: height,
+      };
+    }),
+    edges: edges.map((edge) => ({
+      id: edge.id,
+      sources: [edge.source],
+      targets: [edge.target],
+    })),
   };
+  
+  const layoutedGraph = await elk.layout(graph);
+  
+  // Update node positions from ELK layout
+  const layoutedNodes = nodes.map((node) => {
+    const layoutedNode = layoutedGraph.children?.find((n) => n.id === node.id);
+    return {
+      ...node,
+      position: {
+        x: layoutedNode?.x || 0,
+        y: layoutedNode?.y || 0,
+      },
+    };
+  });
+  
+  return { nodes: layoutedNodes, edges };
 }
 
 const initialTaxonomy: PaperNode = {
@@ -638,12 +583,14 @@ export default function Home() {
   const [pendingSlackChannel, setPendingSlackChannel] = useState("");
   const [slackToken, setSlackToken] = useState("");
   
-  // Rebalance state
-  const [isRebalancing, setIsRebalancing] = useState(false);
-  const [rebalanceResult, setRebalanceResult] = useState<{
+  // Re-classify state (replaces old rebalance)
+  const [isReclassifying, setIsReclassifying] = useState(false);
+  const [reclassifyResult, setReclassifyResult] = useState<{
     message: string;
-    categories_processed?: string[];
-    reclassified: Array<{ arxiv_id: string; old_category: string; new_category: string }>;
+    papers_classified: number;
+    clusters_created: number;
+    nodes_named: number;
+    levels_processed: number;
   } | null>(null);
   
   // Collapsible sections
@@ -773,40 +720,49 @@ export default function Home() {
     []
   );
 
-  const handleRebalanceCategories = async () => {
-    setIsRebalancing(true);
-    setRebalanceResult(null);
+  const handleReclassifyPapers = async () => {
+    setIsReclassifying(true);
+    setReclassifyResult(null);
     clearIngestLog();
-    logIngest("Rebalancing crowded categories...");
+    logIngest("Re-classifying papers using embedding-based clustering...");
     
     try {
-      const res = await fetch("/api/categories/rebalance", {
+      const res = await fetch("/api/papers/classify", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
       });
       
-      if (res.ok) {
-        const data = await res.json();
-        setRebalanceResult(data);
-        logIngest(`✓ ${data.message}`);
-        if (data.reclassified?.length > 0) {
-          logIngest(`Moved ${data.reclassified.length} papers to new categories`);
-          // Reload tree
-          const treeRes = await fetch("/api/tree");
-          if (treeRes.ok) {
-            const treeData = await treeRes.json();
-            setTaxonomy(treeData.tree);
-          }
-        }
-      } else {
+      if (!res.ok) {
         const errText = await res.text();
         logIngest(`Error: HTTP ${res.status}`);
-        logIngest(`Details: ${errText.slice(0, 200)}`);
+        try {
+          const errJson = JSON.parse(errText);
+          logIngest(`Details: ${errJson.detail || errText}`);
+        } catch {
+          logIngest(`Details: ${errText.slice(0, 200)}`);
+        }
+        setIsReclassifying(false);
+        return;
+      }
+      
+      const data = await res.json();
+      setReclassifyResult(data);
+      logIngest(`✓ ${data.message}`);
+      logIngest(`  Papers classified: ${data.papers_classified}`);
+      logIngest(`  Clusters created: ${data.clusters_created}`);
+      logIngest(`  Nodes named: ${data.nodes_named}`);
+      
+      // Refresh tree
+      const treeRes = await fetch("/api/tree");
+      if (treeRes.ok) {
+        const treeData = await treeRes.json();
+        setTaxonomy(treeData);
+        logIngest("Tree refreshed");
       }
     } catch (e) {
       logIngest(`Error: ${e}`);
     } finally {
-      setIsRebalancing(false);
+      setIsReclassifying(false);
       logIngest("Done");
     }
   };
@@ -1298,97 +1254,32 @@ export default function Home() {
     }
   }, [taxonomy, findNode]);
 
-  // Convert taxonomy to React Flow nodes and edges
-  const reactFlowData = useMemo(() => {
+  // Convert taxonomy to React Flow nodes and edges using ELK layout
+  const [reactFlowData, setReactFlowData] = useState<{ nodes: Node[]; edges: Edge[] }>({ nodes: [], edges: [] });
+  
+  useEffect(() => {
     if (!taxonomy.children || taxonomy.children.length === 0) {
-      return { nodes: [], edges: [] };
+      setReactFlowData({ nodes: [], edges: [] });
+      return;
     }
     
-    const allNodes: Node[] = [];
-    const allEdges: Edge[] = [];
+    // Build tree structure (nodes and edges without positions)
+    const { nodes: treeNodes, edges: treeEdges } = buildTreeNodesAndEdges(
+      taxonomy,
+      null,
+      handleNodeClick,
+      handleNodeRightClick,
+      collapsedCategories
+    );
     
-    // Add root node "AI Papers" on row 1
-    const rootNodeId = taxonomy.name;
-    const rootX = 50;
-    const rootY = 50; // Row 1
-    
-    allNodes.push({
-      id: rootNodeId,
-      type: "paperNode",
-      position: { x: rootX, y: rootY },
-      data: { 
-        node: taxonomy, 
-        onNodeClick: handleNodeClick, 
-        onNodeRightClick: handleNodeRightClick 
-      },
-      style: { 
-        width: 130, 
-        height: 50,
-        border: "none",
-        outline: "none",
-        boxShadow: "none",
-      },
-      sourcePosition: Position.Bottom, // Root connects from bottom to top of categories
-      targetPosition: Position.Top,
+    // Apply ELK layout
+    applyElkLayout(treeNodes, treeEdges).then((layouted) => {
+      setReactFlowData(layouted);
+    }).catch((error) => {
+      console.error('ELK layout error:', error);
+      // Fallback: use nodes without layout
+      setReactFlowData({ nodes: treeNodes, edges: treeEdges });
     });
-    
-    // Track positions per level for horizontal layout
-    const levelPositions = new Map<number, { currentX: number; rowY: number }>();
-    levelPositions.set(1, { currentX: rootX + 250, rowY: rootY + 150 }); // Row 2: first level categories
-    
-    // Process root's children (first level categories)
-    let childrenMinX = Infinity;
-    let childrenMaxX = -Infinity;
-    
-    taxonomy.children.forEach((category) => {
-      const levelPos = levelPositions.get(1)!;
-      const childX = levelPos.currentX;
-      const result = convertToReactFlow(
-        category,
-        rootNodeId,
-        1, // Depth level 1 (first level categories)
-        levelPos.rowY, // Row 2 Y position
-        childX, // Current X position
-        handleNodeClick,
-        handleNodeRightClick,
-        collapsedCategories,
-        levelPositions
-      );
-      
-      allNodes.push(...result.nodes);
-      allEdges.push(...result.edges);
-      
-      // Create edge from root to category: bottom of root to top of category
-      const categoryNodeId = `${rootNodeId}-${category.name}`;
-      allEdges.push({
-        id: `${rootNodeId}-${categoryNodeId}`,
-        source: rootNodeId,
-        target: categoryNodeId,
-        sourceHandle: "bottom",
-        targetHandle: "top",
-        type: "smoothstep",
-        animated: false,
-        style: { stroke: "#94a3b8", strokeWidth: 2 },
-      });
-      
-      // Track children bounds for centering root
-      childrenMinX = Math.min(childrenMinX, childX);
-      childrenMaxX = Math.max(childrenMaxX, childX + result.columnWidth);
-      
-      // Move to next position horizontally
-      levelPos.currentX += result.columnWidth + 200;
-    });
-    
-    // Center root node horizontally over all its children
-    if (taxonomy.children.length > 0 && childrenMinX !== Infinity && childrenMaxX !== -Infinity) {
-      const childrenCenterX = (childrenMinX + childrenMaxX) / 2;
-      const rootNodeIndex = allNodes.findIndex(n => n.id === rootNodeId);
-      if (rootNodeIndex >= 0) {
-        allNodes[rootNodeIndex].position.x = childrenCenterX - 65; // 65 = nodeWidth/2 (130/2)
-      }
-    }
-    
-    return { nodes: allNodes, edges: allEdges };
   }, [taxonomy, collapsedCategories, handleNodeClick, handleNodeRightClick]);
   
   // Update React Flow nodes and edges when data changes
@@ -2489,38 +2380,43 @@ export default function Home() {
                         )}
                       </div>
                       
-                      {/* Rebalance Button */}
+                      {/* Re-classify Button */}
                       <div className="mb-4 pt-4 border-t border-gray-200">
                         <div className="flex items-center justify-between">
                           <div>
                             <h3 className="text-sm font-medium text-gray-700 mb-1">
-                              ⚖️ Rebalance Categories
+                              🔄 Re-classify Papers
                             </h3>
                             <p className="text-xs text-gray-500">
-                              Reclassify papers in crowded categories (10+ papers)
+                              Rebuild tree using embedding-based hierarchical clustering
                             </p>
                           </div>
                           <button
-                            onClick={handleRebalanceCategories}
-                            disabled={isRebalancing}
+                            onClick={handleReclassifyPapers}
+                            disabled={isReclassifying}
                             className="px-3 py-1.5 bg-purple-600 text-white rounded text-xs font-medium disabled:bg-gray-400 disabled:cursor-not-allowed hover:bg-purple-700 transition-colors whitespace-nowrap"
                           >
-                            {isRebalancing ? "Rebalancing..." : "Rebalance"}
+                            {isReclassifying ? "Re-classifying..." : "Re-classify"}
                           </button>
                         </div>
                         
-                        {/* Rebalance results */}
-                        {rebalanceResult && (
-                          <div className="mt-2 text-xs">
-                            <div className="text-purple-600">{rebalanceResult.message}</div>
-                            {rebalanceResult.reclassified?.length > 0 && (
-                              <div className="text-green-600 mt-1">
-                                ✓ Moved {rebalanceResult.reclassified.length} papers
-                              </div>
-                            )}
+                        {/* Re-classify results */}
+                        {reclassifyResult && (
+                          <div className="mt-2 text-xs space-y-1">
+                            <div className="text-purple-600">{reclassifyResult.message}</div>
+                            <div className="text-gray-600">
+                              ✓ {reclassifyResult.papers_classified} papers classified
+                            </div>
+                            <div className="text-gray-600">
+                              ✓ {reclassifyResult.clusters_created} clusters created
+                            </div>
+                            <div className="text-gray-600">
+                              ✓ {reclassifyResult.nodes_named} nodes named across {reclassifyResult.levels_processed} levels
+                            </div>
                           </div>
                         )}
                       </div>
+                      
                     </TabsContent>
                     
                     {/* Details Panel */}

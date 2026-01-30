@@ -27,3 +27,7 @@ httpx
 
 # Slack API
 slack-sdk
+
+# Clustering for classification
+scikit-learn
+scipy

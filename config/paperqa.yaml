@@ -35,6 +35,10 @@ classification:
   category_threshold: 10
   # Enable auto-reclassification when threshold exceeded
   auto_reclassify_enabled: true
+  # Embedding-based clustering settings
+  branching_factor: 3  # Max children before branching into sub-clusters
+  clustering_method: "divisive"  # Top-down divisive clustering
+  rebuild_on_ingest: true  # Auto-rebuild tree on new paper ingestion
 
 # =============================================================================
 # External API settings
