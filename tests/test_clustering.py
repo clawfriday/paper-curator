@@ -116,7 +116,7 @@ def test_tree_building():
     if violations:
         print(f"  ✗ Found {len(violations)} nodes violating branching factor:")
         for v in violations[:5]:
-            print(f"    - {v['cluster_id']}: {v['children_count']} children (max: {v['max_allowed']})")
+            print(f"    - {v['node_id']}: {v['children_count']} children (max: {v['max_allowed']})")
         if len(violations) > 5:
             print(f"    ... and {len(violations) - 5} more")
         raise AssertionError(f"{len(violations)} nodes exceed branching factor of {branching_factor}")
@@ -162,19 +162,79 @@ def test_tree_building():
     if empty_nodes:
         print(f"  ✗ Found {len(empty_nodes)} empty or invalid nodes:")
         for n in empty_nodes[:5]:
-            print(f"    - {n['cluster_id']} ({n['type']}): {n['issue']}")
+            print(f"    - {n['node_id']} ({n['type']}): {n['issue']}")
         if len(empty_nodes) > 5:
             print(f"    ... and {len(empty_nodes) - 5} more")
         raise AssertionError(f"Found {len(empty_nodes)} empty or invalid nodes")
     
     print(f"  ✓ All nodes are non-empty and valid")
     
+    # 6. Assert: No circular references in the tree
+    print("\n6. Verifying no circular references...")
+    
+    def check_circular_references(node: dict[str, Any], visited: set[str] | None = None) -> list[str]:
+        """Recursively check for circular references by tracking visited node IDs."""
+        if visited is None:
+            visited = set()
+        
+        cycles_found = []
+        node_id = node.get("node_id")
+        
+        if node_id:
+            if node_id in visited:
+                cycles_found.append(node_id)
+                return cycles_found  # Stop recursion to prevent infinite loop
+            visited.add(node_id)
+        
+        # Recursively check children with the updated visited set
+        if node.get("children"):
+            for child in node["children"]:
+                cycles_found.extend(check_circular_references(child, visited.copy()))
+        
+        return cycles_found
+    
+    cycles = check_circular_references(tree_structure)
+    
+    if cycles:
+        print(f"  ✗ Found circular references at node IDs: {cycles[:10]}")
+        raise AssertionError(f"Found {len(cycles)} circular references in the tree")
+    
+    print(f"  ✓ No circular references detected")
+    
+    # 7. Assert: All node IDs are unique (additional check for data integrity)
+    print("\n7. Verifying all node IDs are unique...")
+    
+    def collect_all_node_ids(node: dict[str, Any]) -> list[str]:
+        """Recursively collect all node IDs."""
+        node_ids = []
+        if node.get("node_id"):
+            node_ids.append(node["node_id"])
+        if node.get("children"):
+            for child in node["children"]:
+                node_ids.extend(collect_all_node_ids(child))
+        return node_ids
+    
+    all_node_ids = collect_all_node_ids(tree_structure)
+    unique_node_ids = set(all_node_ids)
+    
+    if len(all_node_ids) != len(unique_node_ids):
+        from collections import Counter
+        duplicates = [nid for nid, count in Counter(all_node_ids).items() if count > 1]
+        print(f"  ✗ Found duplicate node IDs: {duplicates[:10]}")
+        raise AssertionError(f"Found {len(duplicates)} duplicate node IDs")
+    
+    print(f"  ✓ All {len(unique_node_ids)} node IDs are unique")
+    
     # Summary
     print("\n" + "=" * 60)
     print("✓ All assertions passed!")
     print(f"  - Papers with embeddings: {len(papers_with_embeddings)}")
     print(f"  - Papers in tree: {len(all_paper_ids_in_tree)}")
+    print(f"  - Total nodes in tree: {len(unique_node_ids)}")
     print(f"  - Branching factor: {branching_factor}")
+    print(f"  - No empty nodes: ✓")
+    print(f"  - No circular references: ✓")
+    print(f"  - All node IDs unique: ✓")
     print("=" * 60)
     
     return True

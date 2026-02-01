@@ -201,13 +201,13 @@ def get_tree() -> dict[str, Any]:
             "children": [
                 {
                     "name": "Category Name",
-                    "node_id": "cluster_abc",
+                    "node_id": "node_abc",
                     "node_type": "category",
                     "children": [...]
                 },
                 {
                     "name": "Paper Name",
-                    "node_id": "cluster_def",
+                    "node_id": "node_def",
                     "node_type": "paper",
                     "paper_id": 123,
                     "attributes": {
@@ -260,7 +260,7 @@ def save_tree(tree_structure: dict[str, Any], node_names: dict[str, str] | None 
     
     Args:
         tree_structure: Frontend format tree structure {name, children: [...]}
-        node_names: Optional dictionary mapping cluster_id to node name
+        node_names: Optional dictionary mapping node_id to node name
     """
     import json
     
@@ -294,7 +294,7 @@ def get_tree_node_names() -> dict[str, str]:
     """Get node names mapping from database.
     
     Returns:
-        Dictionary mapping cluster_id -> name
+        Dictionary mapping node_id -> name
     """
     import json
     
@@ -309,14 +309,14 @@ def get_tree_node_names() -> dict[str, str]:
             return node_names_data if isinstance(node_names_data, dict) else json.loads(node_names_data)
 
 
-def find_paper_cluster_id(paper_id: int) -> str | None:
-    """Find the cluster_id for a paper in the tree.
+def find_paper_node_id(paper_id: int) -> str | None:
+    """Find the node_id for a paper in the tree.
     
     Args:
         paper_id: Integer paper ID
         
     Returns:
-        Cluster ID if found, None otherwise
+        Node ID if found, None otherwise
     """
     tree = get_tree()
     
@@ -333,11 +333,11 @@ def find_paper_cluster_id(paper_id: int) -> str | None:
     return search_node(tree)
 
 
-def update_tree_node_name(cluster_id: str, name: str) -> None:
+def update_tree_node_name(node_id: str, name: str) -> None:
     """Update a tree node's display name in JSONB structure.
     
     Args:
-        cluster_id: Cluster/node ID to update
+        node_id: Node ID to update
         name: New name for the node
     """
     import json
@@ -357,7 +357,7 @@ def update_tree_node_name(cluster_id: str, name: str) -> None:
             
             # Update name in tree structure
             def update_name_in_tree(node: dict[str, Any]) -> None:
-                if node.get("node_id") == cluster_id:
+                if node.get("node_id") == node_id:
                     node["name"] = name
                 if node.get("children"):
                     for child in node["children"]:
@@ -366,7 +366,7 @@ def update_tree_node_name(cluster_id: str, name: str) -> None:
             update_name_in_tree(tree_data)
             
             # Update node_names mapping
-            node_names[cluster_id] = name
+            node_names[node_id] = name
             
             # Save back
             cur.execute(

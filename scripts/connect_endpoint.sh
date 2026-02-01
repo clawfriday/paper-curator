@@ -11,6 +11,8 @@
 #   'ssh -f -N -L 8004:localhost:8004 hopper-34'
 
 # binds local PC port 8001 to hopper login node port 8001, doing it in background
+ssh -f -N -L 8000:localhost:8005 hopper
+
 ssh -f -N -L 8001:localhost:8001 hopper
 ssh -f -N -L 8002:localhost:8002 hopper
 ssh -f -N -L 8004:localhost:8004 hopper

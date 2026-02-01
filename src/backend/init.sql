@@ -22,7 +22,7 @@ CREATE TABLE IF NOT EXISTS papers (
 CREATE TABLE IF NOT EXISTS tree_state (
     id INTEGER PRIMARY KEY DEFAULT 1,
     tree_data JSONB NOT NULL DEFAULT '{"name": "AI Papers", "children": []}'::jsonb,
-    node_names JSONB NOT NULL DEFAULT '{}'::jsonb,  -- Mapping of cluster_id -> name
+    node_names JSONB NOT NULL DEFAULT '{}'::jsonb,  -- Mapping of node_id -> name
     created_at TIMESTAMPTZ DEFAULT NOW(),
     updated_at TIMESTAMPTZ DEFAULT NOW(),
     CONSTRAINT single_tree CHECK (id = 1)  -- Only allow one row

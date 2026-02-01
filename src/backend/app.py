@@ -1641,9 +1641,9 @@ async def reabbreviate_all_papers() -> dict[str, Any]:
             temperature=0.1,
         )
         abbrev = response.choices[0].message.content.strip().strip('"\'').strip()
-        cluster_id = db.find_paper_cluster_id(paper["id"])
-        if cluster_id:
-            db.update_tree_node_name(cluster_id, abbrev)
+        node_id = db.find_paper_node_id(paper["id"])
+        if node_id:
+            db.update_tree_node_name(node_id, abbrev)
         return {"arxiv_id": paper["arxiv_id"], "abbreviation": abbrev}
     
     # Run all abbreviations in parallel

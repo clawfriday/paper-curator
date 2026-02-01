@@ -1,14 +1,30 @@
-"""Hierarchical clustering for paper classification using document embeddings."""
+"""Hierarchical clustering for paper classification using document embeddings.
+
+This module builds a hierarchical tree structure from paper embeddings using
+divisive k-means clustering. The tree is built directly in frontend-compatible
+format and can be saved to the database as JSONB.
+
+Key features:
+- L2-normalized embeddings for cosine-similarity-based clustering
+- Adaptive k selection using silhouette scoring
+- BisectingKMeans fallback for robust cluster splitting
+- Direct frontend format output (no wrapping step)
+"""
 
 from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import numpy as np
 from typing import Any
-from sklearn.cluster import KMeans
+from sklearn.cluster import KMeans, BisectingKMeans
+from sklearn.metrics import silhouette_score
+from sklearn.preprocessing import normalize
 
 import db
+
+logger = logging.getLogger(__name__)
 
 
 # =============================================================================
@@ -79,23 +95,20 @@ def _convert_embedding_to_numpy(embedding) -> np.ndarray:
     return np.array(emb_list, dtype=np.float32)
 
 
-def _generate_cluster_id(paper_ids: list[int], prefix: str = "") -> str:
-    """Generate a deterministic cluster ID from sorted paper IDs using stable hash.
+def _generate_node_id(paper_ids: list[int]) -> str:
+    """Generate a deterministic node ID from sorted paper IDs using stable hash.
     
     Args:
-        paper_ids: List of paper IDs in this cluster (will be sorted for stability)
-        prefix: Optional prefix for the cluster ID
+        paper_ids: List of paper IDs in this node (will be sorted for stability)
         
     Returns:
-        Deterministic cluster ID string
+        Deterministic node ID string with 'node_' prefix
     """
-    # Sort paper IDs for deterministic hashing
     sorted_ids = sorted(paper_ids)
-    # Create stable hash from sorted paper IDs
     id_string = ",".join(str(pid) for pid in sorted_ids)
     hash_obj = hashlib.sha256(id_string.encode())
-    unique_suffix = hash_obj.hexdigest()[:8]
-    return f"cluster_{unique_suffix}" if not prefix else f"{prefix}_{unique_suffix}"
+    unique_suffix = hash_obj.hexdigest()[:12]
+    return f"node_{unique_suffix}"
 
 
 # =============================================================================
@@ -106,7 +119,7 @@ def _check_embeddings_valid(embeddings: np.ndarray, k: int) -> bool:
     """Check if embeddings are valid for k-means clustering.
     
     Args:
-        embeddings: Embeddings array
+        embeddings: Embeddings array (should be L2-normalized)
         k: Number of clusters to create
         
     Returns:
@@ -125,26 +138,19 @@ def _check_embeddings_valid(embeddings: np.ndarray, k: int) -> bool:
     return True
 
 
-def _compute_cosine_silhouette_score(embeddings: np.ndarray, labels: np.ndarray) -> float:
-    """Compute cosine-based silhouette score for clustering quality.
+def _compute_silhouette_score(embeddings: np.ndarray, labels: np.ndarray) -> float:
+    """Compute silhouette score for clustering quality using sklearn.
+    
+    Since embeddings are L2-normalized, Euclidean distance is equivalent to
+    cosine distance (up to a constant factor).
     
     Args:
-        embeddings: Embeddings array
+        embeddings: L2-normalized embeddings array
         labels: Cluster labels from k-means
         
     Returns:
         Silhouette score (higher is better, range: -1 to 1)
     """
-    # Normalize embeddings for cosine similarity
-    norms = np.linalg.norm(embeddings, axis=1, keepdims=True)
-    norms[norms == 0] = 1  # Avoid division by zero
-    normalized_embeddings = embeddings / norms
-    
-    # Compute cosine distance matrix (1 - cosine similarity)
-    cosine_similarity = np.dot(normalized_embeddings, normalized_embeddings.T)
-    cosine_distance = 1 - cosine_similarity
-    
-    # Compute silhouette score using cosine distance
     n_samples = len(labels)
     if n_samples < 2:
         return 0.0
@@ -153,34 +159,50 @@ def _compute_cosine_silhouette_score(embeddings: np.ndarray, labels: np.ndarray)
     if len(unique_labels) < 2:
         return 0.0
     
-    silhouette_scores = []
-    for i in range(n_samples):
-        label_i = labels[i]
-        
-        # Compute average distance to same cluster (a_i)
-        same_cluster_mask = labels == label_i
-        same_cluster_distances = cosine_distance[i, same_cluster_mask]
-        if len(same_cluster_distances) > 1:
-            a_i = np.mean(same_cluster_distances[same_cluster_distances > 0])
-        else:
-            a_i = 0.0
-        
-        # Compute minimum average distance to other clusters (b_i)
-        other_clusters = unique_labels[unique_labels != label_i]
-        b_i_values = []
-        for other_label in other_clusters:
-            other_cluster_mask = labels == other_label
-            other_cluster_distances = cosine_distance[i, other_cluster_mask]
-            if len(other_cluster_distances) > 0:
-                b_i_values.append(np.mean(other_cluster_distances))
-        
-        if b_i_values:
-            b_i = min(b_i_values)
-            # Silhouette score for this sample
-            s_i = (b_i - a_i) / max(a_i, b_i) if max(a_i, b_i) > 0 else 0.0
-            silhouette_scores.append(s_i)
+    try:
+        # Use Euclidean on normalized embeddings (equivalent to cosine)
+        return silhouette_score(embeddings, labels, metric='euclidean')
+    except Exception as e:
+        logger.warning(f"Silhouette score computation failed: {e}")
+        return 0.0
+
+
+def _perform_kmeans_clustering(
+    embeddings: np.ndarray,
+    k: int,
+    use_bisecting_fallback: bool = True
+) -> np.ndarray:
+    """Perform k-means clustering with optional BisectingKMeans fallback.
     
-    return np.mean(silhouette_scores) if silhouette_scores else 0.0
+    Args:
+        embeddings: L2-normalized embeddings array
+        k: Number of clusters
+        use_bisecting_fallback: Whether to use BisectingKMeans if standard fails
+        
+    Returns:
+        Cluster labels array
+    """
+    # Try standard KMeans first
+    kmeans = KMeans(n_clusters=k, random_state=42, n_init=10)
+    labels = kmeans.fit_predict(embeddings)
+    
+    # Check if we got all k clusters
+    unique_labels = set(labels)
+    if len(unique_labels) == k:
+        return labels
+    
+    # Some clusters are empty - try BisectingKMeans as fallback
+    if use_bisecting_fallback:
+        logger.info(f"KMeans produced {len(unique_labels)} clusters instead of {k}, trying BisectingKMeans")
+        try:
+            bisecting = BisectingKMeans(n_clusters=k, random_state=42)
+            labels = bisecting.fit_predict(embeddings)
+            return labels
+        except Exception as e:
+            logger.warning(f"BisectingKMeans failed: {e}")
+    
+    # Return original labels even if not all k clusters
+    return labels
 
 
 def _select_optimal_k(
@@ -190,11 +212,11 @@ def _select_optimal_k(
 ) -> int:
     """Select optimal k for k-means clustering using quality scoring.
     
-    Tries k = 2, 3, 4, 5 (up to branching_factor, but not exceeding n_papers)
+    Tries k = 2, 3, ... up to branching_factor (but not exceeding n_papers)
     and selects the smallest k whose score is close to the best score.
     
     Args:
-        embeddings: Embeddings array
+        embeddings: L2-normalized embeddings array
         branching_factor: Maximum children before branching
         n_papers: Number of papers
         
@@ -220,8 +242,8 @@ def _select_optimal_k(
         kmeans = KMeans(n_clusters=k, random_state=42, n_init=10)
         labels = kmeans.fit_predict(embeddings)
         
-        # Compute cosine silhouette score
-        score = _compute_cosine_silhouette_score(embeddings, labels)
+        # Compute silhouette score
+        score = _compute_silhouette_score(embeddings, labels)
         k_scores[k] = score
     
     if not k_scores:
@@ -233,7 +255,7 @@ def _select_optimal_k(
     
     # Tolerance: within 10% of best score (relative tolerance)
     # This ensures we prefer smaller k when scores are similar
-    tolerance = max(0.05, best_score * 0.10)  # At least 0.05 absolute, or 10% relative
+    tolerance = max(0.05, best_score * 0.10)
     
     # Find smallest k whose score is within tolerance of best score
     for k in sorted(candidate_ks):
@@ -251,278 +273,176 @@ def _select_optimal_k(
 # =============================================================================
 
 class TreeBuilder:
-    """Class-based tree builder that separates tree creation from wrapping logic.
+    """Builds hierarchical tree directly in frontend-compatible format.
     
-    Tree structure: {node_id: [child_node_ids or paper_ids]}
-    - Paper IDs are prefixed with "paper_" (e.g., "paper_1", "paper_2")
-    - Node IDs are prefixed with "node_" (e.g., "node_abc123")
-    - Leaf nodes contain only paper IDs (strings starting with "paper_")
-    - Intermediate nodes contain only child node IDs (strings starting with "node_")
+    The tree is built recursively, with each node returned as a dict:
+    {
+        "name": "Cluster node_xxx" or "Paper {id}",
+        "node_id": "node_xxx",
+        "node_type": "category" or "paper",
+        "children": [...],  # for category nodes
+        "paper_id": int     # for paper nodes
+    }
+    
+    Single-child intermediate nodes are automatically unwrapped during building.
     """
     
     def __init__(self, embeddings_dict: dict[int, np.ndarray], branching_factor: int):
         """Initialize tree builder.
         
         Args:
-            embeddings_dict: Mapping of paper_id (int) to embedding vector
-            branching_factor: Maximum children before a node becomes a leaf
+            embeddings_dict: Mapping of paper_id (int) to L2-normalized embedding vector
+            branching_factor: Maximum children before a node should be split
         """
         self.embeddings_dict = embeddings_dict
         self.branching_factor = branching_factor
-        self.tree: dict[str, list[str]] = {}  # {node_id: [child_node_ids or paper_ids]}
-        self._node_id_cache: dict[tuple, str] = {}  # Cache for deterministic node IDs
     
-    def build_tree(self, paper_ids: list[int]) -> dict[str, list[str]]:
+    def build_tree(self, paper_ids: list[int]) -> dict[str, Any]:
         """Build tree structure starting with given paper IDs.
         
         Args:
             paper_ids: List of integer paper IDs
             
         Returns:
-            Tree dictionary: {node_id: [child_node_ids or paper_ids]}
+            Frontend-compatible tree structure: {name, children: [...]}
         """
-        # Convert integer paper IDs to prefixed strings
-        prefixed_paper_ids = [f"paper_{pid}" for pid in paper_ids]
+        if len(paper_ids) == 0:
+            return {"name": "AI Papers", "children": []}
         
-        # Create root node
-        root_id = self._generate_node_id(paper_ids)
-        self.tree[root_id] = prefixed_paper_ids
+        if len(paper_ids) == 1:
+            # Single paper - return as root with one child
+            paper_node = self._create_paper_node(paper_ids[0])
+            return {"name": "AI Papers", "children": [paper_node]}
         
-        # Recursively split root node
-        self._split_node(root_id, paper_ids)
+        # Build tree recursively
+        root_node = self._build_node(paper_ids)
         
-        return self.tree
+        # Wrap in root container
+        if root_node.get("node_type") == "category" and root_node.get("children"):
+            return {
+                "name": "AI Papers",
+                "children": root_node["children"],
+            }
+        else:
+            return {
+                "name": "AI Papers",
+                "children": [root_node],
+            }
     
-    def _split_node(self, node_id: str, paper_ids: list[int]) -> None:
-        """Recursively split a node if it contains too many papers.
+    def _build_node(self, paper_ids: list[int]) -> dict[str, Any]:
+        """Recursively build a node and its children.
         
         Args:
-            node_id: Current node ID to split
             paper_ids: List of integer paper IDs in this node
+            
+        Returns:
+            Node dict in frontend format
         """
-        # Base case: if node is small enough, it's a leaf
-        if len(paper_ids) <= self.branching_factor or len(paper_ids) < 2:
-            # Ensure node value contains prefixed paper IDs
-            self.tree[node_id] = [f"paper_{pid}" for pid in paper_ids]
-            return
+        node_id = _generate_node_id(paper_ids)
         
-        # Get embeddings for these papers
+        # Base case: single paper
+        if len(paper_ids) == 1:
+            return self._create_paper_node(paper_ids[0])
+        
+        # Base case: small enough to be a leaf cluster
+        if len(paper_ids) <= self.branching_factor:
+            return self._create_leaf_cluster(paper_ids, node_id)
+        
+        # Need to split: get embeddings and cluster
         embeddings_list = [self.embeddings_dict[pid] for pid in paper_ids]
         embeddings_array = np.array(embeddings_list, dtype=np.float32)
         
-        # Select optimal k using quality scoring
+        # Select optimal k
         k = _select_optimal_k(embeddings_array, self.branching_factor, len(paper_ids))
         
         # Validate embeddings
         if not _check_embeddings_valid(embeddings_array, k):
-            # Can't cluster, make it a leaf
-            self.tree[node_id] = [f"paper_{pid}" for pid in paper_ids]
-            return
+            # Can't cluster - return as leaf
+            return self._create_leaf_cluster(paper_ids, node_id)
         
-        # Perform k-means clustering
-        kmeans = KMeans(n_clusters=k, random_state=42, n_init=10)
-        cluster_labels = kmeans.fit_predict(embeddings_array)
+        # Perform clustering with fallback
+        cluster_labels = _perform_kmeans_clustering(embeddings_array, k)
         
         # Group papers by cluster label
-        clusters = {}
+        clusters: dict[int, list[int]] = {}
         for idx, label in enumerate(cluster_labels):
             if label not in clusters:
                 clusters[label] = []
             clusters[label].append(paper_ids[idx])
         
-        # Filter out empty clusters
+        # Filter empty clusters
         clusters = {label: papers for label, papers in clusters.items() if len(papers) > 0}
         
-        if len(clusters) == 0:
-            # No clusters created, make it a leaf
-            self.tree[node_id] = [f"paper_{pid}" for pid in paper_ids]
-            return
+        # If clustering degenerated to single cluster, make it a leaf
+        if len(clusters) <= 1:
+            logger.info(f"Clustering degenerated to {len(clusters)} cluster(s) for {len(paper_ids)} papers, creating leaf")
+            return self._create_leaf_cluster(paper_ids, node_id)
         
-        # Create child nodes for each cluster
-        child_node_ids = []
-        for label, cluster_paper_ids in clusters.items():
-            child_id = self._generate_node_id(cluster_paper_ids)
-            # Initialize child node with prefixed paper IDs
-            self.tree[child_id] = [f"paper_{pid}" for pid in cluster_paper_ids]
-            child_node_ids.append(child_id)
-            
-            # Recursively split child node
-            self._split_node(child_id, cluster_paper_ids)
+        # Build children recursively
+        children = []
+        for label in sorted(clusters.keys()):
+            cluster_papers = clusters[label]
+            child_node = self._build_node(cluster_papers)
+            children.append(child_node)
         
-        # Replace node value with child node IDs
-        self.tree[node_id] = child_node_ids
-    
-    def _generate_node_id(self, paper_ids: list[int]) -> str:
-        """Generate deterministic node ID from paper IDs.
-        
-        Args:
-            paper_ids: List of integer paper IDs
-            
-        Returns:
-            Node ID string (e.g., "node_abc12345")
-        """
-        # Use cache for deterministic IDs
-        key = tuple(sorted(paper_ids))
-        if key in self._node_id_cache:
-            return self._node_id_cache[key]
-        
-        # Sort paper IDs for deterministic hashing
-        sorted_ids = sorted(paper_ids)
-        id_string = ",".join(str(pid) for pid in sorted_ids)
-        hash_obj = hashlib.sha256(id_string.encode())
-        unique_suffix = hash_obj.hexdigest()[:12]  # Use 12 chars to reduce collision risk
-        node_id = f"node_{unique_suffix}"
-        
-        # Cache the result
-        self._node_id_cache[key] = node_id
-        return node_id
-
-
-def _wrap_tree_for_db(tree: dict[str, list[str]], root_node_id: str, node_names: dict[str, str] | None = None) -> dict[str, Any]:
-    """Convert tree structure to frontend format with children as list.
-    
-    This function:
-    1. Traverses the tree structure
-    2. Removes single-child intermediate nodes (unwraps them)
-    3. Creates frontend-compatible nested structure with children as list
-    
-    Args:
-        tree: Tree dictionary {node_id: [child_node_ids or paper_ids]}
-        root_node_id: Root node ID to start traversal
-        node_names: Optional dictionary mapping cluster_id to node name
-        
-    Returns:
-        Frontend-compatible structure:
-        {
-            "name": "AI Papers",
-            "children": [
-                {
-                    "name": "Category Name",
-                    "node_id": "cluster_abc",
-                    "node_type": "category",
-                    "children": [...]
-                },
-                {
-                    "name": "Paper Name",
-                    "node_id": "cluster_def",
-                    "node_type": "paper",
-                    "paper_id": 123
-                }
-            ]
-        }
-    """
-    def _wrap_node(node_id: str) -> dict[str, Any] | None:
-        """Recursively wrap a node into frontend format."""
-        node_value = tree.get(node_id, [])
-        
-        # Check if this is a leaf node (contains only paper IDs)
-        paper_ids = []
-        child_node_ids = []
-        
-        for item in node_value:
-            if item.startswith("paper_"):
-                try:
-                    paper_id = int(item[6:])
-                    paper_ids.append(paper_id)
-                except ValueError:
-                    continue
-            elif item.startswith("node_"):
-                child_node_ids.append(item)
-        
-        # If node contains paper IDs and no child nodes, it's a leaf
-        if paper_ids and not child_node_ids:
-            # Leaf node - create paper node(s)
-            cluster_id = _generate_cluster_id(paper_ids)
-            if len(paper_ids) == 1:
-                # Single paper node
-                name = node_names.get(cluster_id, f"Paper {paper_ids[0]}") if node_names else f"Paper {paper_ids[0]}"
-                return {
-                    "name": name,
-                    "node_id": cluster_id,
-                    "node_type": "paper",
-                    "paper_id": paper_ids[0],
-                }
-            else:
-                # Multiple papers - create category node
-                name = node_names.get(cluster_id, f"Cluster {cluster_id}") if node_names else f"Cluster {cluster_id}"
-                return {
-                    "name": name,
-                    "node_id": cluster_id,
-                    "node_type": "category",
-                    "children": [
-                        {
-                            "name": node_names.get(_generate_cluster_id([pid]), f"Paper {pid}") if node_names else f"Paper {pid}",
-                            "node_id": _generate_cluster_id([pid]),
-                            "node_type": "paper",
-                            "paper_id": pid,
-                        }
-                        for pid in paper_ids
-                    ],
-                }
-        
-        # Intermediate node - wrap children recursively
-        wrapped_children = []
-        for child_id in child_node_ids:
-            child_wrapped = _wrap_node(child_id)
-            if child_wrapped is not None:
-                wrapped_children.append(child_wrapped)
-        
-        # Remove single-child intermediates: if only one child after unwrapping, return it directly
-        if len(wrapped_children) == 0:
-            return None
-        elif len(wrapped_children) == 1:
-            # Single child - unwrap: return the child directly, don't create intermediate
-            return wrapped_children[0]
+        # Unwrap single-child intermediate: if only one child, return it directly
+        if len(children) == 1:
+            return children[0]
         
         # Multiple children - create intermediate category node
-        # Collect all paper IDs from children for deterministic ID generation
-        all_paper_ids = []
-        def collect_papers(children_list):
-            for child in children_list:
-                if child.get("node_type") == "paper":
-                    all_paper_ids.append(child.get("paper_id"))
-                elif child.get("node_type") == "category" and child.get("children"):
-                    collect_papers(child["children"])
-        collect_papers(wrapped_children)
-        
-        cluster_id = _generate_cluster_id(all_paper_ids)
-        name = node_names.get(cluster_id, f"Cluster {cluster_id}") if node_names else f"Cluster {cluster_id}"
-        
         return {
-            "name": name,
-            "node_id": cluster_id,
+            "name": f"Cluster {node_id}",
+            "node_id": node_id,
             "node_type": "category",
-            "children": wrapped_children,
+            "children": children,
         }
     
-    root_wrapped = _wrap_node(root_node_id)
-    
-    if root_wrapped is None:
-        return {"name": "AI Papers", "children": []}
-    
-    # If root is a single category, unwrap it
-    if root_wrapped.get("node_type") == "category" and root_wrapped.get("children"):
+    def _create_paper_node(self, paper_id: int) -> dict[str, Any]:
+        """Create a paper node.
+        
+        Args:
+            paper_id: Paper ID
+            
+        Returns:
+            Paper node dict
+        """
+        node_id = _generate_node_id([paper_id])
         return {
-            "name": "AI Papers",
-            "children": root_wrapped["children"],
+            "name": f"Paper {paper_id}",
+            "node_id": node_id,
+            "node_type": "paper",
+            "paper_id": paper_id,
         }
     
-    # Root is a single paper (edge case)
-    return {
-        "name": "AI Papers",
-        "children": [root_wrapped],
-    }
+    def _create_leaf_cluster(self, paper_ids: list[int], node_id: str) -> dict[str, Any]:
+        """Create a leaf cluster containing multiple papers.
+        
+        Args:
+            paper_ids: List of paper IDs
+            node_id: Node ID for this cluster
+            
+        Returns:
+            Category node dict with paper children
+        """
+        children = [self._create_paper_node(pid) for pid in paper_ids]
+        return {
+            "name": f"Cluster {node_id}",
+            "node_id": node_id,
+            "node_type": "category",
+            "children": children,
+        }
 
 
-# Obsolete functions removed - tree is now stored directly in frontend format as JSONB
-
+# =============================================================================
+# Database Operations
+# =============================================================================
 
 def write_tree_to_database(tree_structure: dict[str, Any], node_names: dict[str, str] | None = None) -> int:
     """Write frontend format tree structure to database as JSONB.
     
     Args:
         tree_structure: Frontend format tree structure {name, children: [...]}
-        node_names: Optional dictionary mapping cluster_id to node name
+        node_names: Optional dictionary mapping node_id to node name
     
     Returns:
         Number of nodes in tree
@@ -558,13 +478,13 @@ def write_tree_to_database(tree_structure: dict[str, Any], node_names: dict[str,
 # Main API
 # =============================================================================
 
-def _extract_papers_with_embeddings() -> tuple[list[dict], list[np.ndarray], list[int]]:
-    """Extract papers with embeddings from database.
+def _extract_papers_with_embeddings() -> tuple[list[dict], np.ndarray, list[int]]:
+    """Extract papers with embeddings from database and L2-normalize them.
     
     Returns:
         Tuple of:
         - List of paper dictionaries
-        - List of numpy embedding arrays
+        - L2-normalized embeddings array (n_papers, embedding_dim)
         - List of paper IDs
     """
     papers = db.get_all_papers()
@@ -580,7 +500,14 @@ def _extract_papers_with_embeddings() -> tuple[list[dict], list[np.ndarray], lis
             embeddings_list.append(_convert_embedding_to_numpy(emb))
             paper_ids_list.append(paper["id"])
     
-    return papers_with_embeddings, embeddings_list, paper_ids_list
+    if len(embeddings_list) == 0:
+        return [], np.array([]), []
+    
+    # Stack and L2-normalize embeddings
+    embeddings_array = np.array(embeddings_list, dtype=np.float32)
+    embeddings_normalized = normalize(embeddings_array, norm='l2')
+    
+    return papers_with_embeddings, embeddings_normalized, paper_ids_list
 
 
 def build_tree_from_clusters() -> dict[str, Any]:
@@ -588,53 +515,48 @@ def build_tree_from_clusters() -> dict[str, Any]:
     
     This is the main entry point for clustering. It:
     1. Fetches papers with embeddings from database
-    2. Creates embeddings dictionary mapping
-    3. Uses TreeBuilder class to create tree structure
-    4. Wraps tree for database/rendering
-    5. Returns cluster tree structure
+    2. L2-normalizes embeddings for cosine-similarity clustering
+    3. Uses TreeBuilder to create frontend-format tree directly
+    4. Returns tree structure ready for database storage
     
     Returns:
         Dictionary with tree structure and metadata:
         {
-            "clusters": [list of cluster dictionaries],
+            "name": "AI Papers",
+            "children": [...],
             "total_papers": int,
             "total_clusters": int
         }
     """
-    # Extract papers with embeddings
-    papers_with_embeddings, embeddings_list, paper_ids_list = _extract_papers_with_embeddings()
+    # Extract and normalize embeddings
+    papers_with_embeddings, embeddings_normalized, paper_ids_list = _extract_papers_with_embeddings()
     
     if len(papers_with_embeddings) < 2:
         return {
-            "clusters": [],
+            "name": "AI Papers",
+            "children": [],
             "total_papers": len(papers_with_embeddings),
             "total_clusters": 0,
             "message": f"Need at least 2 papers with embeddings, found {len(papers_with_embeddings)}",
         }
     
-    # Create embeddings dictionary: {paper_id: embedding_array}
+    # Create embeddings dictionary with normalized vectors
     embeddings_dict = {
-        paper_id: embedding
-        for paper_id, embedding in zip(paper_ids_list, embeddings_list)
+        paper_id: embeddings_normalized[idx]
+        for idx, paper_id in enumerate(paper_ids_list)
     }
     
     # Get clustering config
     config = _get_clustering_config()
     branching_factor = config["branching_factor"]
     
-    # Phase 1: Create raw tree structure using TreeBuilder
+    # Build tree directly in frontend format
     builder = TreeBuilder(embeddings_dict, branching_factor)
-    raw_tree = builder.build_tree(paper_ids_list)
-    
-    # Find root node ID (the one that contains all initial papers)
-    root_node_id = builder._generate_node_id(paper_ids_list)
-    
-    # Phase 2: Wrap tree for frontend format (removes single-child intermediates)
-    tree_structure = _wrap_tree_for_db(raw_tree, root_node_id, node_names=None)
+    tree_structure = builder.build_tree(paper_ids_list)
     
     # Count total nodes in tree
     def count_nodes(node: dict[str, Any]) -> int:
-        count = 1  # Count this node
+        count = 1
         if node.get("children"):
             for child in node["children"]:
                 count += count_nodes(child)
@@ -643,7 +565,7 @@ def build_tree_from_clusters() -> dict[str, Any]:
     total_nodes = count_nodes(tree_structure)
     
     return {
-        **tree_structure,  # Frontend format tree: {name, children: [...]}
+        **tree_structure,
         "total_papers": len(papers_with_embeddings),
         "total_clusters": total_nodes,
     }
@@ -661,8 +583,9 @@ if __name__ == "__main__":
         
     This will:
         1. Load all papers with embeddings from the database
-        2. Build a hierarchical clustering tree
-        3. Print the tree structure as JSON
+        2. L2-normalize embeddings
+        3. Build a hierarchical clustering tree
+        4. Print the tree structure as JSON
     """
     print("=" * 60)
     print("Running hierarchical clustering on all papers...")
@@ -674,17 +597,19 @@ if __name__ == "__main__":
     # Print summary
     print(f"\n✓ Clustering complete!")
     print(f"  - Total papers processed: {result.get('total_papers', 0)}")
-    print(f"  - Top-level clusters: {result.get('total_clusters', 0)}")
+    print(f"  - Total nodes in tree: {result.get('total_clusters', 0)}")
     
     if result.get('message'):
         print(f"  - Note: {result['message']}")
     
     # Print tree structure as JSON
     print("\n" + "=" * 60)
-    print("Tree structure (nested format):")
+    print("Tree structure (saved to tree.json):")
     print("=" * 60)
+    
+    # Remove metadata for cleaner output
+    output = {k: v for k, v in result.items() if k not in ['total_papers', 'total_clusters', 'message']}
     with open("tree.json", "w") as f:
-        json.dump(result, f, indent=2, default=str)
-
-
-    # Tree is already in frontend format - can be saved directly to database
+        json.dump(output, f, indent=2, default=str)
+    
+    print(f"Tree saved to tree.json")
