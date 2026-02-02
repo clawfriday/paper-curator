@@ -127,6 +127,7 @@ class SavePaperRequest(BaseModel):
     authors: list[str]
     abstract: Optional[str] = None
     summary: Optional[str] = None
+    abbreviation: Optional[str] = None  # Short display name (e.g., "mHC", "GPT-4")
     pdf_path: Optional[str] = None
     latex_path: Optional[str] = None
     pdf_url: Optional[str] = None
@@ -1611,11 +1612,15 @@ async def reabbreviate_paper(payload: ReabbreviateRequest) -> dict[str, Any]:
     )
     abbrev = response.choices[0].message.content.strip().strip('"\'').strip()
     
-    # Update tree node name
-    node_id = f"paper_{payload.arxiv_id.replace('.', '_')}"
-    db.update_tree_node_name(node_id, abbrev)
+    # Store abbreviation in papers table
+    db.update_paper_abbreviation(paper["id"], abbrev)
     
-    return {"abbreviation": abbrev, "node_id": node_id}
+    # Update tree node name
+    node_id = db.find_paper_node_id(paper["id"])
+    if node_id:
+        db.update_tree_node_name(node_id, abbrev)
+    
+    return {"abbreviation": abbrev, "node_id": node_id, "paper_id": paper["id"]}
 
 
 @app.post("/papers/reabbreviate-all")
@@ -1641,6 +1646,9 @@ async def reabbreviate_all_papers() -> dict[str, Any]:
             temperature=0.1,
         )
         abbrev = response.choices[0].message.content.strip().strip('"\'').strip()
+        # Store abbreviation in papers table
+        db.update_paper_abbreviation(paper["id"], abbrev)
+        # Update tree node name
         node_id = db.find_paper_node_id(paper["id"])
         if node_id:
             db.update_tree_node_name(node_id, abbrev)
@@ -1671,6 +1679,7 @@ async def save_paper(payload: SavePaperRequest) -> dict[str, Any]:
         authors=payload.authors,
         abstract=payload.abstract,
         summary=payload.summary,
+        abbreviation=payload.abbreviation,
         pdf_path=payload.pdf_path,
         latex_path=payload.latex_path,
         pdf_url=payload.pdf_url,

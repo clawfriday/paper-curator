@@ -9,6 +9,7 @@ CREATE TABLE IF NOT EXISTS papers (
     authors TEXT[] NOT NULL,
     abstract TEXT,
     summary TEXT,
+    abbreviation VARCHAR(50),  -- Short name for display in tree (e.g., "mHC", "GPT-4")
     pdf_path TEXT,
     latex_path TEXT,
     pdf_url TEXT,

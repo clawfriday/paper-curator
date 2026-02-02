@@ -1676,9 +1676,9 @@ export default function Home() {
 
   return (
     <TooltipProvider>
-      <div style={{ display: "flex", height: "100vh", flexDirection: isMobile && !isFullscreen ? "column" : "row" }}>
+      <div style={{ display: "flex", height: "100vh", flexDirection: isMobile && !isFullscreen ? "column" : "row", overflow: "hidden" }}>
       {/* Left panel: Tree visualization */}
-      <div style={{ ...panelStyles.left, borderRight: isMobile ? "none" : "1px solid #e5e5e5", borderBottom: isMobile && !isFullscreen ? "1px solid #e5e5e5" : "none", display: "flex", flexDirection: "column", position: "relative" }}>
+      <div style={{ ...panelStyles.left, borderRight: isMobile ? "none" : "1px solid #e5e5e5", borderBottom: isMobile && !isFullscreen ? "1px solid #e5e5e5" : "none", display: "flex", flexDirection: "column", position: "relative", overflow: "hidden", minWidth: 0 }}>
         <div style={{ padding: isMobile ? "0.75rem" : "1rem", borderBottom: "1px solid #e5e5e5", backgroundColor: "#fafafa" }}>
           <div className="flex items-center justify-between mb-2">
             <div style={{ flex: 1, minWidth: 0 }}>
@@ -1701,15 +1701,6 @@ export default function Home() {
                     >
                       {isFullscreen === "details" ? "↗" : "⛶"}
                     </button>
-                    {isRightCollapsed && (
-                      <button
-                        onClick={toggleRightPanel}
-                        className="px-2 py-1 text-xs bg-blue-500 hover:bg-blue-600 text-white rounded"
-                        title="Show details panel"
-                      >
-                        Show Panel →
-                      </button>
-                    )}
                   </>
                 )}
               </div>
@@ -2004,16 +1995,21 @@ export default function Home() {
         </div>
       )}
 
-      {/* Resizer handle for desktop/tablet */}
-      {!isMobile && !isFullscreen && !isRightCollapsed && (
+      {/* Resizer handle with arrow toggle for desktop/tablet */}
+      {!isMobile && !isFullscreen && (
         <div
           style={{
-            width: "4px",
+            width: isRightCollapsed ? "20px" : "8px",
             backgroundColor: "#e5e5e5",
-            cursor: "col-resize",
+            cursor: isRightCollapsed ? "pointer" : "col-resize",
             position: "relative",
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
+            flexShrink: 0,
           }}
           onMouseDown={(e) => {
+            if (isRightCollapsed) return; // Don't resize when collapsed
             e.preventDefault();
             const startX = e.clientX;
             const startRightWidth = rightPanelWidth;
@@ -2033,30 +2029,38 @@ export default function Home() {
             document.addEventListener("mousemove", handleMouseMove);
             document.addEventListener("mouseup", handleMouseUp);
           }}
-        />
+        >
+          {/* Arrow toggle button centered on resizer */}
+          <button
+            onClick={toggleRightPanel}
+            style={{
+              position: "absolute",
+              top: "50%",
+              left: "50%",
+              transform: "translate(-50%, -50%)",
+              width: "20px",
+              height: "40px",
+              border: "1px solid #d1d5db",
+              borderRadius: "4px",
+              backgroundColor: "#ffffff",
+              cursor: "pointer",
+              display: "flex",
+              alignItems: "center",
+              justifyContent: "center",
+              fontSize: "12px",
+              color: "#6b7280",
+              boxShadow: "0 1px 3px rgba(0,0,0,0.1)",
+              zIndex: 10,
+            }}
+            title={isRightCollapsed ? "Show panel" : "Hide panel"}
+          >
+            {isRightCollapsed ? "←" : "→"}
+          </button>
+        </div>
       )}
       
       {/* Right panel: Details and ingest */}
       <div style={{ ...panelStyles.right, padding: isMobile ? "1rem" : "1.5rem", display: "flex", flexDirection: "column", backgroundColor: "#f9fafb", overflowY: "auto", position: "relative" }}>
-        {!isMobile && (
-          <div style={{ display: "flex", justifyContent: "flex-end", marginBottom: "0.5rem" }}>
-            <button
-              onClick={toggleRightPanel}
-              style={{
-                padding: "4px 8px",
-                borderRadius: "6px",
-                border: "1px solid #e5e7eb",
-                background: "#ffffff",
-                fontSize: "12px",
-                cursor: "pointer",
-              }}
-              title={isRightCollapsed ? "Expand panel" : "Collapse panel"}
-            >
-              {isRightCollapsed ? "Expand Panel" : "Collapse Panel"}
-            </button>
-          </div>
-        )}
-
         {/* Paper Details Section - Accordion */}
         <Card className="flex-1 flex flex-col">
           <Accordion type="single" collapsible defaultValue="details" className="w-full flex-1 flex flex-col">

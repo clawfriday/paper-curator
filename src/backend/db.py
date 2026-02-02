@@ -40,6 +40,7 @@ def create_paper(
     authors: list[str],
     abstract: Optional[str] = None,
     summary: Optional[str] = None,
+    abbreviation: Optional[str] = None,
     pdf_path: Optional[str] = None,
     latex_path: Optional[str] = None,
     pdf_url: Optional[str] = None,
@@ -51,14 +52,15 @@ def create_paper(
         with conn.cursor() as cur:
             cur.execute(
                 """
-                INSERT INTO papers (arxiv_id, title, authors, abstract, summary, 
+                INSERT INTO papers (arxiv_id, title, authors, abstract, summary, abbreviation,
                                     pdf_path, latex_path, pdf_url, published_at, embedding)
-                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                 ON CONFLICT (arxiv_id) DO UPDATE SET
                     title = EXCLUDED.title,
                     authors = EXCLUDED.authors,
                     abstract = EXCLUDED.abstract,
                     summary = COALESCE(EXCLUDED.summary, papers.summary),
+                    abbreviation = COALESCE(EXCLUDED.abbreviation, papers.abbreviation),
                     pdf_path = COALESCE(EXCLUDED.pdf_path, papers.pdf_path),
                     latex_path = COALESCE(EXCLUDED.latex_path, papers.latex_path),
                     pdf_url = COALESCE(EXCLUDED.pdf_url, papers.pdf_url),
@@ -66,7 +68,7 @@ def create_paper(
                     embedding = COALESCE(EXCLUDED.embedding, papers.embedding)
                 RETURNING id
                 """,
-                (arxiv_id, title, authors, abstract, summary, pdf_path, 
+                (arxiv_id, title, authors, abstract, summary, abbreviation, pdf_path, 
                  latex_path, pdf_url, published_at, embedding)
             )
             paper_id = cur.fetchone()[0]
@@ -123,6 +125,26 @@ def update_paper_summary(paper_id: int, summary: str) -> None:
                 (summary, paper_id)
             )
             conn.commit()
+
+
+def update_paper_abbreviation(paper_id: int, abbreviation: str) -> None:
+    """Update paper abbreviation (short display name)."""
+    with get_db() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "UPDATE papers SET abbreviation = %s WHERE id = %s",
+                (abbreviation, paper_id)
+            )
+            conn.commit()
+
+
+def get_paper_abbreviation(paper_id: int) -> Optional[str]:
+    """Get paper abbreviation by paper ID."""
+    with get_db() as conn:
+        with conn.cursor() as cur:
+            cur.execute("SELECT abbreviation FROM papers WHERE id = %s", (paper_id,))
+            row = cur.fetchone()
+            return row[0] if row and row[0] else None
 
 
 def update_paper_structured_summary(paper_id: int, structured_summary: dict) -> None:
@@ -245,22 +267,25 @@ def get_tree() -> dict[str, Any]:
                     "summary": paper.get("summary"),
                     "pdfPath": paper.get("pdf_path"),
                 }
-                # Prefer existing node name (e.g., LLM abbreviation) if set
-                existing_name = (node.get("name") or "").strip()
-                if not existing_name or existing_name.startswith("paper_"):
-                    # Generate abbreviation from title (first 2-3 words)
-                    title = paper.get("title", "")
-                    if title:
-                        words = title.split()
-                        # Use first 2-3 words, prioritizing short abbreviations
-                        abbrev = " ".join(words[:3])
-                        if len(abbrev) > 20:
-                            abbrev = " ".join(words[:2])
-                        if len(abbrev) > 20:
-                            abbrev = words[0][:18] + ".."
-                        elif len(words) > 3:
-                            abbrev += ".."
-                        node["name"] = abbrev
+                # Use stored abbreviation from database (preferred)
+                db_abbrev = paper.get("abbreviation")
+                if db_abbrev:
+                    node["name"] = db_abbrev
+                else:
+                    # Fallback: use existing node name or generate from title
+                    existing_name = (node.get("name") or "").strip()
+                    if not existing_name or existing_name.startswith("paper_"):
+                        title = paper.get("title", "")
+                        if title:
+                            # Extract abbreviation if present before colon
+                            if ":" in title:
+                                prefix = title.split(":")[0].strip()
+                                if len(prefix) <= 20:
+                                    node["name"] = prefix
+                                else:
+                                    node["name"] = title[:20] + ".."
+                            else:
+                                node["name"] = title[:20] + ".." if len(title) > 20 else title
         
         # Recursively enrich children
         if node.get("children"):

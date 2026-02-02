@@ -563,3 +563,15 @@ const paperChildren = children.filter((c) => isPaperNode(c));
 - there is now a button to "collapse pane", however, can we change it to some arrow button in the middle of the vertical separation line betwen the tree diagram on the left, and the pane on the right? I can toggle the on/off the right pane by clicking such arrow
 - then tree diagram currently still spans across the entire window width, can we only display it on the left-hand-size of the window, and put the horizontal scroll bar into the tree-diagram, so that it will only scroll the tree diagram instead of the whole window
 - please help me check the existing 'abbreviation' function, which was automatically triggered during paper ingestion. It was able to condense down paper names to the most prominent features of the paper, like a word or phrase. Currently, the rephrasing resulted in almost the entire paper title. Once we restore the original abbreviation capability, can we also persist it into the database, and use them as the display names for each paper node in the tree diagram?
+- the right pane currently can only be 'collapsed', but not 're-expanded'. There is no way to recover it after collapsing
+- add the following into the tree diagram, to facilitate the navigation
+  - zoom in and out
+  - small window at the bottom to show the relative location of current window, w.r.t. the overall tree diagram
+- modify the following in the right panel
+  - merge the tab 'details' and 'explorer'
+- fix the current issue with 'details', 
+  - it currently assume all nodes are 'paper' nodes, for such category node, it displays the following. We need to change the title "Paper Details" to "Category Details", and split the "XX papers in the categories"
+  Paper Details
+    Learning Efficiency and Alignment
+    2 papers in this category
+  - 
