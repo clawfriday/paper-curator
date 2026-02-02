@@ -1767,27 +1767,22 @@ export default function Home() {
             </div>
           </div>
         </div>
-        {/* Tree Diagram Container */}
+        {/* Tree Diagram Container - Outer wrapper for fixed overlays */}
         <div
-          ref={treeContainerRef}
           style={{
             flex: 1,
             position: "relative",
-            overflow: "auto",
+            overflow: "hidden",
             backgroundColor: "#f8fafc",
           }}
-          onScroll={(e) => {
-            const target = e.currentTarget;
-            setViewportPos({ x: target.scrollLeft, y: target.scrollTop });
-          }}
         >
-          {/* Zoom Controls */}
+          {/* Zoom Controls - Fixed position relative to container */}
           {treeLayout && (
             <div
               style={{
                 position: "absolute",
                 top: "10px",
-                right: "10px",
+                left: "10px",
                 zIndex: 20,
                 display: "flex",
                 flexDirection: "column",
@@ -1799,7 +1794,7 @@ export default function Home() {
               }}
             >
               <button
-                onClick={() => setZoomLevel((z) => Math.min(2, z + 0.1))}
+                onClick={() => setZoomLevel((z) => Math.min(3, z + 0.1))}
                 style={{
                   width: "32px",
                   height: "32px",
@@ -1810,7 +1805,7 @@ export default function Home() {
                   fontSize: "18px",
                   fontWeight: "bold",
                 }}
-                title="Zoom in"
+                title="Zoom in (Ctrl+Scroll)"
               >
                 +
               </button>
@@ -1848,13 +1843,13 @@ export default function Home() {
             </div>
           )}
 
-          {/* Minimap */}
+          {/* Minimap - Fixed at bottom-left */}
           {treeLayout && (
             <div
               style={{
                 position: "absolute",
                 bottom: "10px",
-                right: "10px",
+                left: "10px",
                 zIndex: 20,
                 width: "150px",
                 height: "100px",
@@ -1910,6 +1905,30 @@ export default function Home() {
             </div>
           )}
 
+          {/* Scrollable inner container for tree */}
+          <div
+            ref={treeContainerRef}
+            style={{
+              position: "absolute",
+              top: 0,
+              left: 0,
+              right: 0,
+              bottom: 0,
+              overflow: "auto",
+            }}
+            onScroll={(e) => {
+              const target = e.currentTarget;
+              setViewportPos({ x: target.scrollLeft, y: target.scrollTop });
+            }}
+            onWheel={(e) => {
+              // Ctrl+scroll or pinch gesture for zoom
+              if (e.ctrlKey || e.metaKey) {
+                e.preventDefault();
+                const delta = e.deltaY > 0 ? -0.1 : 0.1;
+                setZoomLevel((z) => Math.max(0.25, Math.min(3, z + delta)));
+              }
+            }}
+          >
           {!treeLayout ? (
             <div
               style={{
@@ -2006,6 +2025,7 @@ export default function Home() {
               </g>
             </svg>
           )}
+          </div>
         </div>
       </div>
 
