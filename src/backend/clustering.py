@@ -44,9 +44,9 @@ def _get_clustering_config() -> dict[str, Any]:
     
     # Try multiple paths
     config_paths = [
-        Path("config/paperqa.yaml"),
-        Path("../config/paperqa.yaml"),
-        Path("../../config/paperqa.yaml"),
+        Path("config/config.yaml"),
+        Path("../config/config.yaml"),
+        Path("../../config/config.yaml"),
     ]
     
     config_path = None

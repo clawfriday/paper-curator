@@ -1,105 +1,50 @@
 # Test Suite Documentation
 
-This document summarizes what each test file does and indicates whether mock data is used.
+## test_health.py
 
-## Test Configuration
+- `test_health`: Input `GET /health`, expect `{"status": "ok"}`; verifies backend is running and basic routing works.
 
-Tests are configured in `conftest.py`:
-- Uses FastAPI TestClient with `raise_server_exceptions=False` to capture HTTP error responses
-- Provides shared fixtures for sample arXiv data (paper: "Attention Is All You Need", ID: 1706.03762)
+## test_arxiv.py
 
-## Test Markers
+- `test_arxiv_resolve_with_id`: Input `POST /arxiv/resolve` with `arxiv_id=1706.03762`; expect response includes `arxiv_id`, `title`, `authors`, `summary`, `pdf_url`, and title contains "Attention"; validates arXiv resolution via ID.
+- `test_arxiv_resolve_no_identifier`: Input `POST /arxiv/resolve` with empty body; expect `400` with "Provide arxiv_id or url"; validates parameter validation.
 
-- `@pytest.mark.slow` - Tests that download real files or take significant time
-- `@pytest.mark.external` - Tests that require external LLM/embedding endpoints
+## test_cached_data.py
 
-## Test Files
+- `test_cached_data_structured_summary`: Input creates a paper in DB, writes a structured summary, then calls `GET /papers/{arxiv_id}/cached-data`; expect response contains the same `structured_summary`; validates persistence and restore path for structured analysis.
 
-### test_health.py
+## test_classify.py
 
-| Test | Description | Mock Data |
-|------|-------------|-----------|
-| `test_health` | Verifies `/health` endpoint returns `{"status": "ok"}` | No (real endpoint, no external deps) |
+- `test_classify_endpoint`: Input `POST /papers/classify`; expect response includes `message`, `papers_classified`, `clusters_created`; validates classification endpoint responds and returns expected keys (skips if external LLM/embedding endpoints are unavailable).
 
----
+## test_tree.py
 
-### test_arxiv.py
+- `test_tree_endpoint`: Input `GET /tree`; expect response includes `name` and `children` list; validates tree endpoint returns frontend-compatible structure.
 
-| Test | Description | Mock Data |
-|------|-------------|-----------|
-| `test_arxiv_resolve_with_id` | Resolves paper metadata by arXiv ID, verifies "Attention Is All You Need" paper | No (real arXiv API) |
-| `test_arxiv_resolve_with_url` | Resolves paper metadata by arXiv URL | No (real arXiv API) |
-| `test_arxiv_resolve_no_identifier` | Verifies 400 error when no ID/URL provided | No |
-| `test_arxiv_resolve_invalid_id` | Verifies error with invalid arXiv ID | No (real arXiv API) |
-| `test_arxiv_download` | Downloads actual PDF from arXiv to temp directory (marked `@slow`) | No (real arXiv download) |
+## test_delete_paper.py
 
----
+- `test_delete_paper_endpoint`: Input creates a paper in DB then calls `DELETE /papers/{arxiv_id}`; expect deletion success (200/404) and follow-up `GET /papers/{arxiv_id}/cached-data` returns 404; validates delete endpoint and cascade cleanup.
 
-### test_embed.py
+## test_endpoints_validation.py
 
-| Test | Description | Mock Data |
-|------|-------------|-----------|
-| `test_embed` | Generates embedding for sample text (marked `@external`) | No (real embedding endpoint) |
-
-**Note**: Skips if embedding endpoint unavailable. Set `REQUIRE_EXTERNAL_ENDPOINTS=1` to fail instead.
-
----
-
-### test_pdf_extract.py
-
-| Test | Description | Mock Data |
-|------|-------------|-----------|
-| `test_pdf_extract_file_not_found` | Verifies 404 error for nonexistent PDF path | No |
-| `test_pdf_extract_with_real_pdf` | Downloads real PDF then extracts text using PaperQA2 (marked `@slow`) | No (real PDF, real extraction) |
-
----
-
-### test_qa.py
-
-| Test | Description | Mock Data |
-|------|-------------|-----------|
-| `test_qa_with_context` | Answers question using provided context about Transformers (marked `@external`) | **Yes** - hardcoded context about Transformers |
-| `test_qa_with_pdf` | Downloads real PDF, answers question about it (marked `@external`, `@slow`) | No (real PDF, real LLM) |
-| `test_qa_no_input` | Verifies error when no context/pdf_path provided | No |
-
----
-
-### test_summarize.py
-
-| Test | Description | Mock Data |
-|------|-------------|-----------|
-| `test_summarize_with_text` | Summarizes provided sample text about attention mechanisms (marked `@external`) | **Yes** - hardcoded text about attention |
-| `test_summarize_with_pdf` | Downloads real PDF and summarizes it (marked `@external`, `@slow`) | No (real PDF, real LLM) |
-| `test_summarize_no_input` | Verifies error when no input provided | No |
-
----
-
-## Running Tests
-
-```bash
-# Run all tests
-make test
-
-# Run in venv manually
-source .venv/bin/activate
-pytest tests/ -v
-
-# Skip slow tests
-pytest tests/ -v -m "not slow"
-
-# Skip tests requiring external endpoints
-pytest tests/ -v -m "not external"
-
-# Fail on missing external endpoints (CI mode)
-REQUIRE_EXTERNAL_ENDPOINTS=1 pytest tests/ -v
-```
-
-## Summary
-
-| Category | Count | Description |
-|----------|-------|-------------|
-| Total tests | 15 | |
-| Tests using mock data | 2 | `test_qa_with_context`, `test_summarize_with_text` use hardcoded sample text |
-| Tests hitting real APIs | 13 | arXiv API, LLM endpoints, embedding endpoints |
-| Slow tests | 4 | Download real PDFs from arXiv |
-| External endpoint tests | 5 | Require LLM/embedding endpoints to be running |
+- `test_config_endpoint`: Input `GET /config`; expect UI config keys (`hover_debounce_ms`, `max_similar_papers`, `tree_auto_save_interval_ms`); validates config endpoint.
+- `test_arxiv_download_requires_identifier`: Input `POST /arxiv/download` with empty body; expect 400 and "Provide arxiv_id or url"; validates identifier requirement.
+- `test_pdf_extract_requires_path`: Input `POST /pdf/extract` with empty body; expect 422; validates pdf_path requirement.
+- `test_summarize_structured_requires_pdf`: Input `POST /summarize/structured` with empty body; expect 422; validates pdf_path requirement.
+- `test_embed_requires_text`: Input `POST /embed` and `/embed/abstract` with empty body; expect 422; validates text requirement.
+- `test_embed_fulltext_requires_fields`: Input `POST /embed/fulltext` with empty body; expect 422; validates arxiv_id/pdf_path requirement.
+- `test_qa_requires_question`: Input `POST /qa` with empty body; expect 422; validates question requirement.
+- `test_qa_structured_requires_arxiv_id`: Input `POST /qa/structured` with empty body; expect 422; validates arxiv_id requirement.
+- `test_summary_merge_requires_fields`: Input `POST /summary/merge` with empty body; expect 422; validates arxiv_id/selected_qa requirement.
+- `test_summary_dedup_requires_arxiv_id`: Input `POST /summary/dedup` with empty body; expect 422; validates arxiv_id requirement.
+- `test_classify_requires_fields`: Input `POST /classify` with empty body; expect 422; validates title/abstract requirement.
+- `test_abbreviate_requires_title`: Input `POST /abbreviate` with empty body; expect 422; validates title requirement.
+- `test_reabbreviate_requires_arxiv_id`: Input `POST /papers/reabbreviate` with empty body; expect 422; validates arxiv_id requirement.
+- `test_save_paper_requires_fields`: Input `POST /papers/save` with empty body; expect 422; validates arxiv_id/title/authors requirement.
+- `test_batch_ingest_requires_source`: Input `POST /papers/batch-ingest` with empty body; expect 400 (or skip if LLM endpoint unavailable); validates directory/slack_channel requirement.
+- `test_prefetch_requires_fields`: Input `POST /papers/prefetch` with empty body; expect 422; validates arxiv_id/title requirement.
+- `test_repo_search_requires_fields`: Input `POST /repos/search` with empty body; expect 422; validates arxiv_id/title requirement.
+- `test_references_fetch_requires_arxiv_id`: Input `POST /references/fetch` with empty body; expect 422; validates arxiv_id requirement.
+- `test_references_explain_requires_fields`: Input `POST /references/explain` with empty body; expect 422; validates reference_id/source_paper_title/cited_title requirement.
+- `test_similar_requires_arxiv_id`: Input `POST /papers/similar` with empty body; expect 422; validates arxiv_id requirement.
+- `test_tree_node_requires_fields`: Input `POST /tree/node` with empty body; expect 422; validates node_id/name/node_type requirement.

@@ -34,6 +34,15 @@ def get_db() -> Generator[psycopg2.extensions.connection, None, None]:
 # Papers CRUD
 # =============================================================================
 
+def _ensure_structured_summary_column(conn: psycopg2.extensions.connection) -> None:
+    """Ensure structured_summary column exists on papers table."""
+    with conn.cursor() as cur:
+        cur.execute(
+            "ALTER TABLE papers ADD COLUMN IF NOT EXISTS structured_summary JSONB"
+        )
+        conn.commit()
+
+
 def create_paper(
     arxiv_id: str,
     title: str,
@@ -151,6 +160,7 @@ def update_paper_structured_summary(paper_id: int, structured_summary: dict) -> 
     """Update paper structured summary (detailed analysis)."""
     import json
     with get_db() as conn:
+        _ensure_structured_summary_column(conn)
         with conn.cursor() as cur:
             cur.execute(
                 "UPDATE papers SET structured_summary = %s WHERE id = %s",
@@ -163,6 +173,7 @@ def get_paper_structured_summary(paper_id: int) -> Optional[dict]:
     """Get paper structured summary."""
     import json
     with get_db() as conn:
+        _ensure_structured_summary_column(conn)
         with conn.cursor() as cur:
             cur.execute(
                 "SELECT structured_summary FROM papers WHERE id = %s",
@@ -245,13 +256,15 @@ def get_tree() -> dict[str, Any]:
     
     with get_db() as conn:
         with conn.cursor(cursor_factory=RealDictCursor) as cur:
-            cur.execute("SELECT tree_data FROM tree_state WHERE id = 1")
+            cur.execute("SELECT tree_data, node_names FROM tree_state WHERE id = 1")
             row = cur.fetchone()
             if not row or not row.get("tree_data"):
                 return {"name": "AI Papers", "children": []}
             
             tree_data = row["tree_data"]
             tree_structure = tree_data if isinstance(tree_data, dict) else json.loads(tree_data)
+            node_names_raw = row.get("node_names") or {}
+            node_names = node_names_raw if isinstance(node_names_raw, dict) else json.loads(node_names_raw)
     
     # Enrich tree with paper metadata
     def enrich_node(node: dict[str, Any]) -> dict[str, Any]:
@@ -286,6 +299,14 @@ def get_tree() -> dict[str, Any]:
                                     node["name"] = title[:20] + ".."
                             else:
                                 node["name"] = title[:20] + ".." if len(title) > 20 else title
+        elif node.get("node_type") == "category":
+            node_id = node.get("node_id")
+            if node_id and node_names:
+                named = (node_names.get(node_id) or "").strip()
+                if named:
+                    current = (node.get("name") or "").strip()
+                    if not current or current == node_id or current.startswith("node_"):
+                        node["name"] = named
         
         # Recursively enrich children
         if node.get("children"):

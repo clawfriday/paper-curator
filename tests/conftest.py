@@ -20,9 +20,3 @@ def client():
 def sample_arxiv_id():
     """Sample arXiv ID for testing (Attention Is All You Need paper)."""
     return "1706.03762"
-
-
-@pytest.fixture
-def sample_arxiv_url():
-    """Sample arXiv URL for testing."""
-    return "https://arxiv.org/abs/1706.03762"

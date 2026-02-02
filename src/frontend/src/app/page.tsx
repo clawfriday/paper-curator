@@ -562,6 +562,13 @@ export default function Home() {
       for (let i = 1; i < 7; i++) {
         updateStep(i, { status: "done", message: "Skipped (duplicate)" });
       }
+      // Refresh tree to ensure search/index is up to date
+      const treeRes = await fetch("/api/tree");
+      if (treeRes.ok) {
+        const treeData = await treeRes.json();
+        setTaxonomy(treeData);
+        logIngest("Tree refreshed");
+      }
       setIsIngesting(false);
       return;
     }
@@ -846,6 +853,9 @@ export default function Home() {
     const results: PaperNode[] = [];
     const searchLower = query.toLowerCase();
     
+    const normalizeArxiv = (value?: string | null) =>
+      (value || "").toLowerCase().replace(/v\d+$/i, "");
+
     const searchTree = (node: PaperNode) => {
       // Search in paper nodes (not categories)
       if (node.attributes?.arxivId) {
@@ -854,8 +864,10 @@ export default function Home() {
         const authorMatch = node.attributes.authors?.some(author => 
           author.toLowerCase().includes(searchLower)
         );
+        const arxivIdMatch = normalizeArxiv(node.attributes.arxivId).includes(searchLower);
+        const arxivWithVersionMatch = node.attributes.arxivId.toLowerCase().includes(searchLower);
         
-        if (titleMatch || nameMatch || authorMatch) {
+        if (titleMatch || nameMatch || authorMatch || arxivIdMatch || arxivWithVersionMatch) {
           results.push(node);
         }
       }
@@ -2453,6 +2465,43 @@ export default function Home() {
                               <p className="mt-1 text-gray-600 whitespace-pre-wrap">{selectedNode.attributes.summary}</p>
                             </div>
                           )}
+                          <div className="mt-4">
+                            <div className="flex items-center justify-between mb-2">
+                              <h3 className="font-semibold">Structured Analysis</h3>
+                              <button
+                                onClick={handleStructuredAnalysis}
+                                disabled={isLoadingStructured || !selectedNode.attributes.arxivId}
+                                className="px-3 py-1.5 bg-blue-600 text-white rounded font-medium disabled:bg-gray-400 disabled:cursor-not-allowed hover:bg-blue-700 transition-colors"
+                              >
+                                Run Analysis
+                              </button>
+                            </div>
+                            {isLoadingStructured ? (
+                              <p className="text-gray-600">Running structured analysis...</p>
+                            ) : structuredAnalysis ? (
+                              <div className="space-y-3">
+                                {structuredAnalysis.sections.map((section, idx) => (
+                                  <div key={`${section.component}-${idx}`} className="border border-gray-200 rounded p-3">
+                                    <div className="font-semibold text-gray-800">{section.component}</div>
+                                    <div className="mt-2 text-gray-600 whitespace-pre-wrap">
+                                      <strong className="text-gray-700">Steps:</strong> {section.steps}
+                                    </div>
+                                    <div className="mt-2 text-gray-600 whitespace-pre-wrap">
+                                      <strong className="text-gray-700">Benefits:</strong> {section.benefits}
+                                    </div>
+                                    <div className="mt-2 text-gray-600 whitespace-pre-wrap">
+                                      <strong className="text-gray-700">Rationale:</strong> {section.rationale}
+                                    </div>
+                                    <div className="mt-2 text-gray-600 whitespace-pre-wrap">
+                                      <strong className="text-gray-700">Results:</strong> {section.results}
+                                    </div>
+                                  </div>
+                                ))}
+                              </div>
+                            ) : (
+                              <p className="text-gray-500">Run structured analysis to see detailed component breakdowns.</p>
+                            )}
+                          </div>
                         </div>
                       )}
                       

@@ -22,7 +22,7 @@ Simple health check endpoint.
 ---
 
 ### `GET /config`
-Returns UI configuration loaded from `config/paperqa.yaml`.
+Returns UI configuration loaded from `config/config.yaml`.
 
 **Returns**: UI settings (tree layout, limits, etc.)
 

@@ -178,15 +178,15 @@ class SimilarPapersRequest(BaseModel):
 
 @lru_cache(maxsize=4)
 def _load_config_cached(config_mtime: float) -> dict[str, Any]:
-    config_path = pathlib.Path("config/paperqa.yaml")
+    config_path = pathlib.Path("config/config.yaml")
     config = yaml.safe_load(config_path.read_text(encoding="utf-8")) or {}
     return config
 
 
 def _load_config() -> dict[str, Any]:
-    config_path = pathlib.Path("config/paperqa.yaml")
+    config_path = pathlib.Path("config/config.yaml")
     if not config_path.exists():
-        raise HTTPException(status_code=500, detail="Config file not found: config/paperqa.yaml")
+        raise HTTPException(status_code=500, detail="Config file not found: config/config.yaml")
     mtime = config_path.stat().st_mtime
     return _load_config_cached(mtime)
 
@@ -1714,11 +1714,34 @@ async def save_paper(payload: SavePaperRequest) -> dict[str, Any]:
 async def _rebuild_tree_async() -> None:
     """Helper function to rebuild tree asynchronously.
     
-    NOTE: rebuild_tree_structure() has been temporarily removed from clustering.py.
-    This function is currently a no-op.
+    Reuses the embedding-based clustering + naming pipeline.
     """
-    # TODO: Re-implement tree rebuilding logic when rebuild_tree_structure is restored
-    pass
+    import clustering
+    import naming
+    try:
+        cluster_result = await asyncio.to_thread(clustering.build_tree_from_clusters)
+        if cluster_result.get("total_papers", 0) < 2:
+            print(
+                f"Tree rebuild skipped: {cluster_result.get('message', 'Not enough papers')}",
+                flush=True,
+            )
+            return
+
+        tree_structure = {
+            "name": cluster_result.get("name", "AI Papers"),
+            "children": cluster_result.get("children", []),
+        }
+
+        await asyncio.to_thread(clustering.write_tree_to_database, tree_structure)
+        naming_result = await naming.name_tree_nodes()
+        print(
+            f"Tree rebuild complete: papers={cluster_result.get('total_papers', 0)}, "
+            f"clusters={cluster_result.get('total_clusters', 0)}, "
+            f"nodes_named={naming_result.get('nodes_named', 0)}",
+            flush=True,
+        )
+    except Exception as e:
+        print(f"Tree rebuild failed: {e}", flush=True)
 
 
 async def _fetch_slack_messages(client, channel_id: str) -> list[dict[str, Any]]:
@@ -1786,8 +1809,6 @@ async def batch_ingest(payload: BatchIngestRequest) -> dict[str, Any]:
     """
     import glob
     import shutil
-    from slack_sdk import WebClient
-    from slack_sdk.errors import SlackApiError
     
     results = []
     endpoint_config = _get_endpoint_config()
@@ -1818,6 +1839,8 @@ async def batch_ingest(payload: BatchIngestRequest) -> dict[str, Any]:
     
     # Determine source type
     if payload.slack_channel:
+        from slack_sdk import WebClient
+        from slack_sdk.errors import SlackApiError
         # Slack channel ingestion - wrap entire block to capture progress_log in errors
         try:
             log_progress("Starting Slack channel ingestion...")
@@ -2599,7 +2622,7 @@ async def _get_semantic_scholar_references(arxiv_id: str, api_key: Optional[str]
     response = await client.get(paper_url, params=params, headers=headers)
     
     if response.status_code == 429:
-        print("Semantic Scholar rate limited. Consider adding an API key to config/paperqa.yaml")
+        print("Semantic Scholar rate limited. Consider adding an API key to config/config.yaml")
         return []
     
     if response.status_code != 200:
