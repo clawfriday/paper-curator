@@ -31,14 +31,11 @@ ui:
 # Classification settings
 # =============================================================================
 classification:
-  # Max papers per category before triggering auto-reclassification
-  category_threshold: 10
-  # Enable auto-reclassification when threshold exceeded
-  auto_reclassify_enabled: true
-  # Embedding-based clustering settings
-  branching_factor: 3  # Max children before branching into sub-clusters
-  clustering_method: "divisive"  # Top-down divisive clustering
-  rebuild_on_ingest: true  # Auto-rebuild tree on new paper ingestion
+  # Max k for k-means clustering (2, 3, ..., branching_factor)
+  # Higher = more children per node, wider tree
+  branching_factor: 5
+  # Auto-rebuild tree after ingesting new papers
+  rebuild_on_ingest: true
 
 # =============================================================================
 # External API settings

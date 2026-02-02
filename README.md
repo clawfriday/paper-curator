@@ -567,11 +567,40 @@ const paperChildren = children.filter((c) => isPaperNode(c));
 - add the following into the tree diagram, to facilitate the navigation
   - zoom in and out
   - small window at the bottom to show the relative location of current window, w.r.t. the overall tree diagram
+  - make the zoom and window always float on the top-left and bottom-left corner of the tree diagram, instead of moving together with the tree-diagram (after I scroll to other area of the diagram, I still need to find them!)
+  - propagate user's typical trackpad/mouse guestures of zoom in/out into the tree diagram
 - modify the following in the right panel
+  - add +/- buttons to adjust the fontsize of the texts
   - merge the tab 'details' and 'explorer'
-- fix the current issue with 'details', 
-  - it currently assume all nodes are 'paper' nodes, for such category node, it displays the following. We need to change the title "Paper Details" to "Category Details", and split the "XX papers in the categories"
-  Paper Details
+- fix the current issue with 'details' for all category nodes, as displayed below.
+  "Paper Details
     Learning Efficiency and Alignment
-    2 papers in this category
-  - 
+    2 papers in this category"
+  - change the title "Paper Details" to "Category Details",
+  - split the "XX papers in the categories" into "XX child-categories in this category" and "XX papers in this category"
+  - for the number of child-categories, it will only display the direct children, as well as their names
+  - for the number of papers, it will display all papers under all its descendent categories
+- when user open this app, the right panel 'explorer' tab defaults to show the root node details
+- reduce the sensitively when user uses the trackpad/mouse to zoom in/out the tree diagram
+- move the 'ingest' and 'reclassify', from the current 'explorer' tab to the top of tree diagram, in the same row as the 'search papers ...'
+- in the right panel, the font size change should also change the font size of all texts in the left (tree diagram nodes) and right (e.g. those in tabs and section headers, like 'Paper Details', 'References', etc) panels
+- the right panel should be organized into 3 sections, from top to bottom:
+  - tabs
+  - debug log
+  - tab contents
+- debug log should be displayed by default, unless user 'collapse' it. It should also have a vertical scroll to allow user to look at historical logs
+- we still leave the 'ingest' and 're-classify' at the old location in the right panel, please remove them.
+- in the new location, the 'ingest' and 're-classify' needs to the a text prompt displaying the name of the button., the 'ingest' textbox should have same width as the 'search papers'.
+- when the app starts (or the page refreshed), the initial view of the tree diagram should be zoomed out such that the whole tree is fully displayed and centered in the tree diagram
+
+
+- remove the "2 categories, 4 papers" text directly under the "Paper-Curator" in the left panel
+- remove the 2 "full-screen" buttons near the "Paper Curator" title
+- place the "Paper Curator" title in the left panel into the horizontal center of the row
+- put the "ingest", "reclassify" and "search papers" into the same row, below "Paper Curator" title
+- change the default font size of all texts in the tree nodes to 5 size larger than current, and top-aligned
+- change the default interface font size like all the following to 5 size larger than current
+- check the backend clustering logic, why all category nodes were splited into exactly 2 children nodes? Can we print out the split-node intermediate output, and check if we always used the fallback (bisect clustering) instead of our silhouette_score based approach?
+- why currently only some of the "references" and "similar papers" has the option to be ingested? I want to have all to have such option
+
+

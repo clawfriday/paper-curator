@@ -174,8 +174,8 @@ export default function Home() {
   const [selectedNode, setSelectedNode] = useState<PaperNode | null>(null);
   const [isIngesting, setIsIngesting] = useState(false);
   
-  // Right panel font size (in pixels)
-  const [panelFontSize, setPanelFontSize] = useState(14);
+  // Right panel font size (in pixels) - default 19 (increased by 5 from original 14)
+  const [panelFontSize, setPanelFontSize] = useState(19);
   const [steps, setSteps] = useState<IngestionStep[]>([]);
   const [uiConfig, setUiConfig] = useState<UIConfig | null>(null);
   
@@ -268,7 +268,8 @@ export default function Home() {
   const [zoomLevel, setZoomLevel] = useState(1);
   const [viewportPos, setViewportPos] = useState({ x: 0, y: 0 }); // For minimap
   const treeContainerRef = useRef<HTMLDivElement>(null);
-  const [isDebugPanelOpen, setIsDebugPanelOpen] = useState(false);
+  const [isDebugPanelOpen, setIsDebugPanelOpen] = useState(true); // Debug log shown by default
+  const [hasAutoZoomed, setHasAutoZoomed] = useState(false); // Track if initial auto-zoom done
   
   const hoverTimeoutRef = useRef<NodeJS.Timeout | null>(null);
   
@@ -311,6 +312,8 @@ export default function Home() {
             setTaxonomy(treeData);
             // Default to showing root node details
             setSelectedNode(treeData);
+            // Reset auto-zoom flag to trigger fit-to-view on initial load
+            setHasAutoZoomed(false);
           }
         }
       } catch (e) {
@@ -1467,7 +1470,7 @@ export default function Home() {
     window.addEventListener("resize", handleResize);
     return () => window.removeEventListener("resize", handleResize);
   }, []);
-  
+
   // Determine responsive layout
   const isMobile = windowWidth < 768;
   const isTablet = windowWidth >= 768 && windowWidth < 1024;
@@ -1716,58 +1719,81 @@ export default function Home() {
     };
   }, [taxonomy]);
 
+  // Auto-zoom to fit tree on initial load
+  useEffect(() => {
+    if (!treeLayout || hasAutoZoomed || !treeContainerRef.current) return;
+    
+    const container = treeContainerRef.current;
+    const containerWidth = container.clientWidth;
+    const containerHeight = container.clientHeight;
+    
+    if (containerWidth === 0 || containerHeight === 0) return;
+    
+    // Calculate zoom to fit tree in container with 10% margin
+    const marginFactor = 0.9;
+    const scaleX = (containerWidth * marginFactor) / treeLayout.width;
+    const scaleY = (containerHeight * marginFactor) / treeLayout.height;
+    const fitZoom = Math.min(scaleX, scaleY, 1); // Don't zoom in beyond 100%
+    
+    setZoomLevel(Math.max(0.25, fitZoom)); // Ensure minimum 25%
+    setHasAutoZoomed(true);
+  }, [treeLayout, hasAutoZoomed]);
+
   return (
     <TooltipProvider>
       <div style={{ display: "flex", height: "100vh", flexDirection: isMobile && !isFullscreen ? "column" : "row", overflow: "hidden" }}>
       {/* Left panel: Tree visualization */}
       <div style={{ ...panelStyles.left, borderRight: isMobile ? "none" : "1px solid #e5e5e5", borderBottom: isMobile && !isFullscreen ? "1px solid #e5e5e5" : "none", display: "flex", flexDirection: "column", position: "relative", overflow: "hidden", minWidth: 0 }}>
-        <div style={{ padding: isMobile ? "0.75rem" : "1rem", borderBottom: "1px solid #e5e5e5", backgroundColor: "#fafafa" }}>
-          <div className="flex items-center justify-between mb-2">
-            <div style={{ flex: 1, minWidth: 0 }}>
-              <div className="flex items-center gap-2">
-                <h1 style={{ margin: 0, fontSize: isMobile ? "1.25rem" : "1.5rem", fontWeight: 600 }}>Paper Curator</h1>
-                {/* Fullscreen toggle buttons */}
-                {!isMobile && (
-                  <>
-                    <button
-                      onClick={() => setIsFullscreen(isFullscreen === "tree" ? null : "tree")}
-                      className="px-2 py-1 text-xs bg-gray-200 hover:bg-gray-300 rounded"
-                      title="Toggle tree fullscreen"
-                    >
-                      {isFullscreen === "tree" ? "↗" : "⛶"}
-                    </button>
-                    <button
-                      onClick={() => setIsFullscreen(isFullscreen === "details" ? null : "details")}
-                      className="px-2 py-1 text-xs bg-gray-200 hover:bg-gray-300 rounded"
-                      title="Toggle details fullscreen"
-                    >
-                      {isFullscreen === "details" ? "↗" : "⛶"}
-                    </button>
-                  </>
-                )}
-              </div>
-              <p style={{ margin: "0.25rem 0 0", fontSize: isMobile ? "0.75rem" : "0.875rem", color: "#666" }}>
-                {taxonomy.children?.length || 0} categories, {" "}
-                {taxonomy.children?.reduce((acc, c) => acc + (c.children?.length || 0), 0) || 0} papers
-              </p>
-            </div>
-            {/* Global Search Bar */}
-            <div className={`relative flex-1 ${isMobile ? "max-w-full mt-2" : "max-w-md ml-4"}`}>
-              <div className="relative">
-                <Search className="absolute left-3 top-1/2 transform -translate-y-1/2 text-gray-400" size={16} />
-                <input
-                  type="text"
-                  value={searchQuery}
-                  onChange={(e) => {
-                    setSearchQuery(e.target.value);
-                    performSearch(e.target.value);
-                  }}
-                  onFocus={() => setIsSearchFocused(true)}
-                  onBlur={() => setTimeout(() => setIsSearchFocused(false), 200)}
-                  placeholder="Search papers by title or author..."
-                  className="w-full pl-10 pr-4 py-2 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
-                />
-              </div>
+        <div style={{ padding: isMobile ? "0.75rem" : "1rem", borderBottom: "1px solid #e5e5e5", backgroundColor: "#fafafa", fontSize: `${panelFontSize}px` }}>
+          {/* Title Row - Centered */}
+          <div className="flex justify-center mb-3">
+            <h1 style={{ margin: 0, fontSize: isMobile ? "1.5rem" : "1.75rem", fontWeight: 600 }}>Paper Curator</h1>
+          </div>
+          {/* Controls Row: Ingest + Reclassify + Search */}
+          <div className="flex items-center gap-2">
+            {/* Ingest Input */}
+            <input
+              type="text"
+              value={unifiedIngestInput}
+              onChange={(e) => setUnifiedIngestInput(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === "Enter" && !isIngesting && !isBatchIngesting && unifiedIngestInput.trim()) {
+                  handleUnifiedIngest();
+                }
+              }}
+              placeholder="arXiv URL/ID or path..."
+              disabled={isIngesting || isBatchIngesting}
+              className="flex-1 px-3 py-2 border border-gray-300 rounded focus:outline-none focus:ring-1 focus:ring-blue-500 disabled:bg-gray-100"
+            />
+            <button
+              onClick={handleUnifiedIngest}
+              disabled={isIngesting || isBatchIngesting || !unifiedIngestInput.trim()}
+              className="px-4 py-2 bg-blue-600 text-white rounded font-medium disabled:bg-gray-400 hover:bg-blue-700 whitespace-nowrap"
+            >
+              {(isIngesting || isBatchIngesting) ? "Processing..." : "Ingest"}
+            </button>
+            <button
+              onClick={handleReclassifyPapers}
+              disabled={isReclassifying}
+              className="px-4 py-2 bg-purple-600 text-white rounded font-medium disabled:bg-gray-400 hover:bg-purple-700 whitespace-nowrap"
+            >
+              {isReclassifying ? "Re-classifying..." : "Re-classify"}
+            </button>
+            {/* Search */}
+            <div className="relative flex-1">
+              <Search className="absolute left-3 top-1/2 transform -translate-y-1/2 text-gray-400" size={18} />
+              <input
+                type="text"
+                value={searchQuery}
+                onChange={(e) => {
+                  setSearchQuery(e.target.value);
+                  performSearch(e.target.value);
+                }}
+                onFocus={() => setIsSearchFocused(true)}
+                onBlur={() => setTimeout(() => setIsSearchFocused(false), 200)}
+                placeholder="Search papers..."
+                className="w-full pl-10 pr-4 py-2 border border-gray-300 rounded focus:outline-none focus:ring-1 focus:ring-blue-500"
+              />
               {isSearchFocused && searchResults.length > 0 && (
                 <div className="absolute z-50 w-full mt-1 bg-white border border-gray-200 rounded-lg shadow-lg max-h-64 overflow-y-auto">
                   {searchResults.map((result, idx) => (
@@ -1780,12 +1806,12 @@ export default function Home() {
                       }}
                       className="px-4 py-2 hover:bg-gray-100 cursor-pointer border-b border-gray-100 last:border-b-0"
                     >
-                      <div className="font-medium text-sm">{result.name}</div>
+                      <div className="font-medium">{result.name}</div>
                       {result.attributes?.title && (
-                        <div className="text-xs text-gray-600 mt-1">{result.attributes.title}</div>
+                        <div className="text-gray-600 mt-1">{result.attributes.title}</div>
                       )}
                       {result.attributes?.authors && result.attributes.authors.length > 0 && (
-                        <div className="text-xs text-gray-500 mt-1">
+                        <div className="text-gray-500 mt-1">
                           {result.attributes.authors.slice(0, 3).join(", ")}
                           {result.attributes.authors.length > 3 && ` +${result.attributes.authors.length - 3} more`}
                         </div>
@@ -1951,10 +1977,11 @@ export default function Home() {
               setViewportPos({ x: target.scrollLeft, y: target.scrollTop });
             }}
             onWheel={(e) => {
-              // Ctrl+scroll or pinch gesture for zoom
+              // Ctrl+scroll or pinch gesture for zoom (reduced sensitivity)
               if (e.ctrlKey || e.metaKey) {
                 e.preventDefault();
-                const delta = e.deltaY > 0 ? -0.1 : 0.1;
+                // Use smaller delta (0.03) for smoother zoom, scale by deltaY magnitude
+                const delta = -e.deltaY * 0.003;
                 setZoomLevel((z) => Math.max(0.25, Math.min(3, z + delta)));
               }
             }}
@@ -2037,9 +2064,10 @@ export default function Home() {
                       />
                       <text
                         x={dims.width / 2}
-                        y={dims.paddingY + dims.lineHeight}
+                        y={dims.paddingY}
                         textAnchor="middle"
-                        fontSize={isPaper ? 12 : 13}
+                        dominantBaseline="hanging"
+                        fontSize={isPaper ? panelFontSize - 2 : panelFontSize - 1}
                         fontWeight={isPaper ? 500 : 600}
                         fill={isPaper ? "#334155" : "#ffffff"}
                       >
@@ -2137,7 +2165,7 @@ export default function Home() {
             </p>
             <div className="mb-4">
               <label className="block text-sm font-medium mb-2">
-                Channel: <span className="font-mono text-xs">{pendingSlackChannel}</span>
+                Channel: <span className="font-mono">{pendingSlackChannel}</span>
               </label>
               <label className="block text-sm font-medium mb-2">
                 Slack Token (xoxp-...)
@@ -2160,7 +2188,7 @@ export default function Home() {
                 }}
                 autoFocus
               />
-              <p className="text-xs text-gray-500 mt-2">
+              <p className="text-gray-500 mt-2">
                 Token is not persisted and will be cleared after use. Get your token from{" "}
                 <a
                   href="https://api.slack.com/apps"
@@ -2260,13 +2288,13 @@ export default function Home() {
       )}
       
       {/* Right panel: Details and ingest */}
-      <div style={{ ...panelStyles.right, padding: isMobile ? "1rem" : "1.5rem", display: "flex", flexDirection: "column", backgroundColor: "#f9fafb", overflowY: "auto", position: "relative" }}>
+      <div style={{ ...panelStyles.right, padding: isMobile ? "1rem" : "1.5rem", display: "flex", flexDirection: "column", backgroundColor: "#f9fafb", overflowY: "auto", position: "relative", fontSize: `${panelFontSize}px` }}>
         {/* Paper Details Section - Accordion */}
         <Card className="flex-1 flex flex-col">
           <Accordion type="single" collapsible defaultValue="details" className="w-full flex-1 flex flex-col">
             <AccordionItem value="details" className="border-0 flex-1 flex flex-col">
               <AccordionTrigger className="px-4 py-3 hover:no-underline">
-                <h2 className="text-base font-semibold m-0">
+                <h2 className="font-semibold m-0" style={{ fontSize: `${panelFontSize + 2}px` }}>
                   {selectedNode && isCategory(selectedNode) ? "📁" : "📄"} {selectedNode ? selectedNode.name : "Details"}
                 </h2>
               </AccordionTrigger>
@@ -2297,27 +2325,27 @@ export default function Home() {
                     }}
                     className="w-full"
                   >
-                    {/* Font size controls */}
+                    {/* Tabs row with font size controls */}
                     <div className="flex items-center justify-between mb-2">
-                      <TabsList className="grid grid-cols-5 h-9">
-                        <TabsTrigger value="explorer" className="text-xs px-2">Explorer</TabsTrigger>
-                        <TabsTrigger value="repos" className="text-xs px-2">Repos</TabsTrigger>
-                        <TabsTrigger value="refs" className="text-xs px-2">Refs</TabsTrigger>
-                        <TabsTrigger value="similar" className="text-xs px-2">Similar</TabsTrigger>
-                        <TabsTrigger value="query" className="text-xs px-2">Query</TabsTrigger>
+                      <TabsList className="grid grid-cols-5 h-10">
+                        <TabsTrigger value="explorer" className="px-2">Explorer</TabsTrigger>
+                        <TabsTrigger value="repos" className="px-2">Repos</TabsTrigger>
+                        <TabsTrigger value="refs" className="px-2">Refs</TabsTrigger>
+                        <TabsTrigger value="similar" className="px-2">Similar</TabsTrigger>
+                        <TabsTrigger value="query" className="px-2">Query</TabsTrigger>
                       </TabsList>
                       <div className="flex items-center gap-1 ml-2">
                         <button
-                          onClick={() => setPanelFontSize((s) => Math.max(10, s - 1))}
-                          className="w-6 h-6 text-xs border border-gray-300 rounded hover:bg-gray-100"
+                          onClick={() => setPanelFontSize((s) => Math.max(14, s - 1))}
+                          className="w-7 h-7 border border-gray-300 rounded hover:bg-gray-100"
                           title="Decrease font size"
                         >
                           A-
                         </button>
-                        <span className="text-xs text-gray-500 w-8 text-center">{panelFontSize}</span>
+                        <span className="text-gray-500 w-8 text-center">{panelFontSize}</span>
                         <button
-                          onClick={() => setPanelFontSize((s) => Math.min(20, s + 1))}
-                          className="w-6 h-6 text-xs border border-gray-300 rounded hover:bg-gray-100"
+                          onClick={() => setPanelFontSize((s) => Math.min(25, s + 1))}
+                          className="w-7 h-7 border border-gray-300 rounded hover:bg-gray-100"
                           title="Increase font size"
                         >
                           A+
@@ -2325,12 +2353,47 @@ export default function Home() {
                       </div>
                     </div>
                     
+                    {/* Debug Log Section - Always visible, collapsible */}
+                    <div className="mb-3 border border-gray-200 rounded-lg bg-gray-50">
+                      <button
+                        onClick={() => setIsDebugPanelOpen(!isDebugPanelOpen)}
+                        className="w-full flex items-center justify-between px-3 py-2 font-semibold text-gray-700 hover:bg-gray-100 rounded-t-lg"
+                      >
+                        <span>🐛 Debug Logs ({featureLog.length + ingestLog.length} entries)</span>
+                        <span>{isDebugPanelOpen ? "▼" : "▶"}</span>
+                      </button>
+                      {isDebugPanelOpen && (
+                        <div className="px-3 pb-3 max-h-40 overflow-y-auto">
+                          {featureLog.length === 0 && ingestLog.length === 0 ? (
+                            <p className="text-gray-400 italic">No logs yet</p>
+                          ) : (
+                            <div
+                              className="bg-gray-900 rounded p-2 font-mono max-h-32 overflow-y-auto"
+                              style={{ fontSize: `${Math.max(12, panelFontSize - 6)}px` }}
+                            >
+                              {[...ingestLog, ...featureLog].slice(-50).map((log, i) => (
+                                <div key={i} className={`mb-0.5 ${log.includes("✓") ? "text-green-400" : log.includes("✗") ? "text-red-400" : log.includes("Error") ? "text-red-400" : "text-gray-300"}`}>
+                                  {log}
+                                </div>
+                              ))}
+                            </div>
+                          )}
+                          {(featureLog.length > 0 || ingestLog.length > 0) && (
+                            <div className="flex gap-2 mt-2">
+                              <button onClick={clearFeatureLog} className="text-gray-500 hover:text-gray-700">Clear Feature</button>
+                              <button onClick={clearIngestLog} className="text-gray-500 hover:text-gray-700">Clear Ingest</button>
+                            </div>
+                          )}
+                        </div>
+                      )}
+                    </div>
+                    
                     {/* Explorer Panel - Combined with Details */}
                     <TabsContent value="explorer" className="mt-0" style={{ fontSize: `${panelFontSize}px` }}>
                       {/* Category Details */}
                       {selectedNode && isCategory(selectedNode) && (
                         <div className="mb-4 pb-4 border-b border-gray-200">
-                          <h2 className="text-lg font-semibold mb-3">Category Details</h2>
+                          <h2 className="font-semibold mb-3" style={{ fontSize: `${panelFontSize + 2}px` }}>Category Details</h2>
                           <h3 className="font-semibold mb-2">{selectedNode.name}</h3>
                           
                           {/* Child categories */}
@@ -2368,7 +2431,7 @@ export default function Home() {
                       {/* Paper Details */}
                       {selectedNode && !isCategory(selectedNode) && selectedNode.attributes && (
                         <div className="mb-4 pb-4 border-b border-gray-200">
-                          <h2 className="text-lg font-semibold mb-3">Paper Details</h2>
+                          <h2 className="font-semibold mb-3" style={{ fontSize: `${panelFontSize + 2}px` }}>Paper Details</h2>
                           <h3 className="font-semibold mb-2">{selectedNode.attributes.title || selectedNode.name}</h3>
                           {selectedNode.attributes.arxivId && (
                             <p className="text-gray-600 mb-2">
@@ -2393,139 +2456,18 @@ export default function Home() {
                         </div>
                       )}
                       
-                      {/* Unified Ingest Input */}
-                      <div className="mb-4">
-                        <label className="block text-sm font-medium mb-2">
-                          📥 Ingest Paper
-                        </label>
-                        <input
-                          type="text"
-                          value={unifiedIngestInput}
-                          onChange={(e) => setUnifiedIngestInput(e.target.value)}
-                          onKeyDown={(e) => {
-                            if (e.key === "Enter" && !isIngesting && !isBatchIngesting && unifiedIngestInput.trim()) {
-                              handleUnifiedIngest();
-                            }
-                          }}
-                          placeholder="arXiv URL/ID, local file path, or folder path"
-                          disabled={isIngesting || isBatchIngesting}
-                          className="w-full px-3 py-2 mb-2 border border-gray-300 rounded text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 disabled:bg-gray-100"
-                        />
-                        <button
-                          onClick={handleUnifiedIngest}
-                          disabled={isIngesting || isBatchIngesting || !unifiedIngestInput.trim()}
-                          className="w-full px-3 py-2 bg-blue-600 text-white rounded text-sm font-medium disabled:bg-gray-400 disabled:cursor-not-allowed hover:bg-blue-700 transition-colors"
-                        >
-                          {(isIngesting || isBatchIngesting) ? "Processing..." : "Ingest"}
-                        </button>
-                        
-                        {/* Progress steps */}
-                        {steps.length > 0 && (
-                          <div className="mt-3">
-                            {steps.map((step, i) => (
-                              <div key={i} className="flex items-start mb-1">
-                                <span className="mr-1.5 text-xs" style={{ color: getStepColor(step.status) }}>
-                                  {getStepIcon(step.status)}
-                                </span>
-                                <div className="flex-1">
-                                  <span className={`text-xs ${step.status === "error" ? "text-red-500" : "text-gray-800"}`}>
-                                    {step.name}
-                                  </span>
-                                  {step.message && (
-                                    <p className={`mt-0.5 text-[10px] ${step.status === "error" ? "text-red-500" : "text-gray-600"}`}>
-                                      {step.message}
-                                    </p>
-                                  )}
-                                </div>
-                              </div>
-                            ))}
-                          </div>
-                        )}
-                        
-                        {/* Batch results */}
-                        {batchResults && (
-                          <div className="mt-2 text-sm">
-                            <div className="text-green-600">✓ {batchResults.success} ingested</div>
-                            {batchResults.skipped > 0 && (
-                              <div className="text-amber-500">⏭ {batchResults.skipped} skipped (existing)</div>
-                            )}
-                            {batchResults.errors > 0 && (
-                              <div className="mt-2">
-                                <div className="text-red-500 font-medium">✗ {batchResults.errors} errors</div>
-                                <Accordion type="single" collapsible className="w-full mt-2">
-                                  <AccordionItem value="error-details" className="border-0">
-                                    <AccordionTrigger className="px-0 py-1 hover:no-underline text-xs text-red-600">
-                                      Show error details
-                                    </AccordionTrigger>
-                                    <AccordionContent className="px-0">
-                                      <div className="bg-red-50 rounded p-2 max-h-60 overflow-y-auto text-xs space-y-2">
-                                        {batchResults.results
-                                          .filter((r) => r.status === "error")
-                                          .map((result, idx) => (
-                                            <div key={idx} className="border-b border-red-200 pb-2 last:border-0 last:pb-0">
-                                              <div className="font-medium text-red-800">{result.file}</div>
-                                              <div className="text-red-600 mt-0.5">{result.reason || "Unknown error"}</div>
-                                            </div>
-                                          ))}
-                                      </div>
-                                    </AccordionContent>
-                                  </AccordionItem>
-                                </Accordion>
-                              </div>
-                            )}
-                          </div>
-                        )}
-                      </div>
-                      
-                      {/* Re-classify Button */}
-                      <div className="mb-4 pt-4 border-t border-gray-200">
-                        <div className="flex items-center justify-between">
-                          <div>
-                            <h3 className="text-sm font-medium text-gray-700 mb-1">
-                              🔄 Re-classify Papers
-                            </h3>
-                            <p className="text-xs text-gray-500">
-                              Rebuild tree using embedding-based hierarchical clustering
-                            </p>
-                          </div>
-                          <button
-                            onClick={handleReclassifyPapers}
-                            disabled={isReclassifying}
-                            className="px-3 py-1.5 bg-purple-600 text-white rounded text-xs font-medium disabled:bg-gray-400 disabled:cursor-not-allowed hover:bg-purple-700 transition-colors whitespace-nowrap"
-                          >
-                            {isReclassifying ? "Re-classifying..." : "Re-classify"}
-                          </button>
-                        </div>
-                        
-                        {/* Re-classify results */}
-                        {reclassifyResult && (
-                          <div className="mt-2 text-xs space-y-1">
-                            <div className="text-purple-600">{reclassifyResult.message}</div>
-                            <div className="text-gray-600">
-                              ✓ {reclassifyResult.papers_classified} papers classified
-                            </div>
-                            <div className="text-gray-600">
-                              ✓ {reclassifyResult.clusters_created} clusters created
-                            </div>
-                            <div className="text-gray-600">
-                              ✓ {reclassifyResult.nodes_named} nodes named across {reclassifyResult.levels_processed} levels
-                            </div>
-                          </div>
-                        )}
-                      </div>
-                      
                     </TabsContent>
                     
                     {/* Details Panel removed - merged into Explorer tab above */}
                     {/* Repos Panel */}
                     <TabsContent value="repos" className="mt-3">
                       <div className="flex items-center justify-between mb-4">
-                        <h2 className="text-lg font-semibold">GitHub Repositories</h2>
+                        <h2 className="font-semibold" style={{ fontSize: `${panelFontSize + 2}px` }}>GitHub Repositories</h2>
                         {selectedNode && selectedNode.attributes?.arxivId && (
                           <button
                             onClick={() => handleFindRepos(selectedNode)}
                             disabled={isLoadingFeature}
-                            className="px-3 py-1.5 bg-blue-600 text-white rounded text-xs font-medium disabled:bg-gray-400 disabled:cursor-not-allowed hover:bg-blue-700 transition-colors"
+                            className="px-3 py-1.5 bg-blue-600 text-white rounded font-medium disabled:bg-gray-400 disabled:cursor-not-allowed hover:bg-blue-700 transition-colors"
                           >
                             🔗 Find Repos
                           </button>
@@ -2544,7 +2486,7 @@ export default function Home() {
                               <a href={repo.repo_url} target="_blank" rel="noopener noreferrer" className="text-blue-600 font-medium hover:underline">
                                 {repo.repo_name}
                               </a>
-                              <div className="text-xs text-gray-600 mt-1">
+                              <div className="text-gray-600 mt-1">
                                 {repo.is_official && <span className="text-emerald-600 mr-2">✓ Official</span>}
                                 <span>⭐ {repo.stars || 0}</span>
                                 <span className="ml-2">via {repo.source}</span>
@@ -2553,19 +2495,19 @@ export default function Home() {
                           ))}
                         </div>
                       ) : (
-                        <p className="text-gray-500 text-sm">Click "Find Repos" to search for GitHub repositories related to this paper.</p>
+                        <p className="text-gray-500">Click "Find Repos" to search for GitHub repositories related to this paper.</p>
                       )}
                     </TabsContent>
 
                     {/* References Panel */}
                     <TabsContent value="refs" className="mt-3">
                       <div className="flex items-center justify-between mb-4">
-                        <h2 className="text-lg font-semibold">References</h2>
+                        <h2 className="font-semibold" style={{ fontSize: `${panelFontSize + 2}px` }}>References</h2>
                         {selectedNode && selectedNode.attributes?.arxivId && (
                           <button
                             onClick={() => handleFetchReferences(selectedNode)}
                             disabled={isLoadingFeature}
-                            className="px-3 py-1.5 bg-blue-600 text-white rounded text-xs font-medium disabled:bg-gray-400 disabled:cursor-not-allowed hover:bg-blue-700 transition-colors"
+                            className="px-3 py-1.5 bg-blue-600 text-white rounded font-medium disabled:bg-gray-400 disabled:cursor-not-allowed hover:bg-blue-700 transition-colors"
                           >
                             📚 Explain References
                           </button>
@@ -2582,8 +2524,8 @@ export default function Home() {
                               onMouseEnter={() => handleRefHover(ref)}
                               onMouseLeave={handleRefLeave}
                             >
-                              <div className="text-sm font-medium">{ref.cited_title}</div>
-                              <div className="text-xs text-gray-600 mt-1">
+                              <div className="font-medium">{ref.cited_title}</div>
+                              <div className="text-gray-600 mt-1">
                                 {ref.cited_authors?.slice(0, 2).join(", ")}
                                 {ref.cited_authors && ref.cited_authors.length > 2 && " et al."}
                                 {ref.cited_year && ` (${ref.cited_year})`}
@@ -2591,7 +2533,7 @@ export default function Home() {
                               {ref.cited_arxiv_id && (
                                 <button
                                   onClick={() => handleAddReference(ref)}
-                                  className="mt-2 px-2 py-1 text-xs bg-gray-100 border-none rounded cursor-pointer hover:bg-gray-200"
+                                  className="mt-2 px-2 py-1 bg-gray-100 border-none rounded cursor-pointer hover:bg-gray-200"
                                 >
                                   + Add to tree
                                 </button>
@@ -2599,7 +2541,7 @@ export default function Home() {
                               
                               {/* Hover tooltip */}
                               {hoveredRefId === ref.id && (
-                                <div className="absolute left-full top-0 ml-2 w-[300px] p-3 bg-gray-800 text-white rounded text-xs leading-relaxed z-50 shadow-lg">
+                                <div className="absolute left-full top-0 ml-2 w-[300px] p-3 bg-gray-800 text-white rounded leading-relaxed z-50 shadow-lg">
                                   {refExplanations[ref.id] || "Loading explanation..."}
                                 </div>
                               )}
@@ -2607,7 +2549,7 @@ export default function Home() {
                           ))}
                         </div>
               ) : (
-                <p className="text-gray-500 text-sm">Click "Explain References" to load and explain references from this paper.</p>
+                <p className="text-gray-500">Click "Explain References" to load and explain references from this paper.</p>
               )}
                     </TabsContent>
 
@@ -2615,8 +2557,8 @@ export default function Home() {
                     <TabsContent value="similar" className="mt-3">
                       <div className="flex items-center justify-between mb-4">
                         <div>
-                          <h2 className="text-lg font-semibold">Similar Papers</h2>
-                          <p className="text-xs text-gray-600 mt-1">
+                          <h2 className="font-semibold" style={{ fontSize: `${panelFontSize + 2}px` }}>Similar Papers</h2>
+                          <p className="text-gray-600 mt-1">
                             Recommended papers from Semantic Scholar (200M+ papers)
                           </p>
                         </div>
@@ -2624,7 +2566,7 @@ export default function Home() {
                           <button
                             onClick={() => handleFindSimilar(selectedNode)}
                             disabled={isLoadingFeature}
-                            className="px-3 py-1.5 bg-blue-600 text-white rounded text-xs font-medium disabled:bg-gray-400 disabled:cursor-not-allowed hover:bg-blue-700 transition-colors whitespace-nowrap"
+                            className="px-3 py-1.5 bg-blue-600 text-white rounded font-medium disabled:bg-gray-400 disabled:cursor-not-allowed hover:bg-blue-700 transition-colors whitespace-nowrap"
                           >
                             🔍 Find Similar
                           </button>
@@ -2636,14 +2578,14 @@ export default function Home() {
                         <div>
                           {similarPapers.map((paper, i) => (
                             <div key={i} className="p-3 border-b border-gray-200">
-                              <div className="text-sm font-medium">
+                              <div className="font-medium">
                                 {paper.url ? (
                                   <a href={paper.url} target="_blank" rel="noopener noreferrer" className="text-blue-600 hover:underline">
                                     {paper.title}
                                   </a>
                                 ) : paper.title}
                               </div>
-                              <div className="text-xs text-gray-600 mt-1">
+                              <div className="text-gray-600 mt-1">
                                 {paper.year && <span>Year: {paper.year}</span>}
                                 {paper.citation_count !== undefined && (
                                   <span className="ml-2">Citations: {paper.citation_count}</span>
@@ -2653,7 +2595,7 @@ export default function Home() {
                                 )}
                               </div>
                               {paper.authors && paper.authors.length > 0 && (
-                                <div className="text-xs text-gray-500 mt-1">
+                                <div className="text-gray-500 mt-1">
                                   {paper.authors.slice(0, 3).join(", ")}
                                   {paper.authors.length > 3 && ` +${paper.authors.length - 3} more`}
                                 </div>
@@ -2661,7 +2603,7 @@ export default function Home() {
                               {paper.arxiv_id && (
                                 <button
                                   onClick={() => handleAddSimilarPaper(paper)}
-                                  className="mt-2 px-2 py-1 text-xs bg-gray-100 border-none rounded cursor-pointer hover:bg-gray-200"
+                                  className="mt-2 px-2 py-1 bg-gray-100 border-none rounded cursor-pointer hover:bg-gray-200"
                                 >
                                   + Add to tree
                                 </button>
@@ -2670,16 +2612,16 @@ export default function Home() {
                           ))}
                         </div>
                       ) : (
-                        <p className="text-gray-500 text-sm">Right-click a paper to find similar.</p>
+                        <p className="text-gray-500">Right-click a paper to find similar.</p>
                       )}
                     </TabsContent>
 
                     {/* Query Panel */}
                     <TabsContent value="query" className="mt-3">
-                      <h2 className="text-base font-semibold mb-4">Ask a Question</h2>
+                      <h2 className="font-semibold mb-4" style={{ fontSize: `${panelFontSize + 2}px` }}>Ask a Question</h2>
                       {selectedNode?.attributes?.arxivId ? (
                         <div>
-                          <p className="text-xs text-gray-600 mb-3">
+                          <p className="text-gray-600 mb-3">
                             Ask questions about: {selectedNode.attributes.title || selectedNode.name}
                           </p>
                           <textarea
@@ -2687,20 +2629,20 @@ export default function Home() {
                             onChange={(e) => setQueryInput(e.target.value)}
                             placeholder="e.g., What is the main contribution of this paper?"
                             disabled={isQuerying}
-                            className="w-full h-20 p-2 text-sm border border-gray-300 rounded resize-y box-border"
+                            className="w-full h-20 p-2 border border-gray-300 rounded resize-y box-border"
                           />
                           <button
                             onClick={handleQuery}
                             disabled={isQuerying || !queryInput.trim()}
-                            className="mt-2 w-full py-2 text-sm bg-blue-600 text-white border-none rounded disabled:bg-gray-400 disabled:cursor-not-allowed hover:bg-blue-700"
+                            className="mt-2 w-full py-2 bg-blue-600 text-white border-none rounded disabled:bg-gray-400 disabled:cursor-not-allowed hover:bg-blue-700"
                           >
                             {isQuerying ? "Searching..." : "Ask"}
                           </button>
                           {queryAnswer && (
                             <Card className="mt-4">
                               <CardContent className="pt-4">
-                                <h4 className="text-xs mb-2 text-gray-600">Answer:</h4>
-                                <p className="text-sm leading-relaxed whitespace-pre-wrap">
+                                <h4 className="mb-2 text-gray-600">Answer:</h4>
+                                <p className="leading-relaxed whitespace-pre-wrap">
                                   <TextWithMath text={queryAnswer} />
                                 </p>
                               </CardContent>
@@ -2710,7 +2652,7 @@ export default function Home() {
                           {/* Query History */}
                           {queryHistory.length > 0 && (
                             <div className="mt-6">
-                              <h3 className="text-sm font-semibold mb-3 text-gray-800">
+                              <h3 className="font-semibold mb-3 text-gray-800">
                                 Query History ({queryHistory.length})
                                 {selectedQueryIds.size > 0 && (
                                   <span className="font-normal text-blue-600 ml-2">
@@ -2736,13 +2678,13 @@ export default function Home() {
                                         className="mt-0.5 cursor-pointer"
                                       />
                                       <div className="flex-1">
-                                        <div className="text-xs text-gray-600 mb-1">
+                                        <div className="text-gray-600 mb-1">
                                           {new Date(q.created_at).toLocaleString()}
                                         </div>
-                                        <div className="text-sm font-medium mb-2">
+                                        <div className="font-medium mb-2">
                                           Q: {q.question}
                                         </div>
-                                        <div className="text-sm text-gray-700 whitespace-pre-wrap">
+                                        <div className="text-gray-700 whitespace-pre-wrap">
                                           A: <TextWithMath text={q.answer} />
                                         </div>
                                       </div>
@@ -2755,7 +2697,7 @@ export default function Home() {
                               <button
                                 onClick={handleMergeQueries}
                                 disabled={selectedQueryIds.size === 0 || isMergingQueries}
-                                className="mt-2 w-full py-2 text-sm bg-green-600 text-white border-none rounded disabled:bg-gray-400 disabled:cursor-not-allowed hover:bg-green-700 font-medium transition-colors"
+                                className="mt-2 w-full py-2 bg-green-600 text-white border-none rounded disabled:bg-gray-400 disabled:cursor-not-allowed hover:bg-green-700 font-medium transition-colors"
                               >
                                 {isMergingQueries ? "Merging..." : `Add to Details${selectedQueryIds.size > 0 ? ` (${selectedQueryIds.size})` : ""}`}
                               </button>
@@ -2763,7 +2705,7 @@ export default function Home() {
                           )}
                         </div>
                       ) : (
-                        <p className="text-gray-500 text-sm">Select a paper to ask questions.</p>
+                        <p className="text-gray-500">Select a paper to ask questions.</p>
                       )}
                     </TabsContent>
                   </Tabs>
@@ -2775,70 +2717,7 @@ export default function Home() {
           </Accordion>
         </Card>
         
-        {/* Debug Panel - Collapsible */}
-        {(featureLog.length > 0 || ingestLog.length > 0) && (
-          <Card className="mt-4">
-            <Accordion type="single" collapsible value={isDebugPanelOpen ? "debug" : undefined} onValueChange={(value) => setIsDebugPanelOpen(value === "debug")}>
-              <AccordionItem value="debug" className="border-0">
-                <AccordionTrigger className="px-4 py-2 hover:no-underline">
-                  <h3 className="text-sm font-semibold m-0">🐛 Debug Logs</h3>
-                  {(featureLog.length > 0 || ingestLog.length > 0) && (
-                    <span className="ml-2 text-xs text-gray-500">
-                      ({featureLog.length + ingestLog.length} entries)
-                    </span>
-                  )}
-                </AccordionTrigger>
-                <AccordionContent>
-                  <div className="p-4 space-y-4">
-                    {/* Feature Log */}
-                    {featureLog.length > 0 && (
-                      <div>
-                        <div className="flex justify-between items-center mb-2">
-                          <span className="text-xs font-semibold text-gray-700">Feature Log</span>
-                          <button 
-                            onClick={clearFeatureLog}
-                            className="text-xs text-gray-500 hover:text-gray-700 cursor-pointer"
-                          >
-                            Clear
-                          </button>
-                        </div>
-                        <div className="bg-gray-900 rounded p-2 max-h-[200px] overflow-y-auto font-mono text-[11px]">
-                          {featureLog.map((log, i) => (
-                            <div key={i} className={`mb-0.5 ${log.includes("✓") ? "text-green-400" : log.includes("✗") ? "text-red-400" : log.includes("Error") ? "text-red-400" : "text-gray-300"}`}>
-                              {log}
-                            </div>
-                          ))}
-                        </div>
-                      </div>
-                    )}
-                    
-                    {/* Ingest Log */}
-                    {ingestLog.length > 0 && (
-                      <div>
-                        <div className="flex justify-between items-center mb-2">
-                          <span className="text-xs font-semibold text-gray-700">Ingest Log</span>
-                          <button 
-                            onClick={clearIngestLog}
-                            className="text-xs text-gray-500 hover:text-gray-700 cursor-pointer"
-                          >
-                            Clear
-                          </button>
-                        </div>
-                        <div className="bg-gray-900 rounded p-2 max-h-[200px] overflow-y-auto font-mono text-[11px]">
-                          {ingestLog.map((log, i) => (
-                            <div key={i} className={`mb-0.5 ${log.includes("Error") ? "text-red-400" : "text-green-400"}`}>
-                              {log}
-                            </div>
-                          ))}
-                        </div>
-                      </div>
-                    )}
-                  </div>
-                </AccordionContent>
-              </AccordionItem>
-            </Accordion>
-          </Card>
-        )}
+        {/* Debug Panel section removed - now integrated above tabs */}
       </div>
     </div>
     </TooltipProvider>

@@ -208,7 +208,8 @@ def _perform_kmeans_clustering(
 def _select_optimal_k(
     embeddings: np.ndarray,
     branching_factor: int,
-    n_papers: int
+    n_papers: int,
+    debug_log: list | None = None
 ) -> int:
     """Select optimal k for k-means clustering using quality scoring.
     
@@ -219,6 +220,7 @@ def _select_optimal_k(
         embeddings: L2-normalized embeddings array
         branching_factor: Maximum children before branching
         n_papers: Number of papers
+        debug_log: Optional list to append debug info for analysis
         
     Returns:
         Optimal k value
@@ -228,9 +230,13 @@ def _select_optimal_k(
     candidate_ks = [k for k in range(2, max_k + 1)]
     
     if len(candidate_ks) == 0:
+        if debug_log is not None:
+            debug_log.append({"n_papers": n_papers, "reason": "no_candidates", "selected_k": 2})
         return 2
     
     if len(candidate_ks) == 1:
+        if debug_log is not None:
+            debug_log.append({"n_papers": n_papers, "reason": "single_candidate", "selected_k": candidate_ks[0]})
         return candidate_ks[0]
     
     # Try each k and compute quality score
@@ -247,25 +253,26 @@ def _select_optimal_k(
         k_scores[k] = score
     
     if not k_scores:
+        if debug_log is not None:
+            debug_log.append({"n_papers": n_papers, "reason": "no_valid_k", "selected_k": 2})
         return 2
     
-    # Find best score
+    # Find best score - use the k with highest silhouette score directly
     best_k = max(k_scores, key=k_scores.get)
     best_score = k_scores[best_k]
+    selected_k = best_k  # Use best k directly, no tolerance-based preference for smaller k
     
-    # Tolerance: within 10% of best score (relative tolerance)
-    # This ensures we prefer smaller k when scores are similar
-    tolerance = max(0.05, best_score * 0.10)
+    # Log debug info
+    if debug_log is not None:
+        debug_log.append({
+            "n_papers": n_papers,
+            "branching_factor": branching_factor,
+            "k_scores": {k: round(v, 4) for k, v in k_scores.items()},
+            "selected_k": selected_k,
+            "best_score": round(best_score, 4),
+        })
     
-    # Find smallest k whose score is within tolerance of best score
-    for k in sorted(candidate_ks):
-        if k in k_scores:
-            score = k_scores[k]
-            if score >= best_score - tolerance:
-                return k
-    
-    # Fallback to best k
-    return best_k
+    return selected_k
 
 
 # =============================================================================
@@ -287,15 +294,18 @@ class TreeBuilder:
     Single-child intermediate nodes are automatically unwrapped during building.
     """
     
-    def __init__(self, embeddings_dict: dict[int, np.ndarray], branching_factor: int):
+    def __init__(self, embeddings_dict: dict[int, np.ndarray], branching_factor: int, debug_mode: bool = False):
         """Initialize tree builder.
         
         Args:
             embeddings_dict: Mapping of paper_id (int) to L2-normalized embedding vector
             branching_factor: Maximum children before a node should be split
+            debug_mode: If True, collect clustering debug info
         """
         self.embeddings_dict = embeddings_dict
         self.branching_factor = branching_factor
+        self.debug_mode = debug_mode
+        self.debug_log: list = []  # Stores k-selection decisions
     
     def build_tree(self, paper_ids: list[int]) -> dict[str, Any]:
         """Build tree structure starting with given paper IDs.
@@ -362,8 +372,9 @@ class TreeBuilder:
         embeddings_list = [self.embeddings_dict[pid] for pid in paper_ids]
         embeddings_array = np.array(embeddings_list, dtype=np.float32)
         
-        # Select optimal k
-        k = _select_optimal_k(embeddings_array, self.branching_factor, len(paper_ids))
+        # Select optimal k (with optional debug logging)
+        debug_log = self.debug_log if self.debug_mode else None
+        k = _select_optimal_k(embeddings_array, self.branching_factor, len(paper_ids), debug_log)
         
         # Validate embeddings
         if not _check_embeddings_valid(embeddings_array, k):
@@ -604,9 +615,14 @@ def build_tree_from_clusters() -> dict[str, Any]:
     config = _get_clustering_config()
     branching_factor = config["branching_factor"]
     
-    # Build tree directly in frontend format
-    builder = TreeBuilder(embeddings_dict, branching_factor)
+    # Build tree directly in frontend format (with debug mode enabled)
+    builder = TreeBuilder(embeddings_dict, branching_factor, debug_mode=True)
     tree_structure = builder.build_tree(paper_ids_list)
+    
+    # Log debug info (visible in container logs)
+    print(f"=== CLUSTERING DEBUG: branching_factor={branching_factor}, total_papers={len(papers_with_embeddings)} ===", flush=True)
+    for decision in builder.debug_log:
+        print(f"K-selection: {json.dumps(decision)}", flush=True)
     
     # Count total nodes in tree
     def count_nodes(node: dict[str, Any]) -> int:

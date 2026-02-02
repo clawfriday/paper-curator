@@ -287,10 +287,7 @@ def _get_classification_config() -> dict[str, Any]:
     config = _load_config()
     classification = config.get("classification", {})
     return {
-        "category_threshold": int(classification.get("category_threshold", 10)),
-        "auto_reclassify_enabled": bool(classification.get("auto_reclassify_enabled", True)),
-        "branching_factor": int(classification.get("branching_factor", 3)),
-        "clustering_method": classification.get("clustering_method", "divisive"),
+        "branching_factor": int(classification.get("branching_factor", 5)),
         "rebuild_on_ingest": bool(classification.get("rebuild_on_ingest", True)),
     }
 
@@ -2317,83 +2314,11 @@ async def classify_papers() -> dict[str, Any]:
 # Removed _build_tree_dict - tree is now stored in frontend format directly
 
 
-# DEPRECATED: Old rebalance endpoint - kept for backwards compatibility but will be removed
+# DEPRECATED: Old rebalance endpoint - now redirects to main classify endpoint
 @app.post("/categories/rebalance")
 async def rebalance_categories() -> dict[str, Any]:
-    """Rebalance all categories that exceed the threshold.
-    
-    Iterates through all crowded categories and reclassifies papers
-    to create more specific subcategories.
-    """
-    classification_config = _get_classification_config()
-    if not classification_config["auto_reclassify_enabled"]:
-        return {"message": "Auto-reclassification is disabled", "reclassified": []}
-    
-    threshold = classification_config["category_threshold"]
-    categories = db.get_all_categories_with_counts()
-    crowded_categories = [c for c in categories if c["paper_count"] > threshold]
-    
-    if not crowded_categories:
-        return {"message": "No crowded categories found", "reclassified": []}
-    
-    endpoint_config = _get_endpoint_config()
-    base_url = endpoint_config["llm_base_url"]
-    api_key = endpoint_config["api_key"]
-    model = _resolve_model(base_url, api_key)
-    client = _get_async_openai_client(base_url, api_key)
-    
-    all_reclassified = []
-    
-    for category in crowded_categories:
-        category_node_id = category["node_id"]
-        category_name = category["name"]
-        papers_in_category = db.get_papers_in_category(category_node_id)
-        
-        # Get existing categories (excluding the current one)
-        tree = db.get_tree()
-        existing_categories = []
-        def collect_categories(node: dict[str, Any]):
-            if node.get("node_type") == "category" and node.get("node_id") != category_node_id:
-                existing_categories.append(node["name"])
-            if node.get("children"):
-                for child in node["children"]:
-                    collect_categories(child)
-        collect_categories(tree)
-        
-        for paper in papers_in_category:
-            prompt = get_prompt(
-                "classify",
-                existing_categories=", ".join(existing_categories) if existing_categories else "None yet",
-                title=paper["title"],
-                abstract=(paper.get("abstract") or "")[:2000],
-            )
-            
-            response = await client.chat.completions.create(
-                model=model,
-                messages=[{"role": "user", "content": prompt}],
-                max_tokens=50,
-                temperature=0.1,
-            )
-            new_category = response.choices[0].message.content.strip()
-            
-            # Only move if category is different
-            # Note: With JSONB storage, tree is rebuilt from scratch
-            # This endpoint should trigger a full rebuild instead of moving individual papers
-            if new_category != category_name:
-                all_reclassified.append({
-                    "arxiv_id": paper["arxiv_id"],
-                    "old_category": category_name,
-                    "new_category": new_category,
-                })
-                
-                if new_category not in existing_categories:
-                    existing_categories.append(new_category)
-    
-    return {
-        "message": f"Rebalanced {len(crowded_categories)} categories",
-        "categories_processed": [c["name"] for c in crowded_categories],
-        "reclassified": all_reclassified,
-    }
+    """Legacy endpoint - redirects to /papers/classify for full tree rebuild."""
+    return await classify_papers()
 
 
 @app.get("/papers/{arxiv_id}/cached-data")
