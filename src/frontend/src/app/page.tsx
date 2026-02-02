@@ -260,6 +260,11 @@ export default function Home() {
   const [rightPanelWidth, setRightPanelWidth] = useState(50); // Percentage
   const [isRightCollapsed, setIsRightCollapsed] = useState(false);
   const [isFullscreen, setIsFullscreen] = useState<"tree" | "details" | null>(null);
+  
+  // Tree zoom and navigation
+  const [zoomLevel, setZoomLevel] = useState(1);
+  const [viewportPos, setViewportPos] = useState({ x: 0, y: 0 }); // For minimap
+  const treeContainerRef = useRef<HTMLDivElement>(null);
   const [isDebugPanelOpen, setIsDebugPanelOpen] = useState(false);
   
   const hoverTimeoutRef = useRef<NodeJS.Timeout | null>(null);
@@ -1468,11 +1473,18 @@ export default function Home() {
       };
     }
     // Desktop/Tablet: side by side with resizable panels
-    const rightPercent = isRightCollapsed ? 0 : rightPanelWidth;
+    // Note: resizer takes ~20px, so we use flex: 1 for left when collapsed
+    if (isRightCollapsed) {
+      return {
+        left: { flex: "1 1 auto", display: "flex" },
+        right: { flex: "0 0 0", display: "none" },
+      };
+    }
+    const rightPercent = rightPanelWidth;
     const leftPercent = 100 - rightPercent;
     return {
-      left: { flex: `0 0 ${leftPercent}%`, display: "flex" },
-      right: { flex: `0 0 ${rightPercent}%`, display: isRightCollapsed ? "none" : "flex" },
+      left: { flex: `0 0 calc(${leftPercent}% - 10px)`, display: "flex" },
+      right: { flex: `0 0 calc(${rightPercent}% - 10px)`, display: "flex" },
     };
   };
   
@@ -1757,13 +1769,147 @@ export default function Home() {
         </div>
         {/* Tree Diagram Container */}
         <div
+          ref={treeContainerRef}
           style={{
             flex: 1,
             position: "relative",
             overflow: "auto",
             backgroundColor: "#f8fafc",
           }}
+          onScroll={(e) => {
+            const target = e.currentTarget;
+            setViewportPos({ x: target.scrollLeft, y: target.scrollTop });
+          }}
         >
+          {/* Zoom Controls */}
+          {treeLayout && (
+            <div
+              style={{
+                position: "absolute",
+                top: "10px",
+                right: "10px",
+                zIndex: 20,
+                display: "flex",
+                flexDirection: "column",
+                gap: "4px",
+                backgroundColor: "white",
+                borderRadius: "8px",
+                boxShadow: "0 2px 8px rgba(0,0,0,0.15)",
+                padding: "4px",
+              }}
+            >
+              <button
+                onClick={() => setZoomLevel((z) => Math.min(2, z + 0.1))}
+                style={{
+                  width: "32px",
+                  height: "32px",
+                  border: "1px solid #e5e7eb",
+                  borderRadius: "6px",
+                  backgroundColor: "#fff",
+                  cursor: "pointer",
+                  fontSize: "18px",
+                  fontWeight: "bold",
+                }}
+                title="Zoom in"
+              >
+                +
+              </button>
+              <button
+                onClick={() => setZoomLevel(1)}
+                style={{
+                  width: "32px",
+                  height: "32px",
+                  border: "1px solid #e5e7eb",
+                  borderRadius: "6px",
+                  backgroundColor: "#fff",
+                  cursor: "pointer",
+                  fontSize: "11px",
+                }}
+                title="Reset zoom"
+              >
+                {Math.round(zoomLevel * 100)}%
+              </button>
+              <button
+                onClick={() => setZoomLevel((z) => Math.max(0.25, z - 0.1))}
+                style={{
+                  width: "32px",
+                  height: "32px",
+                  border: "1px solid #e5e7eb",
+                  borderRadius: "6px",
+                  backgroundColor: "#fff",
+                  cursor: "pointer",
+                  fontSize: "18px",
+                  fontWeight: "bold",
+                }}
+                title="Zoom out"
+              >
+                −
+              </button>
+            </div>
+          )}
+
+          {/* Minimap */}
+          {treeLayout && (
+            <div
+              style={{
+                position: "absolute",
+                bottom: "10px",
+                right: "10px",
+                zIndex: 20,
+                width: "150px",
+                height: "100px",
+                backgroundColor: "white",
+                border: "1px solid #e5e7eb",
+                borderRadius: "8px",
+                boxShadow: "0 2px 8px rgba(0,0,0,0.15)",
+                overflow: "hidden",
+              }}
+            >
+              <svg
+                width="100%"
+                height="100%"
+                viewBox={`0 0 ${treeLayout.width} ${treeLayout.height}`}
+                preserveAspectRatio="xMidYMid meet"
+              >
+                {/* Simplified tree outline for minimap */}
+                <g transform={`translate(${treeLayout.offsetX}, ${treeLayout.offsetY})`}>
+                  {treeLayout.links.map((link, idx) => (
+                    <line
+                      key={`mini-link-${idx}`}
+                      x1={link.source.x}
+                      y1={link.source.y}
+                      x2={link.target.x}
+                      y2={link.target.y}
+                      stroke="#cbd5e1"
+                      strokeWidth={2}
+                    />
+                  ))}
+                  {treeLayout.nodes.map((node) => (
+                    <circle
+                      key={`mini-node-${node.nodeId}`}
+                      cx={node.x}
+                      cy={node.y}
+                      r={node.isPaper ? 3 : 5}
+                      fill={node.isPaper ? "#94a3b8" : "#3b82f6"}
+                    />
+                  ))}
+                </g>
+                {/* Viewport indicator */}
+                {treeContainerRef.current && (
+                  <rect
+                    x={viewportPos.x / zoomLevel}
+                    y={viewportPos.y / zoomLevel}
+                    width={treeContainerRef.current.clientWidth / zoomLevel}
+                    height={treeContainerRef.current.clientHeight / zoomLevel}
+                    fill="rgba(59, 130, 246, 0.2)"
+                    stroke="#3b82f6"
+                    strokeWidth={3}
+                  />
+                )}
+              </svg>
+            </div>
+          )}
+
           {!treeLayout ? (
             <div
               style={{
@@ -1787,8 +1933,12 @@ export default function Home() {
               </div>
             </div>
           ) : (
-            <svg width={treeLayout.width} height={treeLayout.height}>
-              <g transform={`translate(${treeLayout.offsetX}, ${treeLayout.offsetY})`}>
+            <svg
+              width={treeLayout.width * zoomLevel}
+              height={treeLayout.height * zoomLevel}
+              style={{ display: "block" }}
+            >
+              <g transform={`scale(${zoomLevel}) translate(${treeLayout.offsetX}, ${treeLayout.offsetY})`}>
                 {treeLayout.links.map((link, idx) => {
                   const sourceId = link.source.data.node_id || link.source.data.name;
                   const targetId = link.target.data.node_id || link.target.data.name;
