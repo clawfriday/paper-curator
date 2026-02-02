@@ -1,22 +1,7 @@
 "use client";
 
 import { useState, useCallback, useMemo, useEffect, useRef } from "react";
-import ReactFlow, { 
-  Node, 
-  Edge, 
-  Background, 
-  Controls, 
-  MiniMap,
-  useNodesState,
-  useEdgesState,
-  ConnectionMode,
-  Position,
-  NodeTypes,
-  EdgeTypes,
-  Handle,
-} from "reactflow";
-import "reactflow/dist/style.css";
-import ELK from "elkjs/lib/elk.bundled.js";
+import { hierarchy, tree as d3tree } from "d3-hierarchy";
 import { InlineMath, BlockMath } from "react-katex";
 import "katex/dist/katex.min.css";
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
@@ -29,6 +14,7 @@ interface PaperNode {
   name: string;
   node_id?: string;
   node_type?: string;
+  paper_id?: number;
   children?: PaperNode[];
   attributes?: {
     arxivId?: string;
@@ -86,6 +72,27 @@ interface UIConfig {
   hover_debounce_ms: number;
   max_similar_papers: number;
   tree_auto_save_interval_ms: number;
+}
+
+interface TreeLayout {
+  nodes: Array<{
+    x: number;
+    y: number;
+    data: PaperNode;
+    nodeId: string;
+    isPaper: boolean;
+  }>;
+  links: Array<{
+    source: { x: number; y: number; data: PaperNode };
+    target: { x: number; y: number; data: PaperNode };
+    isPaper: boolean;
+  }>;
+  width: number;
+  height: number;
+  offsetX: number;
+  offsetY: number;
+  linesById: Record<string, string[]>;
+  dimsById: Record<string, { width: number; height: number; lineHeight: number; paddingY: number }>;
 }
 
 // Component to render text with LaTeX formulas
@@ -155,368 +162,6 @@ function TextWithMath({ text, style }: { text: string; style?: React.CSSProperti
 }
 
 // Note: CollapsibleSection replaced with Shadcn/ui Accordion component
-
-// Custom Paper Node Component for React Flow
-function PaperNodeComponent({ data }: { data: { node: PaperNode; onNodeClick: (name: string) => void; onNodeRightClick: (e: React.MouseEvent, name: string) => void } }) {
-  const { node, onNodeClick, onNodeRightClick } = data;
-  const hasArxivId = node.attributes && node.attributes.arxivId;
-  const isCategory = !node.attributes || !node.attributes.arxivId;
-  const isRoot = node.name === "AI Papers";
-  const [showHoverPreview, setShowHoverPreview] = useState(false);
-  
-  // Check if this category has category children (not just papers)
-  const hasCategoryChildren = isCategory && node.children && node.children.some(child => !child.attributes || !child.attributes.arxivId);
-  
-  // Show full name, wrap into multiple lines if needed
-  const name = node.name;
-  const maxCharsPerLine = 14;
-  const lines: string[] = [];
-  
-  // Simple word wrap
-  const words = name.split(/\s+/);
-  let currentLine = "";
-  for (const word of words) {
-    if ((currentLine + " " + word).trim().length <= maxCharsPerLine) {
-      currentLine = (currentLine + " " + word).trim();
-    } else {
-      if (currentLine) lines.push(currentLine);
-      currentLine = word.length > maxCharsPerLine ? word.slice(0, maxCharsPerLine - 2) + ".." : word;
-    }
-  }
-  if (currentLine) lines.push(currentLine);
-  
-  // Limit to 2 lines max
-  if (lines.length > 2) {
-    lines.splice(2);
-    lines[1] = lines[1].slice(0, maxCharsPerLine - 2) + "..";
-  }
-  
-  // Node sizing based on content
-  const fontSize = 11;
-  const lineHeight = 15;
-  const paddingX = 14;
-  const paddingY = 8;
-  const nodeWidth = Math.max(90, Math.min(130, Math.max(...lines.map(l => l.length)) * 7.5 + paddingX * 2));
-  const nodeHeight = lines.length * lineHeight + paddingY * 2;
-  
-  // Colors - high contrast: light backgrounds with dark text
-  const fillColor = isRoot ? "#1f2937" : (isCategory ? "#e0e7ff" : "#dbeafe");
-  const strokeColor = isRoot ? "#111827" : (isCategory ? "#6366f1" : "#3b82f6");
-  const textColor = isRoot ? "#ffffff" : (isCategory ? "#312e81" : "#1e3a8a");
-  
-  return (
-    <div
-      className="paper-node"
-      style={{
-        width: nodeWidth,
-        height: nodeHeight,
-        backgroundColor: fillColor,
-        border: `2px solid ${strokeColor}`,
-        borderRadius: "8px",
-        cursor: "pointer",
-        display: "flex",
-        flexDirection: "column",
-        justifyContent: "center",
-        alignItems: "center",
-        padding: `${paddingY}px ${paddingX}px`,
-        fontFamily: "-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif",
-        position: "relative",
-        outline: "none",
-      }}
-      onClick={() => onNodeClick(node.name)}
-      onContextMenu={(e) => {
-        if (hasArxivId) {
-          e.preventDefault();
-          onNodeRightClick(e, node.name);
-        }
-      }}
-      onMouseEnter={() => hasArxivId && setShowHoverPreview(true)}
-      onMouseLeave={() => setShowHoverPreview(false)}
-    >
-      {/* Hover preview tooltip */}
-      {showHoverPreview && hasArxivId && node.attributes && node.attributes.title && (
-        <div
-          style={{
-            position: "absolute",
-            bottom: "100%",
-            left: "50%",
-            transform: "translateX(-50%)",
-            marginBottom: "8px",
-            padding: "8px 12px",
-            backgroundColor: "rgba(0, 0, 0, 0.9)",
-            color: "white",
-            borderRadius: "6px",
-            fontSize: "11px",
-            maxWidth: "250px",
-            zIndex: 1000,
-            pointerEvents: "none",
-            boxShadow: "0 4px 12px rgba(0, 0, 0, 0.3)",
-          }}
-        >
-          <div style={{ fontWeight: 600 }}>{node.attributes.title}</div>
-          <div style={{ position: "absolute", bottom: "-4px", left: "50%", transform: "translateX(-50%)", width: 0, height: 0, borderLeft: "4px solid transparent", borderRight: "4px solid transparent", borderTop: "4px solid rgba(0, 0, 0, 0.9)" }} />
-        </div>
-      )}
-      {/* Handles - position depends on node type */}
-      {/* Categories: Bottom/Top handles (for category-to-category connections) OR Left handles (for category-to-paper) */}
-      {isCategory && (
-        <>
-          {hasCategoryChildren ? (
-            // Category has category children: use bottom/top handles
-            <>
-              <Handle
-                type="source"
-                position={Position.Bottom}
-                id="bottom"
-                style={{
-                  bottom: -5,
-                  left: "50%",
-                  transform: "translateX(-50%)",
-                  width: 10,
-                  height: 10,
-                  backgroundColor: strokeColor,
-                  border: `2px solid ${fillColor}`,
-                }}
-              />
-              <Handle
-                type="target"
-                position={Position.Top}
-                id="top"
-                style={{
-                  top: -5,
-                  left: "50%",
-                  transform: "translateX(-50%)",
-                  width: 10,
-                  height: 10,
-                  backgroundColor: strokeColor,
-                  border: `2px solid ${fillColor}`,
-                }}
-              />
-            </>
-          ) : (
-            // Bottom-level category (only has papers): use left handle
-            <Handle
-              type="source"
-              position={Position.Left}
-              id="left"
-              style={{
-                left: -5,
-                width: 10,
-                height: 10,
-                backgroundColor: strokeColor,
-                border: `2px solid ${fillColor}`,
-              }}
-            />
-          )}
-          {/* All categories can receive connections from top */}
-          <Handle
-            type="target"
-            position={Position.Top}
-            id="top"
-            style={{
-              top: -5,
-              left: "50%",
-              transform: "translateX(-50%)",
-              width: 10,
-              height: 10,
-              backgroundColor: strokeColor,
-              border: `2px solid ${fillColor}`,
-            }}
-          />
-        </>
-      )}
-      {/* Papers: Left handles (for category-to-paper connections) */}
-      {hasArxivId && (
-        <>
-          <Handle
-            type="source"
-            position={Position.Left}
-            id="left-source"
-            style={{
-              left: -5,
-              width: 10,
-              height: 10,
-              backgroundColor: strokeColor,
-              border: `2px solid ${fillColor}`,
-            }}
-          />
-          <Handle
-            type="target"
-            position={Position.Left}
-            id="left"
-            style={{
-              left: -5,
-              width: 10,
-              height: 10,
-              backgroundColor: strokeColor,
-              border: `2px solid ${fillColor}`,
-            }}
-          />
-        </>
-      )}
-      {lines.map((line, i) => (
-        <div
-          key={i}
-          style={{
-            fontSize: `${fontSize}px`,
-            fontWeight: 500,
-            color: textColor,
-            textAlign: "center",
-            lineHeight: `${lineHeight}px`,
-            whiteSpace: "nowrap",
-            overflow: "hidden",
-            textOverflow: "ellipsis",
-            width: "100%",
-          }}
-        >
-          {line}
-        </div>
-      ))}
-    </div>
-  );
-}
-
-const nodeTypes: NodeTypes = {
-  paperNode: PaperNodeComponent,
-};
-
-// Initialize ELK layout engine
-const elk = new ELK();
-
-// ELK layout options for hierarchical tree layout
-const elkOptions = {
-  'elk.algorithm': 'layered',
-  'elk.direction': 'DOWN',
-  'elk.layered.spacing.nodeNodeBetweenLayers': '150',
-  'elk.spacing.nodeNode': '100',
-  'elk.layered.nodePlacement.strategy': 'BRANDES_KOEPF',
-  'elk.layered.crossingMinimization.strategy': 'LAYER_SWEEP',
-  'elk.edgeRouting': 'ORTHOGONAL',
-  'elk.spacing.edgeNode': '50',
-  'elk.spacing.edgeEdge': '20',
-};
-
-// Convert PaperNode tree to nodes and edges (without positions)
-function buildTreeNodesAndEdges(
-  node: PaperNode,
-  parentId: string | null,
-  onNodeClick: (name: string) => void,
-  onNodeRightClick: (e: React.MouseEvent, name: string) => void,
-  collapsedCategories: Set<string>
-): { nodes: Node[]; edges: Edge[] } {
-  const nodes: Node[] = [];
-  const edges: Edge[] = [];
-  const nodeId = parentId ? `${parentId}-${node.name}` : node.name;
-  const isCategory = !node.attributes || !node.attributes.arxivId;
-  const isCollapsed = collapsedCategories.has(nodeId);
-  
-  const nodeWidth = 130;
-  const nodeHeight = 50;
-  
-  // Determine handle positions based on node type
-  const sourcePosition = isCategory ? Position.Bottom : Position.Left;
-  const targetPosition = isCategory ? Position.Top : Position.Left;
-  
-  // Create node (without position - ELK will calculate it)
-  nodes.push({
-    id: nodeId,
-    type: "paperNode",
-    position: { x: 0, y: 0 }, // Temporary, will be set by ELK
-    data: { node, onNodeClick, onNodeRightClick },
-    style: { 
-      width: nodeWidth, 
-      height: nodeHeight,
-      border: "none",
-      outline: "none",
-      boxShadow: "none",
-    },
-    sourcePosition,
-    targetPosition,
-  });
-  
-  // Process children if not collapsed
-  if (!isCollapsed && node.children && node.children.length > 0) {
-    node.children.forEach((child) => {
-      const childResult = buildTreeNodesAndEdges(
-        child,
-        nodeId,
-        onNodeClick,
-        onNodeRightClick,
-        collapsedCategories
-      );
-      
-      nodes.push(...childResult.nodes);
-      edges.push(...childResult.edges);
-      
-      // Create edge from parent to child
-      const childNodeId = `${nodeId}-${child.name}`;
-      const childIsCategory = !child.attributes || !child.attributes.arxivId;
-      
-      edges.push({
-        id: `${nodeId}-${childNodeId}`,
-        source: nodeId,
-        target: childNodeId,
-        sourceHandle: isCategory ? "bottom" : "left",
-        targetHandle: childIsCategory ? "top" : "left",
-        type: "smoothstep",
-        animated: false,
-        style: { stroke: "#94a3b8", strokeWidth: 2 },
-      });
-    });
-  }
-  
-  return { nodes, edges };
-}
-
-// Apply ELK layout to nodes and edges
-async function applyElkLayout(
-  nodes: Node[],
-  edges: Edge[]
-): Promise<{ nodes: Node[]; edges: Edge[] }> {
-  const nodeWidth = 130;
-  const nodeHeight = 50;
-  
-  const graph = {
-    id: 'root',
-    layoutOptions: elkOptions,
-    children: nodes.map((node) => {
-      // Extract numeric width/height from style
-      const width = typeof node.style?.width === 'number' 
-        ? node.style.width 
-        : (typeof node.style?.width === 'string' ? parseFloat(node.style.width) || nodeWidth : nodeWidth);
-      const height = typeof node.style?.height === 'number'
-        ? node.style.height
-        : (typeof node.style?.height === 'string' ? parseFloat(node.style.height) || nodeHeight : nodeHeight);
-      
-      return {
-        id: node.id,
-        width: width,
-        height: height,
-      };
-    }),
-    edges: edges.map((edge) => ({
-      id: edge.id,
-      sources: [edge.source],
-      targets: [edge.target],
-    })),
-  };
-  
-  const layoutedGraph = await elk.layout(graph);
-  
-  // Update node positions from ELK layout
-  const layoutedNodes = nodes.map((node) => {
-    const layoutedNode = layoutedGraph.children?.find((n) => n.id === node.id);
-    return {
-      ...node,
-      position: {
-        x: layoutedNode?.x || 0,
-        y: layoutedNode?.y || 0,
-      },
-    };
-  });
-  
-  return { nodes: layoutedNodes, edges };
-}
 
 const initialTaxonomy: PaperNode = {
   name: "AI Papers",
@@ -600,10 +245,10 @@ export default function Home() {
   const [isMergingQueries, setIsMergingQueries] = useState(false);
   const [isDedupingSummary, setIsDedupingSummary] = useState(false);
   
-  // React Flow state
-  const [collapsedCategories, setCollapsedCategories] = useState<Set<string>>(new Set());
-  const [nodes, setNodes, onNodesChange] = useNodesState([]);
-  const [edges, setEdges, onEdgesChange] = useEdgesState([]);
+  // Tree diagram state - temporarily disabled during rebuild
+  // const [collapsedCategories, setCollapsedCategories] = useState<Set<string>>(new Set());
+  // const [nodes, setNodes, onNodesChange] = useNodesState([]);
+  // const [edges, setEdges, onEdgesChange] = useEdgesState([]);
   
   // Phase 3: Navigation & Interaction states (only search kept)
   const [searchQuery, setSearchQuery] = useState("");
@@ -612,7 +257,8 @@ export default function Home() {
   
   // Phase 4: Responsive Design & Polish states
   const [windowWidth, setWindowWidth] = useState(typeof window !== 'undefined' ? window.innerWidth : 1024);
-  const [leftPanelWidth, setLeftPanelWidth] = useState(40); // Percentage
+  const [rightPanelWidth, setRightPanelWidth] = useState(50); // Percentage
+  const [isRightCollapsed, setIsRightCollapsed] = useState(false);
   const [isFullscreen, setIsFullscreen] = useState<"tree" | "details" | null>(null);
   const [isDebugPanelOpen, setIsDebugPanelOpen] = useState(false);
   
@@ -1139,11 +785,14 @@ export default function Home() {
 
   // Convert taxonomy to tree-compatible format
 
-  // Find original node by name for details display
-  const findNode = useCallback((tree: PaperNode, name: string): PaperNode | null => {
-    if (tree.name === name) return tree;
+  // Find original node by node_id (or name for root) for details display
+  const findNode = useCallback((tree: PaperNode, nodeId: string): PaperNode | null => {
+    // Match by node_id if available, otherwise by name (for root node)
+    if (tree.node_id === nodeId || (!tree.node_id && tree.name === nodeId)) {
+      return tree;
+    }
     for (const child of tree.children || []) {
-      const found = findNode(child, name);
+      const found = findNode(child, nodeId);
       if (found) return found;
     }
     return null;
@@ -1190,8 +839,8 @@ export default function Home() {
     setSearchResults(results.slice(0, 10)); // Limit to 10 results
   }, [taxonomy]);
 
-  const handleNodeClick = useCallback(async (nodeName: string) => {
-    const node = findNode(taxonomy, nodeName);
+  const handleNodeClick = useCallback(async (nodeId: string) => {
+    const node = findNode(taxonomy, nodeId);
     setSelectedNode(node);
     setActivePanel("details");
     setStructuredAnalysis(null);
@@ -1240,10 +889,10 @@ export default function Home() {
     }
   }, [taxonomy, findNode]);
 
-  const handleNodeRightClick = useCallback((event: React.MouseEvent, nodeName: string) => {
+  const handleNodeRightClick = useCallback((event: React.MouseEvent, nodeId: string) => {
     event.preventDefault();
     event.stopPropagation();
-    const node = findNode(taxonomy, nodeName);
+    const node = findNode(taxonomy, nodeId);
     if (node?.attributes?.arxivId) {
       setContextMenu({
         visible: true,
@@ -1253,45 +902,6 @@ export default function Home() {
       });
     }
   }, [taxonomy, findNode]);
-
-  // Convert taxonomy to React Flow nodes and edges using ELK layout
-  const [reactFlowData, setReactFlowData] = useState<{ nodes: Node[]; edges: Edge[] }>({ nodes: [], edges: [] });
-  
-  useEffect(() => {
-    if (!taxonomy.children || taxonomy.children.length === 0) {
-      setReactFlowData({ nodes: [], edges: [] });
-      return;
-    }
-    
-    // Build tree structure (nodes and edges without positions)
-    const { nodes: treeNodes, edges: treeEdges } = buildTreeNodesAndEdges(
-      taxonomy,
-      null,
-      handleNodeClick,
-      handleNodeRightClick,
-      collapsedCategories
-    );
-    
-    // Apply ELK layout
-    applyElkLayout(treeNodes, treeEdges).then((layouted) => {
-      setReactFlowData(layouted);
-    }).catch((error) => {
-      console.error('ELK layout error:', error);
-      // Fallback: use nodes without layout
-      setReactFlowData({ nodes: treeNodes, edges: treeEdges });
-    });
-  }, [taxonomy, collapsedCategories, handleNodeClick, handleNodeRightClick]);
-  
-  // Update React Flow nodes and edges when data changes
-  useEffect(() => {
-    // Only update if we have actual data (not empty initial state)
-    if (reactFlowData.nodes.length > 0 || reactFlowData.edges.length > 0) {
-      setNodes(reactFlowData.nodes);
-      setEdges(reactFlowData.edges);
-    } else {
-      // Don't update with empty data - keep previous state
-    }
-  }, [reactFlowData, setNodes, setEdges]);
 
   const handleRemoveNode = async (node: PaperNode) => {
     if (!node.attributes?.arxivId) return;
@@ -1814,20 +1424,6 @@ export default function Home() {
     }
   };
 
-  // Custom node renderer with right-click support - compact display
-  // Toggle category collapse/expand
-  const toggleCategoryCollapse = useCallback((categoryId: string) => {
-    setCollapsedCategories((prev) => {
-      const next = new Set(prev);
-      if (next.has(categoryId)) {
-        next.delete(categoryId);
-      } else {
-        next.add(categoryId);
-      }
-      return next;
-    });
-  }, []);
-
   // Handle window resize for responsive design
   useEffect(() => {
     const handleResize = () => {
@@ -1872,87 +1468,217 @@ export default function Home() {
       };
     }
     // Desktop/Tablet: side by side with resizable panels
-    const leftPercent = leftPanelWidth;
-    const rightPercent = 100 - leftPanelWidth;
+    const rightPercent = isRightCollapsed ? 0 : rightPanelWidth;
+    const leftPercent = 100 - rightPercent;
     return {
       left: { flex: `0 0 ${leftPercent}%`, display: "flex" },
-      right: { flex: `0 0 ${rightPercent}%`, display: "flex" },
+      right: { flex: `0 0 ${rightPercent}%`, display: isRightCollapsed ? "none" : "flex" },
     };
   };
   
   const panelStyles = getPanelStyles();
+  const toggleRightPanel = () => {
+    if (isRightCollapsed) {
+      setRightPanelWidth(50);
+      setIsRightCollapsed(false);
+    } else {
+      setIsRightCollapsed(true);
+    }
+  };
+
+  const treeLayout: TreeLayout | null = useMemo(() => {
+    if (!taxonomy) return null;
+
+    const wrapText = (text: string, maxChars: number) => {
+      const words = text.split(" ");
+      const lines: string[] = [];
+      let current = "";
+      for (const word of words) {
+        if (!current) {
+          current = word;
+          continue;
+        }
+        if ((current + " " + word).length <= maxChars) {
+          current += " " + word;
+        } else {
+          lines.push(current);
+          current = word;
+        }
+      }
+      if (current) lines.push(current);
+      return lines.length ? lines : [text];
+    };
+
+    const dimsById: Record<string, { width: number; height: number; lineHeight: number; paddingY: number }> = {};
+    const linesById: Record<string, string[]> = {};
+    let maxCategoryHeight = 0;
+    let maxPaperHeight = 0;
+    let maxPaperColumnHeight = 0;
+
+    const getNodeId = (node: PaperNode) => node.node_id || node.name;
+
+    const isPaperNode = (node: PaperNode) =>
+      node.node_type === "paper" ||
+      !!node.paper_id ||
+      (!!node.attributes?.arxivId && !(node.children && node.children.length));
+
+    const buildDims = (node: PaperNode) => {
+      const isPaper = isPaperNode(node);
+      const nodeId = getNodeId(node);
+      const maxChars = isPaper ? 22 : 20;
+      const lineHeight = isPaper ? 16 : 18;
+      const paddingY = isPaper ? 14 : 16;
+      const width = isPaper ? 200 : 240;
+      const lines = wrapText(node.name || "", maxChars);
+      const height = Math.max(isPaper ? 44 : 52, lines.length * lineHeight + paddingY * 2);
+      dimsById[nodeId] = { width, height, lineHeight, paddingY };
+      linesById[nodeId] = lines;
+      if (isPaper) {
+        maxPaperHeight = Math.max(maxPaperHeight, height);
+      } else {
+        maxCategoryHeight = Math.max(maxCategoryHeight, height);
+      }
+    };
+
+    const countPaperColumn = (node: PaperNode) => {
+      const children = node.children || [];
+      if (!children.length) return 0;
+      if (children.every((c) => isPaperNode(c))) {
+        const gap = 18;
+        return children.length * (maxPaperHeight + gap);
+      }
+      return 0;
+    };
+
+    const collect = (node: PaperNode) => {
+      buildDims(node);
+      for (const child of node.children || []) {
+        collect(child);
+      }
+    };
+
+    collect(taxonomy);
+
+    const collectPaperColumnHeights = (node: PaperNode) => {
+      const columnHeight = countPaperColumn(node);
+      maxPaperColumnHeight = Math.max(maxPaperColumnHeight, columnHeight);
+      for (const child of node.children || []) {
+        if (child.node_type === "category") {
+          collectPaperColumnHeights(child);
+        }
+      }
+    };
+
+    collectPaperColumnHeights(taxonomy);
+
+    const buildCategoryTree = (node: PaperNode): PaperNode => {
+      const children = (node.children || []).filter((c) => !isPaperNode(c));
+      return {
+        ...node,
+        children: children.map(buildCategoryTree),
+      };
+    };
+
+    // Build lookup map from node_id to original taxonomy node (with paper children)
+    const originalNodeById: Record<string, PaperNode> = {};
+    const buildLookup = (node: PaperNode) => {
+      const nodeId = getNodeId(node);
+      originalNodeById[nodeId] = node;
+      for (const child of node.children || []) {
+        buildLookup(child);
+      }
+    };
+    buildLookup(taxonomy);
+
+    const categoryRoot = buildCategoryTree(taxonomy);
+    const root = hierarchy(categoryRoot, (d) => d.children ?? []);
+
+    const depthGap = maxCategoryHeight + Math.max(80, maxPaperColumnHeight) + 80;
+    const layout = d3tree<PaperNode>()
+      .nodeSize([260, depthGap])
+      .separation((a, b) => (a.parent === b.parent ? 1.2 : 1.6));
+
+    const laidOut = layout(root);
+    const categoryNodes = laidOut.descendants();
+    const categoryLinks = laidOut.links();
+
+    const nodes: TreeLayout["nodes"] = [];
+    const links: TreeLayout["links"] = [];
+
+    for (const node of categoryNodes) {
+      const original = node.data;
+      const nodeId = getNodeId(original);
+      nodes.push({
+        x: node.x,
+        y: node.y,
+        data: original,
+        nodeId,
+        isPaper: false,
+      });
+    }
+
+    for (const link of categoryLinks) {
+      links.push({
+        source: link.source,
+        target: link.target,
+        isPaper: false,
+      });
+    }
+
+    const paperGap = 18;
+    for (const catNode of categoryNodes) {
+      const catId = getNodeId(catNode.data);
+      // Use original taxonomy node (has paper children), not filtered catNode.data
+      const originalNode = originalNodeById[catId];
+      if (!originalNode) continue;
+      const children = originalNode.children || [];
+      if (!children.length) continue;
+      const paperChildren = children.filter((c) => isPaperNode(c));
+      if (!paperChildren.length) continue;
+      const catDims = dimsById[catId];
+      const startY = catNode.y + catDims.height / 2 + paperGap + maxPaperHeight / 2;
+      paperChildren.forEach((paper, idx) => {
+        const paperId = getNodeId(paper);
+        const y = startY + idx * (maxPaperHeight + paperGap);
+        nodes.push({
+          x: catNode.x,
+          y,
+          data: paper,
+          nodeId: paperId,
+          isPaper: true,
+        });
+        links.push({
+          source: { x: catNode.x, y: catNode.y, data: originalNode },
+          target: { x: catNode.x, y, data: paper },
+          isPaper: true,
+        });
+      });
+    }
+
+    if (!nodes.length) return null;
+    const padding = 60;
+    const minX = Math.min(...nodes.map((n) => n.x - dimsById[n.nodeId].width / 2));
+    const maxX = Math.max(...nodes.map((n) => n.x + dimsById[n.nodeId].width / 2));
+    const minY = Math.min(...nodes.map((n) => n.y - dimsById[n.nodeId].height / 2));
+    const maxY = Math.max(...nodes.map((n) => n.y + dimsById[n.nodeId].height / 2));
+
+    return {
+      nodes,
+      links,
+      width: maxX - minX + padding * 2,
+      height: maxY - minY + padding * 2,
+      offsetX: padding - minX,
+      offsetY: padding - minY,
+      linesById,
+      dimsById,
+    };
+  }, [taxonomy]);
 
   return (
     <TooltipProvider>
       <div style={{ display: "flex", height: "100vh", flexDirection: isMobile && !isFullscreen ? "column" : "row" }}>
       {/* Left panel: Tree visualization */}
       <div style={{ ...panelStyles.left, borderRight: isMobile ? "none" : "1px solid #e5e5e5", borderBottom: isMobile && !isFullscreen ? "1px solid #e5e5e5" : "none", display: "flex", flexDirection: "column", position: "relative" }}>
-        <style>{`
-          .tree-link {
-            stroke: #94a3b8 !important;
-            stroke-width: 1.5px !important;
-            fill: none !important;
-          }
-          .rd3t-tree-container {
-            background: linear-gradient(180deg, #fafbfc 0%, #f1f5f9 100%);
-          }
-          .rd3t-tree-container svg text {
-            -webkit-font-smoothing: antialiased;
-            -moz-osx-font-smoothing: grayscale;
-            text-rendering: optimizeLegibility;
-          }
-          .tree-container {
-            overflow: auto !important;
-          }
-          .tree-container::-webkit-scrollbar {
-            width: 10px;
-            height: 10px;
-          }
-          .tree-container::-webkit-scrollbar-track {
-            background: #f1f1f1;
-            border-radius: 5px;
-          }
-          .tree-container::-webkit-scrollbar-thumb {
-            background: #c1c1c1;
-            border-radius: 5px;
-          }
-          .tree-container::-webkit-scrollbar-thumb:hover {
-            background: #a1a1a1;
-          }
-          /* Fix black outline on React Flow nodes - comprehensive overrides */
-          .react-flow__node,
-          .react-flow__node *,
-          .react-flow__node:focus,
-          .react-flow__node:focus-visible,
-          .react-flow__node:focus-within,
-          .react-flow__node.selected,
-          .react-flow__node.draggable,
-          .react-flow__node-drag,
-          .react-flow__node.selectable {
-            outline: none !important;
-            border: none !important;
-            box-shadow: none !important;
-            -webkit-box-shadow: none !important;
-            -moz-box-shadow: none !important;
-          }
-          /* Ensure the inner paper-node div doesn't inherit unwanted styles */
-          .react-flow__node .paper-node,
-          .react-flow__node .paper-node:focus,
-          .react-flow__node .paper-node:focus-visible {
-            outline: none !important;
-            box-shadow: none !important;
-            -webkit-box-shadow: none !important;
-            -moz-box-shadow: none !important;
-          }
-          /* Override any React Flow wrapper divs */
-          .react-flow__node > div {
-            outline: none !important;
-            border: none !important;
-            box-shadow: none !important;
-            -webkit-box-shadow: none !important;
-            -moz-box-shadow: none !important;
-          }
-        `}</style>
         <div style={{ padding: isMobile ? "0.75rem" : "1rem", borderBottom: "1px solid #e5e5e5", backgroundColor: "#fafafa" }}>
           <div className="flex items-center justify-between mb-2">
             <div style={{ flex: 1, minWidth: 0 }}>
@@ -1975,6 +1701,15 @@ export default function Home() {
                     >
                       {isFullscreen === "details" ? "↗" : "⛶"}
                     </button>
+                    {isRightCollapsed && (
+                      <button
+                        onClick={toggleRightPanel}
+                        className="px-2 py-1 text-xs bg-blue-500 hover:bg-blue-600 text-white rounded"
+                        title="Show details panel"
+                      >
+                        Show Panel →
+                      </button>
+                    )}
                   </>
                 )}
               </div>
@@ -2006,7 +1741,7 @@ export default function Home() {
                     <div
                       key={idx}
                       onClick={() => {
-                        handleNodeClick(result.name);
+                        handleNodeClick(result.node_id || result.name);
                         setSearchQuery("");
                         setSearchResults([]);
                       }}
@@ -2029,49 +1764,106 @@ export default function Home() {
             </div>
           </div>
         </div>
-        <div 
-          className="tree-container"
-          style={{ flex: 1, position: "relative", overflow: "hidden" }}
-          onContextMenu={(e) => e.preventDefault()}
+        {/* Tree Diagram Container */}
+        <div
+          style={{
+            flex: 1,
+            position: "relative",
+            overflow: "auto",
+            backgroundColor: "#f8fafc",
+          }}
         >
-          {taxonomy.children && taxonomy.children.length > 0 ? (
-            <ReactFlow
-              nodes={nodes}
-              edges={edges}
-              onNodesChange={onNodesChange}
-              onEdgesChange={onEdgesChange}
-              nodeTypes={nodeTypes}
-              connectionMode={ConnectionMode.Loose}
-              fitView
-              minZoom={0.1}
-              maxZoom={3}
-              defaultViewport={{ x: 0, y: 0, zoom: 1 }}
-              defaultEdgeOptions={{
-                type: "smoothstep",
-                animated: false,
-                style: { stroke: "#94a3b8", strokeWidth: 2 },
+          {!treeLayout ? (
+            <div
+              style={{
+                textAlign: "center",
+                color: "#64748b",
+                padding: "40px",
+                display: "flex",
+                alignItems: "center",
+                justifyContent: "center",
+                height: "100%",
               }}
-              edgesUpdatable={false}
-              edgesFocusable={false}
-              nodesFocusable={false}
-              nodesDraggable={false}
             >
-              <Background color="#f1f5f9" gap={16} />
-              <Controls />
-              <MiniMap 
-                nodeColor={(node) => {
-                  const data = node.data as { node: PaperNode };
-                  if (!data?.node) return "#94a3b8";
-                  const isCategory = !data.node.attributes || !data.node.attributes.arxivId;
-                  return isCategory ? "#e0e7ff" : "#dbeafe";
-                }}
-                maskColor="rgba(0, 0, 0, 0.1)"
-              />
-            </ReactFlow>
-          ) : (
-            <div style={{ display: "flex", alignItems: "center", justifyContent: "center", height: "100%", color: "#999" }}>
-              <p>No papers yet. Add one using the panel on the right.</p>
+              <div>
+                <div style={{ fontSize: "48px", marginBottom: "16px" }}>🌳</div>
+                <h2 style={{ fontSize: "24px", fontWeight: 600, marginBottom: "8px", color: "#334155" }}>
+                  No tree data loaded yet
+                </h2>
+                <p style={{ fontSize: "14px", maxWidth: "420px", lineHeight: 1.6 }}>
+                  Ingest papers to build the tree, then re-classify to update the visualization.
+                </p>
+              </div>
             </div>
+          ) : (
+            <svg width={treeLayout.width} height={treeLayout.height}>
+              <g transform={`translate(${treeLayout.offsetX}, ${treeLayout.offsetY})`}>
+                {treeLayout.links.map((link, idx) => {
+                  const sourceId = link.source.data.node_id || link.source.data.name;
+                  const targetId = link.target.data.node_id || link.target.data.name;
+                  const sourceDims = treeLayout.dimsById[sourceId];
+                  const targetDims = treeLayout.dimsById[targetId];
+                  const x1 = link.source.x;
+                  const y1 = link.source.y + sourceDims.height / 2;
+                  const x2 = link.target.x;
+                  const y2 = link.target.y - targetDims.height / 2;
+                  const midY = (y1 + y2) / 2;
+                  const d = link.isPaper
+                    ? `M ${x1},${y1} L ${x2},${y2}`
+                    : `M ${x1},${y1} C ${x1},${midY} ${x2},${midY} ${x2},${y2}`;
+                  return (
+                    <path
+                      key={`link-${idx}`}
+                      d={d}
+                      fill="none"
+                      stroke="#94a3b8"
+                      strokeWidth={1.5}
+                    />
+                  );
+                })}
+                {treeLayout.nodes.map((node) => {
+                  const dims = treeLayout.dimsById[node.nodeId];
+                  const x = node.x - dims.width / 2;
+                  const y = node.y - dims.height / 2;
+                  const isPaper = node.data.node_type === "paper";
+                  const nodeId = node.nodeId;
+                  const lines = treeLayout.linesById[nodeId] || [node.data.name];
+                  return (
+                    <g
+                      key={nodeId}
+                      transform={`translate(${x}, ${y})`}
+                      onClick={() => handleNodeClick(nodeId)}
+                      onContextMenu={(e) => handleNodeRightClick(e, nodeId)}
+                      style={{ cursor: "pointer" }}
+                    >
+                      <rect
+                        width={dims.width}
+                        height={dims.height}
+                        rx={10}
+                        ry={10}
+                        fill={isPaper ? "#e2e8f0" : "#1d4ed8"}
+                        stroke={isPaper ? "#cbd5f5" : "#1e3a8a"}
+                        strokeWidth={1}
+                      />
+                      <text
+                        x={dims.width / 2}
+                        y={dims.paddingY + dims.lineHeight}
+                        textAnchor="middle"
+                        fontSize={isPaper ? 12 : 13}
+                        fontWeight={isPaper ? 500 : 600}
+                        fill={isPaper ? "#334155" : "#ffffff"}
+                      >
+                        {lines.map((line, idx) => (
+                          <tspan key={idx} x={dims.width / 2} dy={idx === 0 ? 0 : dims.lineHeight}>
+                            {line}
+                          </tspan>
+                        ))}
+                      </text>
+                    </g>
+                  );
+                })}
+              </g>
+            </svg>
           )}
         </div>
       </div>
@@ -2213,7 +2005,7 @@ export default function Home() {
       )}
 
       {/* Resizer handle for desktop/tablet */}
-      {!isMobile && !isFullscreen && (
+      {!isMobile && !isFullscreen && !isRightCollapsed && (
         <div
           style={{
             width: "4px",
@@ -2224,13 +2016,13 @@ export default function Home() {
           onMouseDown={(e) => {
             e.preventDefault();
             const startX = e.clientX;
-            const startLeftWidth = leftPanelWidth;
+            const startRightWidth = rightPanelWidth;
             
             const handleMouseMove = (moveEvent: MouseEvent) => {
               const deltaX = moveEvent.clientX - startX;
               const deltaPercent = (deltaX / windowWidth) * 100;
-              const newLeftWidth = Math.max(20, Math.min(80, startLeftWidth + deltaPercent));
-              setLeftPanelWidth(newLeftWidth);
+              const newRightWidth = Math.max(20, Math.min(80, startRightWidth - deltaPercent));
+              setRightPanelWidth(newRightWidth);
             };
             
             const handleMouseUp = () => {
@@ -2246,6 +2038,24 @@ export default function Home() {
       
       {/* Right panel: Details and ingest */}
       <div style={{ ...panelStyles.right, padding: isMobile ? "1rem" : "1.5rem", display: "flex", flexDirection: "column", backgroundColor: "#f9fafb", overflowY: "auto", position: "relative" }}>
+        {!isMobile && (
+          <div style={{ display: "flex", justifyContent: "flex-end", marginBottom: "0.5rem" }}>
+            <button
+              onClick={toggleRightPanel}
+              style={{
+                padding: "4px 8px",
+                borderRadius: "6px",
+                border: "1px solid #e5e7eb",
+                background: "#ffffff",
+                fontSize: "12px",
+                cursor: "pointer",
+              }}
+              title={isRightCollapsed ? "Expand panel" : "Collapse panel"}
+            >
+              {isRightCollapsed ? "Expand Panel" : "Collapse Panel"}
+            </button>
+          </div>
+        )}
 
         {/* Paper Details Section - Accordion */}
         <Card className="flex-1 flex flex-col">

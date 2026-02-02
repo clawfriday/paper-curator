@@ -277,7 +277,7 @@ class TreeBuilder:
     
     The tree is built recursively, with each node returned as a dict:
     {
-        "name": "Cluster node_xxx" or "Paper {id}",
+        "name": "node_xxx" (category) or "paper_<id>" (paper) - placeholder names,
         "node_id": "node_xxx",
         "node_type": "category" or "paper",
         "children": [...],  # for category nodes
@@ -304,15 +304,21 @@ class TreeBuilder:
             paper_ids: List of integer paper IDs
             
         Returns:
-            Frontend-compatible tree structure: {name, children: [...]}
+            Frontend-compatible tree structure: {name, node_id, children: [...]}
         """
         if len(paper_ids) == 0:
-            return {"name": "AI Papers", "children": []}
+            return {"name": "AI Papers", "node_id": "root", "node_type": "category", "children": []}
         
         if len(paper_ids) == 1:
-            # Single paper - return as root with one child
+            # Single paper - return as root with one child (wrapped in category for homogeneity)
             paper_node = self._create_paper_node(paper_ids[0])
-            return {"name": "AI Papers", "children": [paper_node]}
+            leaf_category = {
+                "name": "Papers",
+                "node_id": _generate_node_id(paper_ids),
+                "node_type": "category",
+                "children": [paper_node],
+            }
+            return {"name": "AI Papers", "node_id": "root", "node_type": "category", "children": [leaf_category]}
         
         # Build tree recursively
         root_node = self._build_node(paper_ids)
@@ -321,11 +327,15 @@ class TreeBuilder:
         if root_node.get("node_type") == "category" and root_node.get("children"):
             return {
                 "name": "AI Papers",
+                "node_id": "root",
+                "node_type": "category",
                 "children": root_node["children"],
             }
         else:
             return {
                 "name": "AI Papers",
+                "node_id": "root",
+                "node_type": "category",
                 "children": [root_node],
             }
     
@@ -389,9 +399,12 @@ class TreeBuilder:
         if len(children) == 1:
             return children[0]
         
+        # Ensure homogeneous children: all categories OR all papers, not mixed
+        children = self._ensure_homogeneous_children(children)
+        
         # Multiple children - create intermediate category node
         return {
-            "name": f"Cluster {node_id}",
+            "name": node_id,  # Placeholder: use node_id verbatim, naming process will update
             "node_id": node_id,
             "node_type": "category",
             "children": children,
@@ -408,7 +421,7 @@ class TreeBuilder:
         """
         node_id = _generate_node_id([paper_id])
         return {
-            "name": f"Paper {paper_id}",
+            "name": f"paper_{paper_id}",  # Placeholder: paper_<id>, enrichment will add title
             "node_id": node_id,
             "node_type": "paper",
             "paper_id": paper_id,
@@ -426,11 +439,52 @@ class TreeBuilder:
         """
         children = [self._create_paper_node(pid) for pid in paper_ids]
         return {
-            "name": f"Cluster {node_id}",
+            "name": node_id,  # Placeholder: use node_id verbatim, naming process will update
             "node_id": node_id,
             "node_type": "category",
             "children": children,
         }
+    
+    def _ensure_homogeneous_children(self, children: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        """Ensure all children are the same type (all categories OR all papers).
+        
+        If children are mixed (some papers, some categories), wrap the papers
+        in a "Miscellaneous" leaf category so all children become categories.
+        
+        Args:
+            children: List of child nodes (can be mixed types)
+            
+        Returns:
+            List of homogeneous children (all same node_type)
+        """
+        if not children:
+            return children
+        
+        # Separate by type
+        papers = [c for c in children if c.get("node_type") == "paper"]
+        categories = [c for c in children if c.get("node_type") == "category"]
+        
+        # If all same type, no change needed
+        if len(papers) == 0 or len(categories) == 0:
+            return children
+        
+        # Mixed types: wrap papers in a "Miscellaneous" category
+        # Collect paper_ids for generating a unique node_id
+        # Add a prefix marker to distinguish from paper nodes with same paper_ids
+        paper_ids = [p.get("paper_id") for p in papers if p.get("paper_id")]
+        # Use negative IDs or a special marker to ensure uniqueness from paper nodes
+        wrapper_ids = [-pid for pid in paper_ids] if paper_ids else [hash("misc")]
+        misc_node_id = _generate_node_id(wrapper_ids)
+        
+        misc_category = {
+            "name": misc_node_id,  # Placeholder: use node_id verbatim, naming process will update
+            "node_id": misc_node_id,
+            "node_type": "category",
+            "children": papers,
+        }
+        
+        # Return categories + the new misc category
+        return categories + [misc_category]
 
 
 # =============================================================================

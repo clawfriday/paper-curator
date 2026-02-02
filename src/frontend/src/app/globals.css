@@ -37,38 +37,3 @@
   }
 }
 
-/* Override React Flow default node styling to remove black outlines - comprehensive overrides */
-.react-flow__node,
-.react-flow__node *,
-.react-flow__node:focus,
-.react-flow__node:focus-visible,
-.react-flow__node:focus-within,
-.react-flow__node.selected,
-.react-flow__node.draggable,
-.react-flow__node-drag,
-.react-flow__node.selectable {
-  outline: none !important;
-  border: none !important;
-  box-shadow: none !important;
-  -webkit-box-shadow: none !important;
-  -moz-box-shadow: none !important;
-}
-
-/* Ensure the inner paper-node div doesn't inherit unwanted styles */
-.react-flow__node .paper-node,
-.react-flow__node .paper-node:focus,
-.react-flow__node .paper-node:focus-visible {
-  outline: none !important;
-  box-shadow: none !important;
-  -webkit-box-shadow: none !important;
-  -moz-box-shadow: none !important;
-}
-
-/* Override any React Flow wrapper divs */
-.react-flow__node > div {
-  outline: none !important;
-  border: none !important;
-  box-shadow: none !important;
-  -webkit-box-shadow: none !important;
-  -moz-box-shadow: none !important;
-}

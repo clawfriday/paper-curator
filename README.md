@@ -357,7 +357,7 @@ Replace LLM-based classification with embedding-based hierarchical clustering. U
      - Recursively apply to each sub-cluster
      - Create category nodes for each cluster
      - Link papers to their cluster nodes
-   - Tree rebuild function: Clear all existing category nodes, run clustering, rebuild `tree_nodes` table
+   - Tree rebuild function: Clear all existing category nodes, run clustering, rebuild tree in `tree_state` table
 
 2. **Contrastive naming** (`naming.py`):
    - Add prompt template `node_naming` in `prompts.json`: Takes children summaries/names and sibling summaries/names, outputs distinguishing category name
@@ -393,3 +393,173 @@ Replace LLM-based classification with embedding-based hierarchical clustering. U
 - `src/backend/requirements.txt` - Add scikit-learn, scipy
 - `config/paperqa.yaml` - Add clustering config
 - `src/frontend/src/app/page.tsx` - Add "Re-classify" button, remove "Rebalance"
+
+## Phase 4: Rewrite clustering logic
+
+### Problem Statement
+
+The current `clustering.py` has several issues:
+1. **Node ID collision**: Content-based ID generation (`_generate_node_id`) can produce the same ID for different tree positions when k-means degenerates to a single cluster
+2. **Dual ID systems**: Both `node_` and `cluster_` prefixes are used, causing confusion and mismatch with `node_names`
+3. **Two-phase tree building**: Raw tree is built first, then wrapped for frontend, introducing complexity and potential for cycles during wrapping
+4. **Hand-written silhouette score**: Custom implementation instead of using sklearn's optimized version
+5. **No embedding normalization**: K-means uses Euclidean distance, but document embeddings should use cosine similarity
+
+### Modification Plan
+
+#### 1. Fix empty cluster handling
+- Add `len(clusters) <= 1` check after k-means to catch degenerate cases
+- Use `BisectingKMeans` as fallback when standard KMeans produces empty clusters
+- This prevents the ID collision scenario entirely
+
+#### 2. Unify ID system - use `node_` prefix only
+- Remove `_generate_cluster_id()` function
+- Use `node_` prefixed IDs throughout (tree building, database, frontend)
+- Ensures `node_names` mapping works correctly
+
+#### 3. Build directly in frontend format
+- Eliminate separate wrapping step (`_wrap_tree_for_db`)
+- `_split_node()` returns nested dict directly: `{name, node_id, node_type, children}`
+- Remove single-child intermediates inline during recursion
+- Result is directly saveable to DB and renderable by frontend
+
+#### 4. Use sklearn's silhouette_score
+- Replace hand-written `_compute_cosine_silhouette_score()` with:
+  ```python
+  from sklearn.metrics import silhouette_score
+  score = silhouette_score(embeddings, labels, metric='cosine')
+  ```
+
+#### 5. L2-normalize embeddings before clustering
+- Normalize embeddings so k-means effectively uses cosine similarity:
+  ```python
+  from sklearn.preprocessing import normalize
+  embeddings_normalized = normalize(embeddings, norm='l2')
+  ```
+
+#### 6. Code cleanup
+- Remove silent error handling (log warnings instead)
+- Remove obsolete functions and comments
+
+### File Changes
+
+**Modified files**:
+- `src/backend/clustering.py` - Complete rewrite of tree building logic
+- `src/backend/naming.py` - Updated documentation, cleaned up imports
+- `src/backend/db.py` - Renamed `find_paper_cluster_id` to `find_paper_node_id`, updated terminology
+- `src/backend/app.py` - Updated to use new db function names
+- `tests/test_clustering.py` - Added tests for circular references and unique node IDs
+
+### Naming Process (`naming.py`)
+
+The naming module works with the new tree structure to provide LLM-generated names for category nodes.
+
+**Process (bottom-up, level-by-level)**:
+1. Get tree structure from database (frontend format with `node_id`, `node_type`, `children`)
+2. Organize category nodes by depth level (deepest first)
+3. For each level, process all nodes in parallel:
+   - Gather children content:
+     - For leaf level: paper summaries from database
+     - For higher levels: already-named category names
+   - Gather sibling content (other categories with same parent)
+   - Call LLM with contrastive prompt to generate distinguishing name
+   - Update name in database and in-memory tree
+4. Proceed to next level (higher up)
+
+**Key features**:
+- Uses `node_id` (node_xxx format) consistently
+- Updates both database and in-memory tree to keep them in sync
+- Parallel naming within each level for speed
+- Sequential level processing to ensure children are named before parents
+- Fallback naming if LLM fails after retries
+
+### Test Coverage
+
+The `tests/test_clustering.py` now includes:
+1. All papers have embeddings
+2. Tree builds successfully
+3. All papers present in tree
+4. Branching factor constraint respected
+5. No empty nodes (category nodes have children, paper nodes have paper_id)
+6. No circular references
+7. All node IDs are unique
+
+## Phase 5: Rewrite Naming logic 
+Target: rewrite it with Async post-order contrastive naming with one-time indexing
+
+### 0) Initialize names
+- Load the nested tree once (e.g., `tree = db.get_tree()`).
+- Set initial in-memory names:
+  - Category nodes (`node_type="category"`): `name = "node_id"`.
+  - Paper nodes (`node_type="paper"`): treat as already named using `paper.summary` (or title+summary).
+
+### 1) One-pass traversal to build lookups
+Traverse the tree exactly once and build:
+- `level_lookup[level] -> [node_id | paper_id]` (depth → items at that depth).
+- `node_lookup[node_id] -> {"children": [node_id | paper_id], "parent": parent_node_id | None}`.
+- Optional but recommended:
+  - `node_ref[node_id] -> node_dict` (direct pointer to in-memory node for O(1) updates).
+
+### 2) Async readiness via futures
+Maintain naming state:
+- `name_value[id] -> str | None` (paper: summary; category: LLM name).
+- `name_future[id] -> asyncio.Future[str]`:
+  - Paper futures are resolved immediately with the summary.
+  - Category futures resolve when the node is named.
+
+### 3) Post-order recursive naming (root launches, children first)
+Implement `name_node_recursive(node_id)`:
+1) Spawn/await `name_node_recursive(child_node_id)` for all category-children.
+2) Await readiness of:
+   - all children names (`await gather(name_future[child] ...)`)
+   - all siblings’ children names (contrastive context).
+3) Build the prompt via `_get_prompt("node_naming", ...)` and call the LLM (with retries).
+4) On success:
+   - Update in-memory node name (`node_ref[node_id]["name"] = new_name`),
+   - Persist to DB (`db.update_tree_node_name(node_id, new_name)`),
+   - Resolve `name_future[node_id]` so parents can proceed.
+
+### 4) Concurrency control
+- Wrap LLM calls with an `asyncio.Semaphore` to cap concurrent requests.
+- Keep retry + fallback naming, but always resolve the node future on success/final fallback.
+
+
+## Phase 6: Tree visualization
+Target: to ensure the tree is properly displayed in frontend
+- following the hierarchical top-down format
+- no circular references, no shared parents of the same node, no mix of category/paper nodes under the same parent
+- automatically spaced out the nodes in the same level to avoid overlapping
+- automatically draw the edges in the tree in professional manner, if not already defaulted to more professional arrangment in the visualization package, my preference will be 
+  - each parent will be horizontally centered among all its children nodes, but vertically one row above
+  - all category nodes' edges will come out from the bottom center of the parent node, and landed in the top center of each child category node
+- whenever a new paper (or a batch of new papers) are ingested, the clustering & naming will be redone, and tree visualization adjusted automatically
+
+### Bug Fix: Paper nodes not displayed in tree diagram
+
+**Root Cause:** In `page.tsx`, the tree layout logic used `buildCategoryTree()` to create a filtered tree containing only category nodes (for D3 hierarchical layout). However, when iterating over category nodes to attach paper children, the code accessed `catNode.data.children` - which came from the *filtered* category tree that had already excluded paper nodes. This meant `paperChildren` was always empty.
+
+**Fix:** Added a lookup map `originalNodeById` that maps `node_id` to the original taxonomy node (which preserves all children including papers). When finding paper children for each category, the code now looks up the original node via `originalNodeById[catId]` instead of using the filtered `catNode.data`.
+
+```typescript
+// Build lookup map from node_id to original taxonomy node (with paper children)
+const originalNodeById: Record<string, PaperNode> = {};
+const buildLookup = (node: PaperNode) => {
+  const nodeId = getNodeId(node);
+  originalNodeById[nodeId] = node;
+  for (const child of node.children || []) {
+    buildLookup(child);
+  }
+};
+buildLookup(taxonomy);
+
+// Later, when finding paper children:
+const originalNode = originalNodeById[catId];  // Use original, not filtered
+const children = originalNode.children || [];
+const paperChildren = children.filter((c) => isPaperNode(c));
+```
+
+## Phase 7: fixes
+
+- there is now a button to "collapse pane", however, can we change it to some arrow button in the middle of the vertical separation line betwen the tree diagram on the left, and the pane on the right? I can toggle the on/off the right pane by clicking such arrow
+- then tree diagram currently still spans across the entire window width, can we only display it on the left-hand-size of the window, and put the horizontal scroll bar into the tree-diagram, so that it will only scroll the tree diagram instead of the whole window
+- please help me check the existing 'abbreviation' function, which was automatically triggered during paper ingestion. It was able to condense down paper names to the most prominent features of the paper, like a word or phrase. Currently, the rephrasing resulted in almost the entire paper title. Once we restore the original abbreviation capability, can we also persist it into the database, and use them as the display names for each paper node in the tree diagram?

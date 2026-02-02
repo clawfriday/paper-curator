@@ -245,6 +245,22 @@ def get_tree() -> dict[str, Any]:
                     "summary": paper.get("summary"),
                     "pdfPath": paper.get("pdf_path"),
                 }
+                # Prefer existing node name (e.g., LLM abbreviation) if set
+                existing_name = (node.get("name") or "").strip()
+                if not existing_name or existing_name.startswith("paper_"):
+                    # Generate abbreviation from title (first 2-3 words)
+                    title = paper.get("title", "")
+                    if title:
+                        words = title.split()
+                        # Use first 2-3 words, prioritizing short abbreviations
+                        abbrev = " ".join(words[:3])
+                        if len(abbrev) > 20:
+                            abbrev = " ".join(words[:2])
+                        if len(abbrev) > 20:
+                            abbrev = words[0][:18] + ".."
+                        elif len(words) > 3:
+                            abbrev += ".."
+                        node["name"] = abbrev
         
         # Recursively enrich children
         if node.get("children"):
