@@ -173,6 +173,9 @@ export default function Home() {
   const [taxonomy, setTaxonomy] = useState<PaperNode>(initialTaxonomy);
   const [selectedNode, setSelectedNode] = useState<PaperNode | null>(null);
   const [isIngesting, setIsIngesting] = useState(false);
+  
+  // Right panel font size (in pixels)
+  const [panelFontSize, setPanelFontSize] = useState(14);
   const [steps, setSteps] = useState<IngestionStep[]>([]);
   const [uiConfig, setUiConfig] = useState<UIConfig | null>(null);
   
@@ -185,7 +188,7 @@ export default function Home() {
   });
   
   // Feature panel states
-  const [activePanel, setActivePanel] = useState<"explorer" | "details" | "repos" | "references" | "similar" | "query">("explorer");
+  const [activePanel, setActivePanel] = useState<"explorer" | "repos" | "references" | "similar" | "query">("explorer");
   const [repos, setRepos] = useState<RepoResult[]>([]);
   const [queryInput, setQueryInput] = useState("");
   const [queryAnswer, setQueryAnswer] = useState("");
@@ -306,6 +309,8 @@ export default function Home() {
           const treeData = await treeRes.json();
           if (treeData.children && treeData.children.length > 0) {
             setTaxonomy(treeData);
+            // Default to showing root node details
+            setSelectedNode(treeData);
           }
         }
       } catch (e) {
@@ -802,6 +807,31 @@ export default function Home() {
     }
     return null;
   }, []);
+
+  // Get direct child categories of a node
+  const getChildCategories = useCallback((node: PaperNode): PaperNode[] => {
+    if (!node.children) return [];
+    return node.children.filter((c) => c.node_type === "category" || (!c.paper_id && !c.attributes?.arxivId));
+  }, []);
+
+  // Count all papers under a node (including all descendants)
+  const countAllPapers = useCallback((node: PaperNode): number => {
+    if (!node.children) return 0;
+    let count = 0;
+    for (const child of node.children) {
+      if (child.node_type === "paper" || child.paper_id || child.attributes?.arxivId) {
+        count += 1;
+      } else {
+        count += countAllPapers(child);
+      }
+    }
+    return count;
+  }, []);
+
+  // Check if a node is a category (not a paper)
+  const isCategory = useCallback((node: PaperNode): boolean => {
+    return node.node_type === "category" || (!node.paper_id && !node.attributes?.arxivId);
+  }, []);
   
   // Search function
   const performSearch = useCallback((query: string) => {
@@ -847,7 +877,7 @@ export default function Home() {
   const handleNodeClick = useCallback(async (nodeId: string) => {
     const node = findNode(taxonomy, nodeId);
     setSelectedNode(node);
-    setActivePanel("details");
+    setActivePanel("explorer");
     setStructuredAnalysis(null);
     
     // Reset states
@@ -939,7 +969,7 @@ export default function Home() {
         // Clear selection if we just deleted the selected node
         if (selectedNode?.attributes?.arxivId === arxivId) {
           setSelectedNode(null);
-          setActivePanel("details");
+          setActivePanel("explorer");
         }
       } else {
         const errText = await res.text();
@@ -1284,8 +1314,8 @@ export default function Home() {
         }
         // Clear selection
         setSelectedQueryIds(new Set());
-        // Switch to details panel to show updated summary
-        setActivePanel("details");
+        // Switch to explorer panel to show updated summary
+        setActivePanel("explorer");
       } else {
         const errText = await res.text();
         logFeature(`✗ Error: ${res.status} - ${errText}`);
@@ -2237,7 +2267,7 @@ export default function Home() {
             <AccordionItem value="details" className="border-0 flex-1 flex flex-col">
               <AccordionTrigger className="px-4 py-3 hover:no-underline">
                 <h2 className="text-base font-semibold m-0">
-                  📄 {selectedNode ? (selectedNode.attributes?.title ? selectedNode.name : selectedNode.name) : "Paper Details"}
+                  {selectedNode && isCategory(selectedNode) ? "📁" : "📄"} {selectedNode ? selectedNode.name : "Details"}
                 </h2>
               </AccordionTrigger>
               <AccordionContent className="flex-1 flex flex-col overflow-hidden">
@@ -2267,18 +2297,101 @@ export default function Home() {
                     }}
                     className="w-full"
                   >
-                    <TabsList className="grid w-full grid-cols-6 h-9 mb-4">
-                      <TabsTrigger value="explorer" className="text-xs">Explorer</TabsTrigger>
-                      <TabsTrigger value="details" className="text-xs">Details</TabsTrigger>
-                      <TabsTrigger value="repos" className="text-xs">Repos</TabsTrigger>
-                      <TabsTrigger value="refs" className="text-xs">Refs</TabsTrigger>
-                      <TabsTrigger value="similar" className="text-xs">Similar</TabsTrigger>
-                      <TabsTrigger value="query" className="text-xs">Query</TabsTrigger>
-                    </TabsList>
+                    {/* Font size controls */}
+                    <div className="flex items-center justify-between mb-2">
+                      <TabsList className="grid grid-cols-5 h-9">
+                        <TabsTrigger value="explorer" className="text-xs px-2">Explorer</TabsTrigger>
+                        <TabsTrigger value="repos" className="text-xs px-2">Repos</TabsTrigger>
+                        <TabsTrigger value="refs" className="text-xs px-2">Refs</TabsTrigger>
+                        <TabsTrigger value="similar" className="text-xs px-2">Similar</TabsTrigger>
+                        <TabsTrigger value="query" className="text-xs px-2">Query</TabsTrigger>
+                      </TabsList>
+                      <div className="flex items-center gap-1 ml-2">
+                        <button
+                          onClick={() => setPanelFontSize((s) => Math.max(10, s - 1))}
+                          className="w-6 h-6 text-xs border border-gray-300 rounded hover:bg-gray-100"
+                          title="Decrease font size"
+                        >
+                          A-
+                        </button>
+                        <span className="text-xs text-gray-500 w-8 text-center">{panelFontSize}</span>
+                        <button
+                          onClick={() => setPanelFontSize((s) => Math.min(20, s + 1))}
+                          className="w-6 h-6 text-xs border border-gray-300 rounded hover:bg-gray-100"
+                          title="Increase font size"
+                        >
+                          A+
+                        </button>
+                      </div>
+                    </div>
                     
-                    {/* Explorer Panel */}
-                    <TabsContent value="explorer" className="mt-0">
-                      <h2 className="text-lg font-semibold mb-4">Explorer</h2>
+                    {/* Explorer Panel - Combined with Details */}
+                    <TabsContent value="explorer" className="mt-0" style={{ fontSize: `${panelFontSize}px` }}>
+                      {/* Category Details */}
+                      {selectedNode && isCategory(selectedNode) && (
+                        <div className="mb-4 pb-4 border-b border-gray-200">
+                          <h2 className="text-lg font-semibold mb-3">Category Details</h2>
+                          <h3 className="font-semibold mb-2">{selectedNode.name}</h3>
+                          
+                          {/* Child categories */}
+                          {(() => {
+                            const childCats = getChildCategories(selectedNode);
+                            return childCats.length > 0 && (
+                              <div className="mb-3">
+                                <p className="text-gray-600 mb-1">
+                                  <strong>{childCats.length}</strong> child {childCats.length === 1 ? "category" : "categories"}:
+                                </p>
+                                <div className="pl-2 text-gray-700">
+                                  {childCats.map((cat, idx) => (
+                                    <span key={cat.node_id || idx}>
+                                      <button
+                                        onClick={() => setSelectedNode(cat)}
+                                        className="text-blue-600 hover:underline"
+                                      >
+                                        {cat.name}
+                                      </button>
+                                      {idx < childCats.length - 1 && ", "}
+                                    </span>
+                                  ))}
+                                </div>
+                              </div>
+                            );
+                          })()}
+                          
+                          {/* Total papers */}
+                          <p className="text-gray-600">
+                            <strong>{countAllPapers(selectedNode)}</strong> papers in this category (including subcategories)
+                          </p>
+                        </div>
+                      )}
+                      
+                      {/* Paper Details */}
+                      {selectedNode && !isCategory(selectedNode) && selectedNode.attributes && (
+                        <div className="mb-4 pb-4 border-b border-gray-200">
+                          <h2 className="text-lg font-semibold mb-3">Paper Details</h2>
+                          <h3 className="font-semibold mb-2">{selectedNode.attributes.title || selectedNode.name}</h3>
+                          {selectedNode.attributes.arxivId && (
+                            <p className="text-gray-600 mb-2">
+                              <strong>arXiv:</strong>{" "}
+                              <a href={`https://arxiv.org/abs/${selectedNode.attributes.arxivId}`} target="_blank" rel="noopener noreferrer" className="text-blue-600 hover:underline">
+                                {selectedNode.attributes.arxivId}
+                              </a>
+                            </p>
+                          )}
+                          {selectedNode.attributes.authors && selectedNode.attributes.authors.length > 0 && (
+                            <p className="text-gray-600 mb-2">
+                              <strong>Authors:</strong> {selectedNode.attributes.authors.slice(0, 3).join(", ")}
+                              {selectedNode.attributes.authors.length > 3 && ` +${selectedNode.attributes.authors.length - 3} more`}
+                            </p>
+                          )}
+                          {selectedNode.attributes.summary && (
+                            <div className="mt-3">
+                              <strong className="text-gray-700">Summary:</strong>
+                              <p className="mt-1 text-gray-600 whitespace-pre-wrap">{selectedNode.attributes.summary}</p>
+                            </div>
+                          )}
+                        </div>
+                      )}
                       
                       {/* Unified Ingest Input */}
                       <div className="mb-4">
@@ -2403,198 +2516,7 @@ export default function Home() {
                       
                     </TabsContent>
                     
-                    {/* Details Panel */}
-                    <TabsContent value="details" className="mt-0">
-                      <h2 className="text-lg font-semibold mb-4">Paper Details</h2>
-                      {selectedNode?.attributes ? (
-                        <div>
-                          <h3 className="text-base font-semibold mb-2">{selectedNode.attributes.title || selectedNode.name}</h3>
-                          {selectedNode.attributes.arxivId && (
-                            <p className="text-sm text-gray-600 mb-2">
-                              <strong>arXiv:</strong>{" "}
-                              <a href={`https://arxiv.org/abs/${selectedNode.attributes.arxivId}`} target="_blank" rel="noopener noreferrer" className="text-blue-600 hover:underline">
-                                {selectedNode.attributes.arxivId}
-                              </a>
-                            </p>
-                          )}
-                          {selectedNode.attributes.authors && (
-                            <p className="text-sm text-gray-600 mb-2">
-                              <strong>Authors:</strong> {selectedNode.attributes.authors.slice(0, 3).join(", ")}
-                              {selectedNode.attributes.authors.length > 3 && ` +${selectedNode.attributes.authors.length - 3} more`}
-                            </p>
-                          )}
-                          {selectedNode.attributes.category && (
-                            <p className="text-sm text-gray-600 mb-4">
-                              <strong>Category:</strong> {selectedNode.attributes.category}
-                            </p>
-                          )}
-                          {/* Show structured analysis if available (from cached data), otherwise show regular summary */}
-                          {structuredAnalysis ? (
-                    <Card className="mt-4">
-                      <CardHeader>
-                        <CardTitle className="text-sm">
-                          Detailed Analysis ({structuredAnalysis.components.length} components)
-                        </CardTitle>
-                      </CardHeader>
-                      <CardContent>
-                        <Accordion type="single" collapsible defaultValue={structuredAnalysis.sections[0]?.component} className="w-full">
-                          {structuredAnalysis.sections.map((section, idx) => (
-                            <AccordionItem key={idx} value={section.component}>
-                              <AccordionTrigger className="text-sm font-semibold">{section.component}</AccordionTrigger>
-                              <AccordionContent>
-                                <div className="space-y-3 text-sm">
-                                  <div>
-                                    <strong className="text-indigo-600">Steps:</strong>
-                                    <div className="mt-1 whitespace-pre-wrap">
-                                      <TextWithMath text={section.steps} />
-                                    </div>
-                                  </div>
-                                  <div>
-                                    <strong className="text-emerald-600">Benefits:</strong>
-                                    <div className="mt-1">
-                                      <TextWithMath text={section.benefits} />
-                                    </div>
-                                  </div>
-                                  <div>
-                                    <strong className="text-amber-600">Rationale:</strong>
-                                    <div className="mt-1">
-                                      <TextWithMath text={section.rationale} />
-                                    </div>
-                                  </div>
-                                  <div>
-                                    <strong className="text-red-600">Results:</strong>
-                                    <div className="mt-1 whitespace-pre-wrap">
-                                      <TextWithMath text={section.results} />
-                                    </div>
-                                  </div>
-                                </div>
-                              </AccordionContent>
-                            </AccordionItem>
-                          ))}
-                        </Accordion>
-                      </CardContent>
-                    </Card>
-                  ) : selectedNode.attributes.summary ? (() => {
-                    // Try to parse as structured summary
-                    let structured: { type: string; components: string[]; sections: Array<{
-                      component: string;
-                      steps: string;
-                      benefits: string;
-                      rationale: string;
-                      results: string;
-                    }> } | null = null;
-                    try {
-                      const parsed = JSON.parse(selectedNode.attributes.summary);
-                      if (parsed.type === "structured" && parsed.sections) {
-                        structured = parsed;
-                      }
-                    } catch {
-                      // Not JSON, use as plain text
-                    }
-                    
-                    if (structured) {
-                      // Render structured summary with accordion sections
-                      return (
-                        <Card className="mt-4">
-                          <CardHeader>
-                            <CardTitle className="text-sm">
-                              Summary ({structured.components.length} components)
-                            </CardTitle>
-                          </CardHeader>
-                          <CardContent>
-                            <Accordion type="single" collapsible defaultValue={structured.sections[0]?.component} className="w-full">
-                              {structured.sections.map((section, idx) => (
-                                <AccordionItem key={idx} value={section.component}>
-                                  <AccordionTrigger className="text-sm font-semibold">{section.component}</AccordionTrigger>
-                                  <AccordionContent>
-                                    <div className="space-y-3 text-sm">
-                                      <div>
-                                        <strong className="text-indigo-600">Steps:</strong>
-                                        <div className="mt-1 whitespace-pre-wrap">
-                                          <TextWithMath text={section.steps} />
-                                        </div>
-                                      </div>
-                                      <div>
-                                        <strong className="text-emerald-600">Benefits:</strong>
-                                        <div className="mt-1">
-                                          <TextWithMath text={section.benefits} />
-                                        </div>
-                                      </div>
-                                      <div>
-                                        <strong className="text-amber-600">Rationale:</strong>
-                                        <div className="mt-1">
-                                          <TextWithMath text={section.rationale} />
-                                        </div>
-                                      </div>
-                                      <div>
-                                        <strong className="text-red-600">Results:</strong>
-                                        <div className="mt-1 whitespace-pre-wrap">
-                                          <TextWithMath text={section.results} />
-                                        </div>
-                                      </div>
-                                    </div>
-                                  </AccordionContent>
-                                </AccordionItem>
-                              ))}
-                            </Accordion>
-                          </CardContent>
-                        </Card>
-                      );
-                    } else {
-                      // Render plain text summary (legacy format)
-                      return (
-                        <Card className="mt-4">
-                          <CardHeader>
-                            <CardTitle className="text-sm">Summary</CardTitle>
-                          </CardHeader>
-                          <CardContent>
-                            <p className="text-sm leading-relaxed text-gray-700 whitespace-pre-wrap">
-                              <TextWithMath text={selectedNode.attributes.summary} />
-                            </p>
-                          </CardContent>
-                        </Card>
-                      );
-                    }
-                  })() : null}
-                          {/* Action buttons */}
-                          <div className="flex gap-2 mt-4 flex-wrap">
-                            <button
-                              onClick={handleReabbreviate}
-                              disabled={isReabbreviating}
-                              className="px-4 py-2 text-xs bg-indigo-600 text-white rounded disabled:bg-gray-400 disabled:cursor-not-allowed hover:bg-indigo-700"
-                            >
-                              {isReabbreviating ? "Updating..." : "🔄 Re-abbreviate"}
-                            </button>
-                            <button
-                              onClick={handleStructuredAnalysis}
-                              disabled={isLoadingStructured}
-                              className="px-4 py-2 text-xs bg-emerald-600 text-white rounded disabled:bg-gray-400 disabled:cursor-not-allowed hover:bg-emerald-700"
-                            >
-                              {isLoadingStructured ? "Analyzing..." : "🔍 Detailed Analysis"}
-                            </button>
-                            <button
-                              onClick={handleDedupSummary}
-                              disabled={isDedupingSummary}
-                              className="px-4 py-2 text-xs bg-amber-600 text-white rounded disabled:bg-gray-400 disabled:cursor-not-allowed hover:bg-amber-700"
-                            >
-                              {isDedupingSummary ? "Deduping..." : "🧹 Dedup"}
-                            </button>
-                          </div>
-                        </div>
-                        ) : selectedNode ? (
-                          <div>
-                            <h3 className="text-base font-semibold">{selectedNode.name}</h3>
-                            {selectedNode.children && (
-                              <p className="text-sm text-gray-600 mt-1">
-                                {selectedNode.children.length} paper{selectedNode.children.length !== 1 ? "s" : ""} in this category
-                              </p>
-                            )}
-                          </div>
-                        ) : (
-                          <p className="text-gray-500 text-sm">Click on a node in the tree to see details</p>
-                        )}
-                    </TabsContent>
-
+                    {/* Details Panel removed - merged into Explorer tab above */}
                     {/* Repos Panel */}
                     <TabsContent value="repos" className="mt-3">
                       <div className="flex items-center justify-between mb-4">
