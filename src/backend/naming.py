@@ -36,6 +36,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import re
 from typing import Any
 
 import db
@@ -234,6 +235,25 @@ class AsyncTreeNamer:
         
         # Ensure paper nodes have abbreviations
         self._init_paper_names()
+
+    @staticmethod
+    def _sanitize_name(name: str) -> str:
+        """Normalize LLM names by removing markdown and boilerplate."""
+        cleaned = name.strip().strip('"\'')
+        if not cleaned:
+            return cleaned
+        cleaned = cleaned.splitlines()[0].strip()
+        cleaned = re.sub(r"[*_`]+", "", cleaned)
+        cleaned = re.sub(r"^\d+[\).\s]+", "", cleaned)
+        cleaned = re.sub(r"^[#>\-\s]+", "", cleaned)
+        if ":" in cleaned:
+            prefix, rest = cleaned.split(":", 1)
+            if rest.strip() and len(prefix.strip()) <= 20:
+                cleaned = rest.strip()
+            else:
+                cleaned = cleaned.rstrip(":").strip()
+        cleaned = re.sub(r"\s{2,}", " ", cleaned).strip()
+        return cleaned
     
     def _init_paper_names(self) -> None:
         """Set paper node names using abbreviation or fallback."""
@@ -416,13 +436,15 @@ class AsyncTreeNamer:
                 )
                 
                 response_text = response.choices[0].message.content
-                new_name = response_text.strip().strip('"\'')
+                raw_name = response_text.strip().strip('"\'')
+                new_name = self._sanitize_name(raw_name)
                 
                 # Debug: log LLM call
                 if self.debug:
                     self.llm_calls[node_id] = {
                         "prompt": prompt,
                         "response": response_text,
+                        "raw_name": raw_name,
                         "name": new_name,
                         "model": self.model,
                         "attempt": attempt + 1,
@@ -430,7 +452,17 @@ class AsyncTreeNamer:
                     }
                 
                 # Validate name
-                if new_name and len(new_name) > 3 and not new_name.startswith("Category_"):
+                invalid_starts = (
+                    "what it does",
+                    "overview",
+                    "general",
+                    "misc",
+                    "miscellaneous",
+                    "summary",
+                )
+                lowered = new_name.lower()
+                invalid = any(lowered.startswith(prefix) for prefix in invalid_starts)
+                if new_name and len(new_name) > 3 and not new_name.startswith("Category_") and not invalid:
                     return new_name
                 else:
                     raise ValueError(f"Invalid name: '{new_name}'")
@@ -444,6 +476,7 @@ class AsyncTreeNamer:
                     if children_content:
                         words = children_content[0].split()[:3]
                         fallback = " ".join(words).title()[:30] or node_id
+                    fallback = self._sanitize_name(fallback)
                     
                     # Debug: log failed LLM call
                     if self.debug:
@@ -522,6 +555,8 @@ async def name_tree_nodes(debug: bool = False) -> dict[str, Any]:
     
     node_ref: dict[str, dict] = {}
     build_node_ref(tree, node_ref)
+
+    raw_name_map = {node_id: (node.get("name") or "") for node_id, node in node_ref.items()}
     
     name_to_ids: dict[str, list[str]] = {}
     for node_id, node in node_ref.items():
@@ -541,26 +576,28 @@ async def name_tree_nodes(debug: bool = False) -> dict[str, Any]:
     # Save updated tree to database
     db.save_tree(tree)
     
-    # Also export named tree to JSON for verification
+    # Export named tree to JSON for verification (includes raw names)
+    import json
+    import os
+
+    def simplify_node(node: dict) -> dict:
+        r = {}
+        node_id = node.get("node_id")
+        if node_id:
+            r["node_id"] = node_id
+            r["raw_name"] = raw_name_map.get(node_id, "")
+        r["name"] = node.get("name", "")
+        r["node_type"] = node.get("node_type", "category")
+        if node.get("paper_id"):
+            r["paper_id"] = node["paper_id"]
+        if node.get("children"):
+            r["children"] = [simplify_node(c) for c in node.get("children", [])]
+        return r
+
+    os.makedirs("schemas", exist_ok=True)
+    with open("schemas/named_tree.json", "w") as f:
+        json.dump(simplify_node(tree), f, indent=2)
     if debug:
-        import json
-        import os
-        
-        def simplify_node(node: dict) -> dict:
-            r = {}
-            if node.get("node_id"):
-                r["node_id"] = node["node_id"]
-            r["name"] = node.get("name", "")
-            r["node_type"] = node.get("node_type", "category")
-            if node.get("paper_id"):
-                r["paper_id"] = node["paper_id"]
-            if node.get("children"):
-                r["children"] = [simplify_node(c) for c in node["children"]]
-            return r
-        
-        os.makedirs("schemas", exist_ok=True)
-        with open("schemas/named_tree.json", "w") as f:
-            json.dump(simplify_node(tree), f, indent=2)
         print("Debug: Saved named tree to schemas/named_tree.json")
     
     return result

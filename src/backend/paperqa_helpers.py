@@ -149,34 +149,34 @@ def load_paperqa_index(arxiv_id: str) -> Optional[Docs]:
 
 
 def extract_document_embedding_from_paperqa(docs: Docs) -> Optional[list[float]]:
-    """Extract document-level embedding by mean pooling of PaperQA2 chunk embeddings."""
+    """Extract document-level embedding by mean pooling of PaperQA2 chunk embeddings.
+    
+    PaperQA2 stores text chunks with embeddings at docs.texts (top-level),
+    not nested under individual documents.
+    """
     all_chunk_embeddings: list[list[float]] = []
 
-    if not hasattr(docs, "docs") or not docs.docs:
-        return None
+    # Primary source: docs.texts contains Text objects with embeddings
+    if hasattr(docs, "texts") and docs.texts:
+        for text_chunk in docs.texts:
+            if hasattr(text_chunk, "embedding") and text_chunk.embedding is not None:
+                emb = text_chunk.embedding
+                if isinstance(emb, np.ndarray):
+                    all_chunk_embeddings.append(emb.tolist())
+                elif isinstance(emb, list):
+                    all_chunk_embeddings.append(emb)
 
-    docs_iter = docs.docs.items() if isinstance(docs.docs, dict) else enumerate(docs.docs)
-    for doc_key_or_doc in docs_iter:
-        doc = doc_key_or_doc[1] if isinstance(docs.docs, dict) else doc_key_or_doc
-
-        if hasattr(doc, "embedding") and doc.embedding is not None:
-            emb = doc.embedding
-            if isinstance(emb, np.ndarray):
-                all_chunk_embeddings.append(emb.tolist())
-            elif isinstance(emb, list):
-                all_chunk_embeddings.append(emb)
-            continue
-
-        if hasattr(doc, "texts") and doc.texts:
-            texts_iter = doc.texts.items() if isinstance(doc.texts, dict) else doc.texts
-            for text_key_or_text in texts_iter:
-                text_chunk = text_key_or_text[1] if isinstance(doc.texts, dict) else text_key_or_text
-                if hasattr(text_chunk, "embedding") and text_chunk.embedding is not None:
-                    emb = text_chunk.embedding
-                    if isinstance(emb, np.ndarray):
-                        all_chunk_embeddings.append(emb.tolist())
-                    elif isinstance(emb, list):
-                        all_chunk_embeddings.append(emb)
+    # Fallback: check docs.docs for document-level embeddings (older versions)
+    if not all_chunk_embeddings and hasattr(docs, "docs") and docs.docs:
+        docs_iter = docs.docs.items() if isinstance(docs.docs, dict) else enumerate(docs.docs)
+        for doc_key_or_doc in docs_iter:
+            doc = doc_key_or_doc[1] if isinstance(docs.docs, dict) else doc_key_or_doc
+            if hasattr(doc, "embedding") and doc.embedding is not None:
+                emb = doc.embedding
+                if isinstance(emb, np.ndarray):
+                    all_chunk_embeddings.append(emb.tolist())
+                elif isinstance(emb, list):
+                    all_chunk_embeddings.append(emb)
 
     if not all_chunk_embeddings:
         return None

@@ -279,6 +279,18 @@ async def _ensure_paper_embedding(arxiv_id: str) -> bool:
     return await ensure_paper_embedding(arxiv_id)
 
 
+def _attach_embedding_from_index(arxiv_id: str, paper_id: int) -> bool:
+    """Attach a document embedding from cached PaperQA index if available."""
+    docs = _load_paperqa_index(arxiv_id)
+    if not docs:
+        return False
+    doc_embedding = _extract_document_embedding_from_paperqa(docs)
+    if not doc_embedding:
+        return False
+    db.update_paper_embedding(paper_id, doc_embedding)
+    return True
+
+
 async def _paperqa_answer_async(
     text: Optional[str],
     pdf_path: Optional[str],
@@ -996,6 +1008,9 @@ async def save_paper(payload: SavePaperRequest) -> dict[str, Any]:
         pdf_url=payload.pdf_url,
         published_at=payload.published_at,
     )
+
+    # If the PaperQA index already exists, attach embedding now.
+    _attach_embedding_from_index(payload.arxiv_id, paper_id)
     
     # Optionally trigger tree rebuild if embedding-based classification is enabled
     # Note: This will only work if the paper has an embedding. Embeddings are extracted
@@ -1290,6 +1305,7 @@ async def batch_ingest(payload: BatchIngestRequest) -> dict[str, Any]:
                         summary=summary,
                         pdf_path=pdf_path,
                     )
+                    _attach_embedding_from_index(arxiv_id, db_paper_id)
                     
                     # Note: Paper is saved but not added to tree yet.
                     # Tree will be rebuilt using embedding-based clustering when user clicks "Re-classify"
@@ -1471,6 +1487,7 @@ async def batch_ingest(payload: BatchIngestRequest) -> dict[str, Any]:
                     summary=summary,
                     pdf_path=pdf_path,
                 )
+                _attach_embedding_from_index(paper_id, db_paper_id)
                 
                 # Note: Paper is saved but not added to tree yet.
                 # Tree will be rebuilt using embedding-based clustering when user clicks "Re-classify"
@@ -1606,14 +1623,26 @@ async def rebalance_categories() -> dict[str, Any]:
 
 
 @app.get("/papers/{arxiv_id}/cached-data")
-def get_paper_cached_data(arxiv_id: str) -> dict[str, Any]:
+def get_paper_cached_data(arxiv_id: str, require_embedding: bool = True) -> dict[str, Any]:
     """Get all cached data for a paper (repos, refs, similar, queries, structured_summary).
     
     Used to restore state when selecting a paper in the GUI.
+    
+    Args:
+        arxiv_id: The arXiv ID of the paper
+        require_embedding: If True (default), returns 404 for papers without embeddings.
+                          This ensures only "fully ingested" papers are returned.
     """
     paper = db.get_paper_by_arxiv_id(arxiv_id)
     if not paper:
         raise HTTPException(status_code=404, detail=f"Paper {arxiv_id} not found")
+    
+    # Treat papers without embeddings as "incomplete" - they need re-ingestion
+    if require_embedding and paper.get("embedding") is None:
+        raise HTTPException(
+            status_code=404,
+            detail=f"Paper {arxiv_id} exists but has no embedding - needs re-ingestion"
+        )
     
     cached_data = db.get_paper_cached_data(paper["id"])
     structured_summary = db.get_paper_structured_summary(paper["id"])

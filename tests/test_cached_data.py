@@ -34,7 +34,8 @@ def test_cached_data_structured_summary(client: TestClient):
     }
     db.update_paper_structured_summary(paper_id, structured_summary)
 
-    response = client.get(f"/papers/{arxiv_id}/cached-data")
+    # Use require_embedding=false since test paper has no embedding
+    response = client.get(f"/papers/{arxiv_id}/cached-data?require_embedding=false")
     assert response.status_code == 200
     data = response.json()
     assert data["arxiv_id"] == arxiv_id

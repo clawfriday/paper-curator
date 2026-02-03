@@ -40,7 +40,7 @@ run-local:
 
 # Build docker images without starting
 docker-build:
-	docker compose -f src/compose.yml build
+	docker compose -f src/compose.yml build --no-cache
 
 # Stop and remove containers
 docker-stop:
