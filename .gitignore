@@ -34,3 +34,9 @@ node_modules/
 .DS_Store
 schemas
 dev.md
+
+# HPC/Singularity
+containers/*.sif
+pgdata/
+logs/
+run/

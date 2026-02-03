@@ -1,9 +1,10 @@
 SHELL := /bin/bash
-PYTHON := /Users/hyl/miniconda3/bin/python3.12
+PYTHON := /scratch/Projects/SPEC-SF-AISG/envs/infer/bin/python
 VENV_DIR := .venv
 ACTIVATE := source $(VENV_DIR)/bin/activate
 
-.PHONY: install install-frontend test run clean docker-build docker-run
+.PHONY: install install-frontend test run clean docker-build docker-run \
+       singularity-build singularity-run singularity-stop
 
 # Create virtual environment and install all dependencies
 install: $(VENV_DIR)/bin/activate install-frontend
@@ -45,6 +46,42 @@ docker-build:
 # Stop and remove containers
 docker-stop:
 	docker compose -f src/compose.yml down
+
+# =============================================================================
+# Singularity/Apptainer targets for HPC environments (Docker alternative)
+# Ports are read from config/config.yaml (server.frontend_port, server.backend_port)
+# =============================================================================
+
+CONTAINER_DIR := containers
+SIF_BACKEND := $(CONTAINER_DIR)/backend.sif
+SIF_FRONTEND := $(CONTAINER_DIR)/frontend.sif
+SIF_DB := $(CONTAINER_DIR)/pgvector.sif
+CONFIG_FILE := config/config.yaml
+
+# Build all Singularity containers
+singularity-build:
+	@echo "Building Singularity containers..."
+	@mkdir -p $(CONTAINER_DIR)
+	@echo "Pulling pgvector database container..."
+	singularity pull --force $(SIF_DB) docker://pgvector/pgvector:pg16
+	@echo "Building backend container..."
+	singularity build --force --fakeroot $(SIF_BACKEND) $(CONTAINER_DIR)/backend.def
+	@echo "Building frontend container..."
+	singularity build --force --fakeroot $(SIF_FRONTEND) $(CONTAINER_DIR)/frontend.def
+	@echo "All Singularity containers built successfully"
+
+# Start all services using Singularity (reads ports from config/config.yaml)
+singularity-run:
+	@echo "Starting Paper Curator services with Singularity..."
+	./scripts/hpc-services.sh start
+
+# Stop all Singularity instances
+singularity-stop:
+	./scripts/hpc-services.sh stop
+
+# =============================================================================
+# End Singularity targets
+# =============================================================================
 
 # Clean up virtual environment and cached files
 clean:

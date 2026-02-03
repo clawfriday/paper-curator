@@ -1,4 +1,11 @@
 # =============================================================================
+# Server ports for HPC deployment
+# =============================================================================
+server:
+  frontend_port: 3000
+  backend_port: 3100
+
+# =============================================================================
 # OpenAI-compatible API endpoints
 # NOTE: You can use localhost URLs - they auto-convert to host.docker.internal in Docker
 # =============================================================================

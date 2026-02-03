@@ -1,0 +1,58 @@
+Bootstrap: docker
+From: python:3.11-slim
+
+%labels
+    Author Paper Curator Team
+    Version 1.0
+    Description Backend API container for Paper Curator
+
+%post
+    # Install system dependencies for PDF processing
+    apt-get update && apt-get install -y --no-install-recommends \
+        build-essential \
+        && rm -rf /var/lib/apt/lists/*
+    
+    # Create app directory
+    mkdir -p /app /app/storage /app/config /app/prompts
+
+%files
+    # Copy all backend files explicitly
+    src/backend/requirements.txt /app/requirements.txt
+    src/backend/__init__.py /app/__init__.py
+    src/backend/app.py /app/app.py
+    src/backend/arxiv_helpers.py /app/arxiv_helpers.py
+    src/backend/clustering.py /app/clustering.py
+    src/backend/config.py /app/config.py
+    src/backend/db.py /app/db.py
+    src/backend/external_clients.py /app/external_clients.py
+    src/backend/init.sql /app/init.sql
+    src/backend/llm_clients.py /app/llm_clients.py
+    src/backend/naming.py /app/naming.py
+    src/backend/paperqa_helpers.py /app/paperqa_helpers.py
+    src/backend/slack_helpers.py /app/slack_helpers.py
+    src/backend/prompts /app/prompts
+
+%post
+    # Install Python dependencies
+    pip install --no-cache-dir -r /app/requirements.txt
+
+%environment
+    export PYTHONUNBUFFERED=1
+    export PATH="/app:$PATH"
+
+%runscript
+    cd /app
+    exec uvicorn app:app --host 0.0.0.0 --port "${BACKEND_PORT:-8000}"
+
+%startscript
+    cd /app
+    exec uvicorn app:app --host 0.0.0.0 --port "${BACKEND_PORT:-8000}"
+
+%help
+    Paper Curator Backend API Container
+    
+    Run with:
+        singularity run --bind /path/to/storage:/app/storage backend.sif
+    
+    Or start as instance:
+        singularity instance start --bind /path/to/storage:/app/storage backend.sif backend

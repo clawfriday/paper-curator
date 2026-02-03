@@ -17,6 +17,9 @@ ssh -f -N -L 8001:localhost:8001 hopper
 ssh -f -N -L 8002:localhost:8002 hopper
 ssh -f -N -L 8004:localhost:8004 hopper
 
+# binds local PC port 3000 to hopper login node port 3000
+ssh -f -N -L 3000:localhost:3000 hopper
+
 ############################################################
 # test the port forwarding via curl
 ############################################################
