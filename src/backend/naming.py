@@ -482,11 +482,10 @@ async def name_tree_nodes(debug: bool = False) -> dict[str, Any]:
     Returns:
         Dictionary with results
     """
-    # Import LLM helpers from app module
-    import app as app_module
-    _get_endpoint_config = app_module._get_endpoint_config
-    _resolve_model = app_module._resolve_model
-    _get_async_openai_client = app_module._get_async_openai_client
+    # Import LLM helpers from shared modules
+    from config import _get_endpoint_config
+    from llm_clients import resolve_model as _resolve_model
+    from llm_clients import get_async_openai_client as _get_async_openai_client
     
     # Load tree
     tree = db.get_tree()

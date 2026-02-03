@@ -5,63 +5,66 @@ import hashlib
 import json
 import os
 import pathlib
-import pickle
 import re
 import uuid
 from functools import lru_cache
 from typing import Any, Optional
 
 import arxiv
-import httpx
-import yaml
 from fastapi import FastAPI, HTTPException
-from openai import OpenAI, AsyncOpenAI
+from openai import AsyncOpenAI, OpenAI
 from paperqa import Docs
-from paperqa.readers import read_doc
-from paperqa.settings import (
-    AnswerSettings,
-    MultimodalOptions,
-    ParsingSettings,
-    PromptSettings,
-    Settings,
-    make_default_litellm_model_list_settings,
-)
-from paperqa.types import Doc
+from paperqa.settings import Settings
 from pydantic import BaseModel, Field
 
 import db
+from arxiv_helpers import (
+    download_arxiv_pdf_async,
+    extract_arxiv_ids_from_text,
+    require_identifier,
+)
+from config import (
+    _get_classification_config,
+    _get_endpoint_config,
+    _get_external_apis_config,
+    _get_ui_config,
+    _load_prompt,
+    get_prompt,
+)
+from external_clients import get_http_client
+from external_clients import shutdown_http_clients
+from llm_clients import (
+    get_async_openai_client,
+    get_openai_client,
+    reset_litellm_callbacks,
+    resolve_model,
+)
+from paperqa_helpers import (
+    build_paperqa_settings,
+    clean_paperqa_citations,
+    ensure_paper_embedding,
+    extract_document_embedding_from_paperqa,
+    get_paperqa_index_path,
+    index_pdf_for_paperqa,
+    index_pdf_for_paperqa_async,
+    load_paperqa_index,
+    paperqa_answer,
+    paperqa_answer_async,
+    paperqa_extract_pdf,
+    paperqa_extract_pdf_async,
+)
+from slack_helpers import (
+    fetch_slack_messages,
+    resolve_slack_channel_id,
+)
 
 app = FastAPI(title="paper-curator-backend")
 
 
-# =============================================================================
-# Shared HTTP Client Pool (connection reuse for external APIs)
-# =============================================================================
-
-# Shared clients for external APIs - reuse connections instead of creating new ones
-_http_clients: dict[str, httpx.AsyncClient] = {}
-
-
-def _get_http_client(name: str, timeout: float = 10.0, headers: dict | None = None) -> httpx.AsyncClient:
-    """Get or create a shared httpx.AsyncClient for an external API.
-    
-    Reuses connections to eliminate TLS handshake overhead on repeated calls.
-    """
-    if name not in _http_clients:
-        _http_clients[name] = httpx.AsyncClient(
-            timeout=timeout,
-            headers=headers or {},
-            limits=httpx.Limits(max_keepalive_connections=5, max_connections=10),
-        )
-    return _http_clients[name]
-
-
 @app.on_event("shutdown")
-async def shutdown_http_clients():
+async def shutdown_external_clients():
     """Close all shared HTTP clients on shutdown."""
-    for client in _http_clients.values():
-        await client.aclose()
-    _http_clients.clear()
+    await shutdown_http_clients()
 
 
 # =============================================================================
@@ -173,447 +176,51 @@ class SimilarPapersRequest(BaseModel):
 
 
 # =============================================================================
-# Config Loading
+# Config + prompt helpers are provided by config.py
 # =============================================================================
-
-@lru_cache(maxsize=4)
-def _load_config_cached(config_mtime: float) -> dict[str, Any]:
-    config_path = pathlib.Path("config/config.yaml")
-    config = yaml.safe_load(config_path.read_text(encoding="utf-8")) or {}
-    return config
-
-
-def _load_config() -> dict[str, Any]:
-    config_path = pathlib.Path("config/config.yaml")
-    if not config_path.exists():
-        raise HTTPException(status_code=500, detail="Config file not found: config/config.yaml")
-    mtime = config_path.stat().st_mtime
-    return _load_config_cached(mtime)
-
-
-# =============================================================================
-# Prompt Management
-# =============================================================================
-
-_prompts_cache: dict[str, Any] | None = None
-_prompts_mtime: float = 0
-
-
-def _load_prompts() -> dict[str, Any]:
-    """Load prompts from JSON file with caching based on file modification time."""
-    global _prompts_cache, _prompts_mtime
-    
-    prompts_path = pathlib.Path(__file__).parent / "prompts" / "prompts.json"
-    if not prompts_path.exists():
-        raise HTTPException(status_code=500, detail="Prompts file not found: prompts/prompts.json")
-    
-    current_mtime = prompts_path.stat().st_mtime
-    if _prompts_cache is None or current_mtime > _prompts_mtime:
-        _prompts_cache = json.loads(prompts_path.read_text(encoding="utf-8"))
-        _prompts_mtime = current_mtime
-    
-    return _prompts_cache
-
-
-def get_prompt(prompt_id: str, **kwargs: Any) -> str:
-    """Get a prompt by ID and format it with the provided variables."""
-    prompts = _load_prompts()
-    if prompt_id not in prompts:
-        raise HTTPException(status_code=500, detail=f"Prompt not found: {prompt_id}")
-    
-    template = prompts[prompt_id]["template"]
-    return template.format(**kwargs)
-
-
-def _convert_localhost_for_docker(url: str) -> str:
-    """Convert localhost URLs to host.docker.internal when running in Docker.
-    
-    This allows users to always write 'localhost' in config, and it will
-    automatically work both locally and inside Docker containers.
-    """
-    if not url:
-        return url
-    # Check if running in Docker (DATABASE_URL is set by compose.yml)
-    in_docker = os.environ.get("DATABASE_URL", "").startswith("postgresql://")
-    if in_docker:
-        # Replace localhost variants with host.docker.internal
-        url = url.replace("://localhost:", "://host.docker.internal:")
-        url = url.replace("://127.0.0.1:", "://host.docker.internal:")
-    return url
-
-
-def _get_endpoint_config() -> dict[str, str]:
-    """Get endpoint configuration."""
-    config = _load_config()
-    endpoints = config.get("endpoints", {})
-    # Support both new and legacy config format
-    llm_url = endpoints.get("llm_base_url", config.get("openai_api_base", ""))
-    embed_url = endpoints.get("embedding_base_url", config.get("openai_api_base3", ""))
-    return {
-        "llm_base_url": _convert_localhost_for_docker(llm_url),
-        "embedding_base_url": _convert_localhost_for_docker(embed_url),
-        "api_key": endpoints.get("api_key", config.get("openai_api_key", "local-key")),
-    }
-
-
-def _get_paperqa_config() -> dict[str, Any]:
-    """Get PaperQA2 configuration."""
-    config = _load_config()
-    pqa = config.get("paperqa", {})
-    return {
-        "chunk_chars": int(pqa.get("chunk_chars", config.get("paperqa_chunk_chars", 5000))),
-        "chunk_overlap": int(pqa.get("chunk_overlap", config.get("paperqa_chunk_overlap", 250))),
-        "use_doc_details": bool(pqa.get("use_doc_details", config.get("paperqa_use_doc_details", True))),
-        "evidence_k": int(pqa.get("evidence_k", config.get("paperqa_evidence_k", 10))),
-        "evidence_summary_length": str(pqa.get("evidence_summary_length", config.get("paperqa_evidence_summary_length", "about 100 words"))),
-        "evidence_skip_summary": bool(pqa.get("evidence_skip_summary", config.get("paperqa_evidence_skip_summary", False))),
-        "evidence_relevance_score_cutoff": float(pqa.get("evidence_relevance_score_cutoff", config.get("paperqa_evidence_relevance_score_cutoff", 1))),
-    }
-
-
-def _get_ui_config() -> dict[str, Any]:
-    """Get UI configuration."""
-    config = _load_config()
-    ui = config.get("ui", {})
-    return {
-        "hover_debounce_ms": int(ui.get("hover_debounce_ms", 500)),
-        "max_similar_papers": int(ui.get("max_similar_papers", 5)),
-        "tree_auto_save_interval_ms": int(ui.get("tree_auto_save_interval_ms", 30000)),
-    }
-
-
-def _get_classification_config() -> dict[str, Any]:
-    """Get classification configuration."""
-    config = _load_config()
-    classification = config.get("classification", {})
-    return {
-        "branching_factor": int(classification.get("branching_factor", 5)),
-        "rebuild_on_ingest": bool(classification.get("rebuild_on_ingest", True)),
-    }
-
-
-def _get_external_apis_config() -> dict[str, Any]:
-    """Get external APIs configuration."""
-    config = _load_config()
-    apis = config.get("external_apis", {})
-    return {
-        "papers_with_code_enabled": bool(apis.get("papers_with_code_enabled", True)),
-        "github_search_enabled": bool(apis.get("github_search_enabled", True)),
-        "semantic_scholar_enabled": bool(apis.get("semantic_scholar_enabled", True)),
-        "github_token": apis.get("github_token"),
-    }
-
-
 # =============================================================================
 # Helper Functions
 # =============================================================================
 
 def _require_identifier(arxiv_id: Optional[str], url: Optional[str]) -> str:
     """Extract arXiv ID from provided arxiv_id or URL."""
-    if arxiv_id:
-        return arxiv_id
-    if url:
-        # Match /abs/, /pdf/, or /html/ paths
-        match = re.search(r"arxiv\.org/(?:abs|pdf|html)/([^/\s?]+)", url)
-        if match:
-            return match.group(1).replace(".pdf", "")
-        raise HTTPException(status_code=400, detail=f"Could not extract arXiv ID from URL: {url}")
-    raise HTTPException(status_code=400, detail="Provide arxiv_id or url.")
+    return require_identifier(arxiv_id, url)
 
 
 def _extract_arxiv_ids_from_text(text: str) -> list[str]:
-    """Extract all arXiv IDs/URLs from text.
-    
-    Returns list of arXiv IDs (format: YYYY.NNNNN or YYYY.NNNNNvN).
-    Handles:
-    - arXiv URLs: https://arxiv.org/abs/1234.5678
-    - arXiv PDF URLs: https://arxiv.org/pdf/1234.5678.pdf
-    - Plain arXiv IDs: 1234.5678 or 1234.5678v1
-    """
-    arxiv_ids = set()
-    
-    # Match arXiv URLs
-    url_pattern = r"arxiv\.org/(?:abs|pdf|html)/([0-9]{4}\.[0-9]{4,5}(?:v[0-9]+)?)"
-    for match in re.finditer(url_pattern, text, re.IGNORECASE):
-        arxiv_id = match.group(1)
-        # Remove .pdf extension if present
-        arxiv_id = arxiv_id.replace(".pdf", "")
-        arxiv_ids.add(arxiv_id)
-    
-    # Match standalone arXiv IDs (format: YYYY.NNNNN or YYYY.NNNNNvN)
-    id_pattern = r"\b([0-9]{4}\.[0-9]{4,5}(?:v[0-9]+)?)\b"
-    for match in re.finditer(id_pattern, text):
-        arxiv_id = match.group(1)
-        arxiv_ids.add(arxiv_id)
-    
-    return sorted(list(arxiv_ids))
+    """Extract all arXiv IDs/URLs from text."""
+    return extract_arxiv_ids_from_text(text)
 
 
-def _resolve_slack_channel_id(client, channel_input: str) -> str:
-    """Resolve Slack channel ID from various input formats.
-    
-    Supports:
-    - Channel ID: C1234567890
-    - Channel name: #general or general
-    - Slack URL: https://workspace.slack.com/archives/C1234567890
-    """
-    channel_input = channel_input.strip()
-    
-    # If it's already a channel ID (starts with C)
-    if channel_input.startswith("C") and len(channel_input) > 1:
-        return channel_input
-    
-    # Extract channel ID from URL (supports multiple Slack URL formats)
-    # Format 1: https://workspace.slack.com/archives/C1234567890
-    url_match = re.search(r"/archives/(C[A-Z0-9]+)", channel_input)
-    if url_match:
-        return url_match.group(1)
-    
-    # Format 2: https://join.slack.com/share/... (Slack Connect share link - extract workspace/channel from it)
-    # Note: These share links don't directly give us channel ID, but we can try to resolve via name
-    
-    # Extract channel name (remove # if present, handle spaces)
-    channel_name = channel_input.lstrip("#").strip()
-    
-    # First, try to access the channel directly by name using conversations.info
-    # Try multiple variants of the channel name to handle formatting differences
-    channel_name_variants = [
-        channel_name,  # Original (already stripped #)
-        f"#{channel_name}",  # With # prefix
-        channel_name.replace(" ", ""),  # Without spaces
-        channel_name.replace("-", "_"),  # Hyphens to underscores
-        channel_name.replace("_", "-"),  # Underscores to hyphens
-    ]
-    
-    for variant in channel_name_variants:
-        try:
-            info_response = client.conversations_info(channel=variant)
-            if info_response.get("ok") and info_response.get("channel"):
-                channel_data = info_response["channel"]
-                # Check if channel is archived
-                if channel_data.get("is_archived"):
-                    raise HTTPException(
-                        status_code=400,
-                        detail=f"Channel '{channel_input}' is archived. Archived channels cannot be accessed."
-                    )
-                return channel_data["id"]
-            elif not info_response.get("ok"):
-                error = info_response.get("error", "Unknown error")
-                if error == "missing_scope":
-                    raise HTTPException(
-                        status_code=403,
-                        detail=f"Slack token missing required scope 'channels:read' or 'groups:read'"
-                    )
-                # For other errors (like channel_not_found), try next variant
-        except HTTPException:
-            raise
-        except Exception:
-            # If this variant fails, try next one
-            continue
-    
-    # List all channels and find matching one
-    try:
-        response = client.conversations_list(types="public_channel,private_channel", limit=1000, exclude_archived=True)
-        if not response["ok"]:
-            error_msg = response.get("error", "Unknown error")
-            # Provide helpful error messages for common issues
-            if error_msg == "missing_scope":
-                raise HTTPException(
-                    status_code=403,
-                    detail=f"Slack token missing required scopes. Please add 'channels:read' and 'groups:read' scopes to your Slack app. Error: {error_msg}"
-                )
-            elif error_msg == "invalid_auth":
-                raise HTTPException(
-                    status_code=401,
-                    detail=f"Invalid Slack token. Please check your token and ensure it's a valid User OAuth Token (xoxp-...). Error: {error_msg}"
-                )
-            else:
-                raise HTTPException(status_code=400, detail=f"Slack API error: {error_msg}")
-        
-        channels = response.get("channels", [])
-        if not channels:
-            raise HTTPException(
-                status_code=404,
-                detail=f"No channels found. This might indicate insufficient permissions. Channel name: '{channel_input}'"
-            )
-        
-        # Normalize channel name for matching (remove special chars, lowercase)
-        def normalize_name(name: str) -> str:
-            return name.lower().replace("-", "").replace("_", "").replace(" ", "")
-        
-        normalized_target = normalize_name(channel_name)
-        
-        # Try exact match first
-        for channel in channels:
-            if channel["name"] == channel_name:
-                return channel["id"]
-        
-        # Try case-insensitive match
-        for channel in channels:
-            if channel["name"].lower() == channel_name.lower():
-                return channel["id"]
-        
-        # Try normalized match (handles hyphens, underscores, spaces, case differences)
-        for channel in channels:
-            if normalize_name(channel["name"]) == normalized_target:
-                return channel["id"]
-        
-        # Try fuzzy match - check if target is contained in any channel name
-        for channel in channels:
-            if normalized_target in normalize_name(channel["name"]) or normalize_name(channel["name"]) in normalized_target:
-                return channel["id"]
-        
-        # If still not found, provide helpful error with available channels and search for similar ones
-        available_channels = [ch["name"] for ch in channels[:20]]  # Show first 20
-        similar_channels = [
-            ch["name"] for ch in channels 
-            if normalized_target[:5] in normalize_name(ch["name"]) or normalize_name(ch["name"])[:5] in normalized_target
-        ]
-        
-        # Also try to find channels containing "model", "training", "paper", or "weights"
-        keyword_matches = [
-            ch["name"] for ch in channels 
-            if any(keyword in normalize_name(ch["name"]) for keyword in ["model", "training", "paper", "weight"])
-        ]
-        
-        error_msg = f"Channel '{channel_input}' not found in accessible channels. "
-        if similar_channels:
-            error_msg += f"Similar channels: {', '.join(similar_channels[:5])}. "
-        if keyword_matches:
-            error_msg += f"Channels with related keywords: {', '.join(keyword_matches[:5])}. "
-        error_msg += f"Available channels (first 20): {', '.join(available_channels)}. "
-        error_msg += "\n\nTroubleshooting:\n"
-        error_msg += "1. Verify the channel name is correct (check for typos, spaces, or different formatting)\n"
-        error_msg += "2. IMPORTANT: If using a User OAuth Token (xoxp-...), the USER whose token it is must be a member of the channel.\n"
-        error_msg += "   Adding the app/bot to the channel is not enough - the user must also join the channel.\n"
-        error_msg += "3. Alternatively, use a Bot Token (xoxb-...) and ensure the bot is added to the channel\n"
-        error_msg += "4. Check if the channel is archived (archived channels may not appear)\n"
-        error_msg += "5. Verify you're using the token for the correct Slack workspace\n"
-        error_msg += "6. Try using the channel ID instead: Right-click channel → Copy link → Use the C1234567890 ID from the URL"
-        
-        raise HTTPException(status_code=404, detail=error_msg)
-    except HTTPException:
-        raise
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Error resolving Slack channel: {e}")
-
-
-def _load_prompt() -> tuple[str, str, str]:
-    """Load paper_summary prompt from JSON prompts file."""
-    prompts = _load_prompts()
-    if "paper_summary" not in prompts:
-        raise HTTPException(status_code=500, detail="Prompt 'paper_summary' not found in prompts.json")
-    
-    prompt_data = prompts["paper_summary"]
-    prompt_id = prompt_data.get("id", "paper_summary_v1")
-    prompt_body = prompt_data["template"]
-    prompt_hash = hashlib.sha256(prompt_body.encode("utf-8")).hexdigest()
-    return prompt_id, prompt_hash, prompt_body
+async def _resolve_slack_channel_id(client, channel_input: str) -> str:
+    """Resolve Slack channel ID from various input formats."""
+    return await resolve_slack_channel_id(client, channel_input)
 
 
 def _get_openai_client(base_url: str, api_key: str) -> OpenAI:
     """Create OpenAI client with ngrok header support if needed."""
-    # Add ngrok-skip-browser-warning header for ngrok free tier
-    if "ngrok" in base_url.lower():
-        import httpx
-        # Use both default_headers and http_client to ensure header is sent
-        http_client = httpx.Client(
-            headers={"ngrok-skip-browser-warning": "true"},
-            timeout=30.0,
-            follow_redirects=True,
-        )
-        return OpenAI(
-            base_url=base_url,
-            api_key=api_key,
-            http_client=http_client,
-            default_headers={"ngrok-skip-browser-warning": "true"},
-        )
-    return OpenAI(base_url=base_url, api_key=api_key)
+    return get_openai_client(base_url, api_key)
 
 
 def _get_async_openai_client(base_url: str, api_key: str) -> AsyncOpenAI:
     """Create AsyncOpenAI client with ngrok header support if needed."""
-    # Add ngrok-skip-browser-warning header for ngrok free tier
-    if "ngrok" in base_url.lower():
-        import httpx
-        # Use both default_headers and http_client to ensure header is sent
-        http_client = httpx.AsyncClient(
-            headers={"ngrok-skip-browser-warning": "true"},
-            timeout=30.0,
-            follow_redirects=True,
-        )
-        return AsyncOpenAI(
-            base_url=base_url,
-            api_key=api_key,
-            http_client=http_client,
-            default_headers={"ngrok-skip-browser-warning": "true"},
-        )
-    return AsyncOpenAI(base_url=base_url, api_key=api_key)
+    return get_async_openai_client(base_url, api_key)
 
 
 @lru_cache(maxsize=3)
 def _resolve_model(base_url: str, api_key: str) -> str:
     """Resolve model name from endpoint, with ngrok free tier workaround."""
-    client = _get_openai_client(base_url, api_key)
-    try:
-        models = client.models.list()
-        model_ids = sorted([model.id for model in models.data if getattr(model, "id", None)])
-        assert model_ids, "No models returned by OpenAI-compatible endpoint."
-        return model_ids[0]
-    except Exception as e:
-        error_msg = str(e)
-        # Check if it's an ngrok browser warning issue
-        if "ngrok" in base_url.lower() and (
-            "ERR_NGROK_3004" in error_msg 
-            or "gateway error" in error_msg.lower() 
-            or "invalid or incomplete HTTP response" in error_msg.lower()
-            or "ngrok gateway error" in error_msg.lower()
-        ):
-            help_msg = (
-                "ngrok ERR_NGROK_3004: Browser warning page blocking programmatic access.\n\n"
-                "SOLUTIONS (choose one):\n\n"
-                "1. Configure ngrok to skip browser warning (RECOMMENDED):\n"
-                "   Restart ngrok with:\n"
-                "   ngrok http 8001 --request-header-add 'ngrok-skip-browser-warning: true'\n\n"
-                "   OR add to ~/.ngrok2/ngrok.yml:\n"
-                "   tunnels:\n"
-                "     llm:\n"
-                "       addr: 8001\n"
-                "       request_header:\n"
-                "         add: ['ngrok-skip-browser-warning: true']\n\n"
-                "2. Upgrade to ngrok paid plan (has Edge request headers)\n\n"
-                "3. Use alternative tunneling:\n"
-                "   - Cloudflare Tunnel (free, no browser warning)\n"
-                "   - localtunnel (free, simple)\n"
-                "   - serveo (free, SSH-based)\n\n"
-                f"Current endpoint: {base_url}\n"
-                f"Original error: {error_msg}"
-            )
-            raise Exception(help_msg)
-        raise
+    return resolve_model(base_url, api_key)
 
 
 def _get_paperqa_index_path(arxiv_id: str) -> pathlib.Path:
     """Get path to stored PaperQA2 index for a paper."""
-    index_dir = pathlib.Path("storage/paperqa_index")
-    index_dir.mkdir(parents=True, exist_ok=True)
-    # Sanitize arxiv_id for filename
-    safe_id = arxiv_id.replace("/", "_").replace(".", "_")
-    return index_dir / f"{safe_id}.pkl"
+    return get_paperqa_index_path(arxiv_id)
 
 
 def _reset_litellm_callbacks() -> None:
-    """Reset LiteLLM callbacks to prevent accumulation.
-    
-    LiteLLM accumulates callbacks with each LLM call. When the limit (30) is
-    reached, it causes instability. This resets all callback lists.
-    """
-    import litellm
-    litellm.input_callback = []
-    litellm.success_callback = []
-    litellm.failure_callback = []
-    litellm._async_success_callback = []
-    litellm._async_failure_callback = []
+    """Reset LiteLLM callbacks to prevent accumulation."""
+    reset_litellm_callbacks()
 
 
 def _build_paperqa_settings(
@@ -624,53 +231,7 @@ def _build_paperqa_settings(
     api_key: str,
 ) -> Settings:
     """Build PaperQA2 Settings with given models and endpoints."""
-    pqa_config = _get_paperqa_config()
-    
-    llm_config = make_default_litellm_model_list_settings(llm_model)
-    llm_config["model_list"][0]["litellm_params"].update(
-        {"api_base": llm_base_url, "api_key": api_key}
-    )
-    summary_llm_config = make_default_litellm_model_list_settings(llm_model)
-    summary_llm_config["model_list"][0]["litellm_params"].update(
-        {"api_base": llm_base_url, "api_key": api_key}
-    )
-    
-    reader_config = {
-        "chunk_chars": pqa_config["chunk_chars"],
-        "overlap": pqa_config["chunk_overlap"],
-    }
-    parsing_settings = ParsingSettings(
-        reader_config=reader_config,
-        use_doc_details=pqa_config["use_doc_details"],
-        multimodal=MultimodalOptions.OFF,
-    )
-    answer_settings = AnswerSettings(
-        evidence_k=pqa_config["evidence_k"],
-        evidence_summary_length=pqa_config["evidence_summary_length"],
-        evidence_skip_summary=pqa_config["evidence_skip_summary"],
-        evidence_relevance_score_cutoff=pqa_config["evidence_relevance_score_cutoff"],
-    )
-    # Disable JSON mode to avoid parsing issues with non-OpenAI models
-    # PaperQA2 expects specific JSON format that some models don't produce correctly
-    prompt_settings = PromptSettings(use_json=False)
-    
-    return Settings(
-        llm=llm_model,
-        llm_config=llm_config,
-        summary_llm=llm_model,
-        summary_llm_config=summary_llm_config,
-        embedding=embed_model,
-        embedding_config={
-            "kwargs": {
-                "api_base": embed_base_url,
-                "api_key": api_key,
-                "encoding_format": "float",
-            },
-        },
-        parsing=parsing_settings,
-        answer=answer_settings,
-        prompts=prompt_settings,
-    )
+    return build_paperqa_settings(llm_model, embed_model, llm_base_url, embed_base_url, api_key)
 
 
 async def _index_pdf_for_paperqa_async(
@@ -682,32 +243,10 @@ async def _index_pdf_for_paperqa_async(
     llm_model: str,
     embed_model: str,
 ) -> Docs:
-    """Index a PDF and persist the Docs object for later QA queries (async).
-    
-    Also extracts and saves document-level embedding via mean pooling.
-    """
-    os.environ["OPENAI_API_BASE"] = llm_base_url
-    os.environ["OPENAI_API_KEY"] = api_key
-    
-    docs = Docs()
-    settings = _build_paperqa_settings(
-        llm_model, embed_model, llm_base_url, embed_base_url, api_key
+    """Index a PDF and persist the Docs object for later QA queries (async)."""
+    return await index_pdf_for_paperqa_async(
+        pdf_path, arxiv_id, llm_base_url, embed_base_url, api_key, llm_model, embed_model
     )
-    await docs.aadd(pdf_path, settings=settings)
-    
-    # Persist to filesystem using pickle
-    index_path = _get_paperqa_index_path(arxiv_id)
-    with open(index_path, "wb") as f:
-        pickle.dump(docs, f)
-    
-    # Extract and save document-level embedding (mean pooling)
-    doc_embedding = _extract_document_embedding_from_paperqa(docs)
-    if doc_embedding:
-        paper = db.get_paper_by_arxiv_id(arxiv_id)
-        if paper:
-            db.update_paper_embedding(paper["id"], doc_embedding)
-    
-    return docs
 
 
 def _index_pdf_for_paperqa(
@@ -720,125 +259,24 @@ def _index_pdf_for_paperqa(
     embed_model: str,
 ) -> Docs:
     """Index a PDF and persist the Docs object for later QA queries (sync wrapper)."""
-    return asyncio.run(_index_pdf_for_paperqa_async(
+    return index_pdf_for_paperqa(
         pdf_path, arxiv_id, llm_base_url, embed_base_url, api_key, llm_model, embed_model
-    ))
+    )
 
 
 def _load_paperqa_index(arxiv_id: str) -> Optional[Docs]:
     """Load persisted PaperQA2 Docs if exists."""
-    index_path = _get_paperqa_index_path(arxiv_id)
-    if not index_path.exists():
-        return None
-    try:
-        with open(index_path, "rb") as f:
-            return pickle.load(f)
-    except Exception:
-        # If loading fails, return None to trigger re-indexing
-        return None
+    return load_paperqa_index(arxiv_id)
 
 
 def _extract_document_embedding_from_paperqa(docs: Docs) -> Optional[list[float]]:
-    """Extract document-level embedding by mean pooling of PaperQA2 chunk embeddings.
-    
-    Args:
-        docs: PaperQA2 Docs object containing indexed document
-        
-    Returns:
-        Mean-pooled embedding vector or None if no embeddings found
-    """
-    import numpy as np
-    
-    # Ensure numpy is available
-    try:
-        np.mean
-    except AttributeError:
-        import sys
-        print("Warning: numpy not available, cannot extract embeddings", file=sys.stderr)
-        return None
-    
-    all_chunk_embeddings = []
-    
-    # PaperQA2 structure: docs.docs is a dict mapping doc keys to DocDetails objects
-    # Option 1: DocDetails may have .embedding directly (document-level)
-    # Option 2: DocDetails has .texts (dict/list) with Text objects that have .embedding (chunk-level)
-    try:
-        if not hasattr(docs, 'docs') or not docs.docs:
-            return None
-        
-        # Handle both dict and list/iterable structures
-        docs_iter = docs.docs.items() if isinstance(docs.docs, dict) else enumerate(docs.docs) if hasattr(docs.docs, '__iter__') else []
-        
-        for doc_key_or_doc in docs_iter:
-            # If it's a dict, get the value (DocDetails object)
-            doc = doc_key_or_doc[1] if isinstance(docs.docs, dict) else doc_key_or_doc
-            
-            # Try document-level embedding first
-            if hasattr(doc, 'embedding') and doc.embedding is not None:
-                emb = doc.embedding
-                if isinstance(emb, np.ndarray):
-                    all_chunk_embeddings.append(emb.tolist())
-                elif isinstance(emb, list):
-                    all_chunk_embeddings.append(emb)
-                continue  # Use document-level embedding if available
-            
-            # Otherwise, try chunk-level embeddings from texts
-            if hasattr(doc, 'texts') and doc.texts:
-                # Handle texts as dict or iterable
-                texts_iter = doc.texts.items() if isinstance(doc.texts, dict) else doc.texts
-                
-                for text_key_or_text in texts_iter:
-                    # If it's a dict, get the value (Text object)
-                    text_chunk = text_key_or_text[1] if isinstance(doc.texts, dict) else text_key_or_text
-                    
-                    if hasattr(text_chunk, 'embedding') and text_chunk.embedding is not None:
-                        # Convert to list if numpy array
-                        emb = text_chunk.embedding
-                        if isinstance(emb, np.ndarray):
-                            all_chunk_embeddings.append(emb.tolist())
-                        elif isinstance(emb, list):
-                            all_chunk_embeddings.append(emb)
-        
-        if not all_chunk_embeddings:
-            return None
-        
-        # Mean pooling: average all chunk embeddings
-        mean_embedding = np.mean(all_chunk_embeddings, axis=0).tolist()
-        return mean_embedding
-        
-    except Exception as e:
-        # Log error but don't fail - embedding extraction is optional
-        print(f"Warning: Failed to extract document embedding: {e}")
-        import traceback
-        traceback.print_exc()
-        return None
+    """Extract document-level embedding by mean pooling of PaperQA2 chunk embeddings."""
+    return extract_document_embedding_from_paperqa(docs)
 
 
 async def _ensure_paper_embedding(arxiv_id: str) -> bool:
-    """Ensure a paper has a document-level embedding.
-    
-    If embedding doesn't exist, try to extract it from cached PaperQA2 index.
-    
-    Returns:
-        True if embedding exists or was successfully extracted, False otherwise
-    """
-    paper = db.get_paper_by_arxiv_id(arxiv_id)
-    if not paper:
-        return False
-    
-    # Check if embedding already exists
-    if paper.get("embedding") is not None:
-        return True
-    
-    # Try to load PaperQA2 index and extract embedding
-    docs = _load_paperqa_index(arxiv_id)
-    if docs:
-        doc_embedding = _extract_document_embedding_from_paperqa(docs)
-        if doc_embedding:
-            db.update_paper_embedding(paper["id"], doc_embedding)
-            return True
-    
-    return False
+    """Ensure a paper has a document-level embedding."""
+    return await ensure_paper_embedding(arxiv_id)
 
 
 async def _paperqa_answer_async(
@@ -852,58 +290,10 @@ async def _paperqa_answer_async(
     embed_model: str,
     arxiv_id: Optional[str] = None,
 ) -> str:
-    """Query PaperQA2 for an answer (async). Uses cached index if available."""
-    assert text or pdf_path, "Provide text or pdf_path."
-    os.environ["OPENAI_API_BASE"] = llm_base_url
-    os.environ["OPENAI_API_KEY"] = api_key
-
-    docs: Optional[Docs] = None
-    
-    # Try to load cached index if arxiv_id provided
-    if arxiv_id:
-        docs = _load_paperqa_index(arxiv_id)
-    
-    # If no cached index, create new one
-    if docs is None:
-        docs = Docs()
-        content_path: Optional[pathlib.Path] = None
-        if pdf_path:
-            content_path = pathlib.Path(pdf_path)
-        elif text is not None:
-            inputs_dir = pathlib.Path("storage/inputs")
-            inputs_dir.mkdir(parents=True, exist_ok=True)
-            text_hash = hashlib.sha256(text.encode("utf-8")).hexdigest()
-            content_path = inputs_dir / f"paperqa_{text_hash}.txt"
-            content_path.write_text(text, encoding="utf-8")
-        if content_path is None or not content_path.exists():
-            raise HTTPException(status_code=404, detail="Content path not found.")
-        
-        settings = _build_paperqa_settings(
-            llm_model, embed_model, llm_base_url, embed_base_url, api_key
-        )
-        await docs.aadd(str(content_path), settings=settings)
-        
-        # Persist if arxiv_id provided
-        if arxiv_id:
-            index_path = _get_paperqa_index_path(arxiv_id)
-            with open(index_path, "wb") as f:
-                pickle.dump(docs, f)
-            
-            # Extract and save document-level embedding (mean pooling)
-            doc_embedding = _extract_document_embedding_from_paperqa(docs)
-            if doc_embedding:
-                paper = db.get_paper_by_arxiv_id(arxiv_id)
-                if paper:
-                    db.update_paper_embedding(paper["id"], doc_embedding)
-    
-    settings = _build_paperqa_settings(
-        llm_model, embed_model, llm_base_url, embed_base_url, api_key
+    """Query PaperQA2 for an answer (async)."""
+    return await paperqa_answer_async(
+        text, pdf_path, question, llm_base_url, embed_base_url, api_key, llm_model, embed_model, arxiv_id
     )
-    result = await docs.aquery(question, settings=settings)
-    answer = str(result.answer) if hasattr(result, "answer") else str(result)
-    # Clean up PaperQA2 citation markers
-    answer = _clean_paperqa_citations(answer)
-    return answer
 
 
 def _paperqa_answer(
@@ -917,98 +307,30 @@ def _paperqa_answer(
     embed_model: str,
     arxiv_id: Optional[str] = None,
 ) -> str:
-    """Query PaperQA2 for an answer (sync wrapper). Uses cached index if available."""
-    return asyncio.run(_paperqa_answer_async(
-        text, pdf_path, question, llm_base_url, embed_base_url, api_key,
-        llm_model, embed_model, arxiv_id
-    ))
+    """Query PaperQA2 for an answer (sync wrapper)."""
+    return paperqa_answer(
+        text, pdf_path, question, llm_base_url, embed_base_url, api_key, llm_model, embed_model, arxiv_id
+    )
 
 
 def _clean_paperqa_citations(text: str) -> str:
-    """Remove PaperQA2 citation markers from text.
-    
-    PaperQA2 adds citations like:
-    - "(docname pages 1-2)"
-    - "(docname page 5)"
-    - "(An2025 pages 1-2, An2025 pages 9-12)"
-    which are not useful for end users.
-    """
-    # Pattern matches parentheses containing citation-like content
-    # e.g., (An2025 pages 1-2) or (An2025 pages 1-2, An2025 pages 9-12)
-    pattern = r'\s*\([A-Za-z0-9_]+\s+pages?\s+[\d,\-–\s]+(?:,\s*[A-Za-z0-9_]+\s+pages?\s+[\d,\-–\s]+)*\)'
-    cleaned = re.sub(pattern, '', text)
-    # Also clean up any double spaces left behind
-    cleaned = re.sub(r'  +', ' ', cleaned)
-    return cleaned.strip()
+    """Remove PaperQA2 citation markers from text."""
+    return clean_paperqa_citations(text)
 
 
 async def _download_arxiv_pdf(arxiv_id: str, pdf_url: str) -> str:
     """Download arXiv PDF and return local path with retry logic."""
-    output_dir = pathlib.Path("storage/downloads")
-    output_dir.mkdir(parents=True, exist_ok=True)
-    
-    # Use arxiv library to download with retry
-    max_retries = 3
-    last_error = None
-    
-    for attempt in range(max_retries):
-        try:
-            client = arxiv.Client()
-            search = arxiv.Search(id_list=[arxiv_id])
-            results = list(client.results(search))
-            
-            if not results:
-                raise HTTPException(status_code=404, detail=f"arXiv paper not found: {arxiv_id}")
-            
-            result = results[0]
-            pdf_path = result.download_pdf(dirpath=str(output_dir))
-            return str(pdf_path)
-        except Exception as e:
-            last_error = e
-            if attempt < max_retries - 1:
-                import asyncio
-                await asyncio.sleep(2 ** attempt)  # Exponential backoff: 1s, 2s, 4s
-                continue
-            else:
-                # Last attempt failed, raise with context
-                error_msg = str(e)
-                if "retrieval incomplete" in error_msg or "urlopen error" in error_msg:
-                    raise Exception(f"PDF download failed after {max_retries} attempts: {error_msg}. The PDF may be too large or the connection was interrupted.")
-                raise Exception(f"PDF download failed after {max_retries} attempts: {error_msg}")
-    
-    # Should never reach here, but just in case
-    raise Exception(f"PDF download failed: {last_error}")
+    return await download_arxiv_pdf_async(arxiv_id)
 
 
 async def _paperqa_extract_pdf_async(pdf_path: pathlib.Path) -> dict[str, Any]:
     """Extract text from PDF using PaperQA2's native parser (async version)."""
-    pqa_config = _get_paperqa_config()
-    reader_config = {
-        "chunk_chars": pqa_config["chunk_chars"],
-        "overlap": pqa_config["chunk_overlap"],
-    }
-    parsing_settings = ParsingSettings(
-        reader_config=reader_config,
-        use_doc_details=pqa_config["use_doc_details"],
-        multimodal=MultimodalOptions.OFF,
-    )
-    settings = Settings(parsing=parsing_settings)
-
-    doc = Doc(docname=pdf_path.stem, dockey=pdf_path.stem, citation="Local PDF")
-    parsed_text = await read_doc(
-        str(pdf_path),
-        doc,
-        parsed_text_only=True,
-        parse_pdf=settings.parsing.parse_pdf,
-        **settings.parsing.reader_config,
-    )
-    text = parsed_text.reduce_content()
-    return {"text": text, "parser": "paperqa"}
+    return await paperqa_extract_pdf_async(pdf_path)
 
 
 def _paperqa_extract_pdf(pdf_path: pathlib.Path) -> dict[str, Any]:
     """Extract text from PDF using PaperQA2's native parser (sync wrapper)."""
-    return asyncio.run(_paperqa_extract_pdf_async(pdf_path))
+    return paperqa_extract_pdf(pdf_path)
 
 
 # =============================================================================
@@ -1327,15 +649,7 @@ async def qa_structured(payload: StructuredQaRequest) -> dict[str, Any]:
     embed_model = f"openai/{_resolve_model(embed_base_url, api_key)}"
     
     def reset_callbacks():
-        try:
-            import litellm
-            litellm.input_callback = []
-            litellm.success_callback = []
-            litellm.failure_callback = []
-            litellm._async_success_callback = []
-            litellm._async_failure_callback = []
-        except Exception:
-            pass
+        _reset_litellm_callbacks()
     
     async def run_query_async(question: str) -> str:
         """Run a single PaperQA query asynchronously."""
@@ -1695,14 +1009,8 @@ async def save_paper(payload: SavePaperRequest) -> dict[str, Any]:
         paper = db.get_paper_by_id(paper_id)
         if paper and paper.get("embedding") is not None:
             # Trigger tree rebuild in background (don't wait for it)
-            try:
-                import clustering
-                import naming
-                # Run rebuild asynchronously
-                asyncio.create_task(_rebuild_tree_async())
-                rebuild_triggered = True
-            except Exception as e:
-                print(f"Warning: Failed to trigger tree rebuild: {e}")
+            asyncio.create_task(_rebuild_tree_async())
+            rebuild_triggered = True
     
     return {
         "paper_id": paper_id,
@@ -1718,30 +1026,27 @@ async def _rebuild_tree_async() -> None:
     """
     import clustering
     import naming
-    try:
-        cluster_result = await asyncio.to_thread(clustering.build_tree_from_clusters)
-        if cluster_result.get("total_papers", 0) < 2:
-            print(
-                f"Tree rebuild skipped: {cluster_result.get('message', 'Not enough papers')}",
-                flush=True,
-            )
-            return
-
-        tree_structure = {
-            "name": cluster_result.get("name", "AI Papers"),
-            "children": cluster_result.get("children", []),
-        }
-
-        await asyncio.to_thread(clustering.write_tree_to_database, tree_structure)
-        naming_result = await naming.name_tree_nodes()
+    cluster_result = await asyncio.to_thread(clustering.build_tree_from_clusters)
+    if cluster_result.get("total_papers", 0) < 2:
         print(
-            f"Tree rebuild complete: papers={cluster_result.get('total_papers', 0)}, "
-            f"clusters={cluster_result.get('total_clusters', 0)}, "
-            f"nodes_named={naming_result.get('nodes_named', 0)}",
+            f"Tree rebuild skipped: {cluster_result.get('message', 'Not enough papers')}",
             flush=True,
         )
-    except Exception as e:
-        print(f"Tree rebuild failed: {e}", flush=True)
+        return
+
+    tree_structure = {
+        "name": cluster_result.get("name", "AI Papers"),
+        "children": cluster_result.get("children", []),
+    }
+
+    await asyncio.to_thread(clustering.write_tree_to_database, tree_structure)
+    naming_result = await naming.name_tree_nodes()
+    print(
+        f"Tree rebuild complete: papers={cluster_result.get('total_papers', 0)}, "
+        f"clusters={cluster_result.get('total_clusters', 0)}, "
+        f"nodes_named={naming_result.get('nodes_named', 0)}",
+        flush=True,
+    )
 
 
 async def _fetch_slack_messages(client, channel_id: str) -> list[dict[str, Any]]:
@@ -1750,44 +1055,7 @@ async def _fetch_slack_messages(client, channel_id: str) -> list[dict[str, Any]]
     Returns list of message objects containing 'text' field.
     Uses asyncio.to_thread to avoid blocking the event loop.
     """
-    all_messages = []
-    cursor = None
-    
-    while True:
-        try:
-            # Wrap blocking Slack API call in thread executor
-            response = await asyncio.to_thread(
-                client.conversations_history,
-                channel=channel_id,
-                cursor=cursor,
-                limit=200,  # Max per request
-            )
-            
-            if not response["ok"]:
-                raise HTTPException(
-                    status_code=400,
-                    detail=f"Slack API error: {response.get('error', 'Unknown error')}"
-                )
-            
-            messages = response.get("messages", [])
-            all_messages.extend(messages)
-            
-            # Check if there are more messages
-            response_metadata = response.get("response_metadata", {})
-            cursor = response_metadata.get("next_cursor")
-            
-            if not cursor:
-                break
-            
-            # Rate limiting: Slack allows 1 request per second for conversations.history
-            await asyncio.sleep(1.1)
-            
-        except HTTPException:
-            raise
-        except Exception as e:
-            raise HTTPException(status_code=500, detail=f"Error fetching Slack messages: {e}")
-    
-    return all_messages
+    return await fetch_slack_messages(client, channel_id)
 
 
 @app.post("/papers/batch-ingest")
@@ -1866,8 +1134,7 @@ async def batch_ingest(payload: BatchIngestRequest) -> dict[str, Any]:
             # Resolve channel ID (wrap blocking call)
             log_progress(f"Resolving channel: {payload.slack_channel}")
             try:
-                channel_id = await asyncio.to_thread(
-                    _resolve_slack_channel_id,
+                channel_id = await _resolve_slack_channel_id(
                     slack_client,
                     payload.slack_channel
                 )
@@ -2250,16 +1517,10 @@ async def batch_ingest(payload: BatchIngestRequest) -> dict[str, Any]:
     classification_config = _get_classification_config()
     if classification_config.get("rebuild_on_ingest", False) and success_count > 0:
         # Trigger tree rebuild in background (don't wait for it)
-        try:
-            import clustering
-            import naming
-            log_progress("Triggering tree rebuild...")
-            # Run rebuild asynchronously
-            asyncio.create_task(_rebuild_tree_async())
-            rebuild_triggered = True
-            log_progress("Tree rebuild triggered (running in background)")
-        except Exception as e:
-            log_progress(f"Warning: Failed to trigger tree rebuild: {e}")
+        log_progress("Triggering tree rebuild...")
+        asyncio.create_task(_rebuild_tree_async())
+        rebuild_triggered = True
+        log_progress("Tree rebuild triggered (running in background)")
     
     return {
         "total": total,
@@ -2496,7 +1757,7 @@ async def _prefetch_repos(arxiv_id: str, title: str, apis_config: dict) -> list[
 
 async def _search_papers_with_code(title: str) -> list[dict[str, Any]]:
     """Search Papers With Code for repositories."""
-    client = _get_http_client("paperswithcode", timeout=10.0)
+    client = get_http_client("paperswithcode", timeout=10.0)
     # Search for paper
     search_url = "https://paperswithcode.com/api/v1/papers/"
     response = await client.get(search_url, params={"q": title[:100]})
@@ -2536,7 +1797,7 @@ async def _search_github(title: str, github_token: Optional[str] = None) -> list
     if github_token:
         headers["Authorization"] = f"token {github_token}"
     
-    client = _get_http_client("github", timeout=10.0, headers={"Accept": "application/vnd.github.v3+json"})
+    client = get_http_client("github", timeout=10.0, headers={"Accept": "application/vnd.github.v3+json"})
     # Clean title for search
     clean_title = re.sub(r'[^\w\s]', '', title)[:50]
     search_url = "https://api.github.com/search/repositories"
@@ -2615,7 +1876,7 @@ async def _get_semantic_scholar_references(arxiv_id: str, api_key: Optional[str]
     if api_key:
         headers["x-api-key"] = api_key
     
-    client = _get_http_client("semantic_scholar", timeout=15.0)
+    client = get_http_client("semantic_scholar", timeout=15.0)
     # First get the paper ID
     paper_url = f"https://api.semanticscholar.org/graph/v1/paper/arXiv:{clean_id}"
     params = {"fields": "references.title,references.authors,references.year,references.externalIds"}
@@ -2739,7 +2000,7 @@ async def _get_semantic_scholar_recommendations(arxiv_id: str, limit: int = 10, 
     if api_key:
         headers["x-api-key"] = api_key
     
-    client = _get_http_client("semantic_scholar", timeout=15.0)
+    client = get_http_client("semantic_scholar", timeout=15.0)
     # Use the Recommendations API to find similar papers from Semantic Scholar's 200M+ paper database
     rec_url = f"https://api.semanticscholar.org/recommendations/v1/papers/forpaper/arXiv:{clean_id}"
     params = {
