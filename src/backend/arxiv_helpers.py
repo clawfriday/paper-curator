@@ -23,14 +23,14 @@ def require_identifier(arxiv_id: Optional[str], url: Optional[str]) -> str:
 def extract_arxiv_ids_from_text(text: str) -> list[str]:
     """Extract arXiv IDs from text (handles URLs and bare IDs)."""
     arxiv_ids = set()
-    # URL patterns
-    url_pattern = r"arxiv\\.org/(abs|pdf)/([0-9.]+)"
+    # URL patterns (note: single backslash in raw strings)
+    url_pattern = r"arxiv\.org/(abs|pdf)/([0-9.]+)"
     for match in re.finditer(url_pattern, text):
         arxiv_id = match.group(2)
         arxiv_id = arxiv_id.replace(".pdf", "")
         arxiv_ids.add(arxiv_id)
-    # Bare ID patterns
-    bare_pattern = r"\\b([0-9]{4}\\.[0-9]{4,5})(v\\d+)?\\b"
+    # Bare ID patterns (e.g., 2203.02155 or 2203.02155v1)
+    bare_pattern = r"\b([0-9]{4}\.[0-9]{4,5})(v\d+)?\b"
     for match in re.finditer(bare_pattern, text):
         arxiv_ids.add(match.group(1))
     return list(arxiv_ids)

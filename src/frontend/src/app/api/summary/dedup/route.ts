@@ -2,10 +2,12 @@ import { NextRequest, NextResponse } from "next/server";
 
 export const maxDuration = 60;
 
+const BACKEND_URL = process.env.BACKEND_URL || "http://backend:8000";
+
 export async function POST(request: NextRequest) {
   const body = await request.json();
   
-  const response = await fetch("http://backend:8000/summary/dedup", {
+  const response = await fetch(`${BACKEND_URL}/summary/dedup`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(body),

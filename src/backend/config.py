@@ -70,9 +70,19 @@ def _load_prompt() -> tuple[str, str, str]:
 
 
 def _convert_localhost_for_docker(url: str) -> str:
-    """Convert localhost URLs to host.docker.internal when running in Docker."""
+    """Convert localhost URLs to host.docker.internal when running in Docker.
+    
+    Note: This conversion is only needed for Docker. In Singularity/Apptainer,
+    localhost works directly since containers share the host network.
+    """
     if not url:
         return url
+    
+    # Skip conversion if running in Singularity/Apptainer (these env vars are set by the runtime)
+    if os.environ.get("SINGULARITY_CONTAINER") or os.environ.get("APPTAINER_CONTAINER"):
+        return url
+    
+    # Only convert for Docker (detected by postgresql:// in DATABASE_URL)
     in_docker = os.environ.get("DATABASE_URL", "").startswith("postgresql://")
     if in_docker:
         url = url.replace("://localhost:", "://host.docker.internal:")
@@ -125,6 +135,15 @@ def _get_classification_config() -> dict[str, Any]:
     return {
         "branching_factor": int(classification.get("branching_factor", 5)),
         "rebuild_on_ingest": bool(classification.get("rebuild_on_ingest", True)),
+    }
+
+
+def _get_ingestion_config() -> dict[str, Any]:
+    """Get ingestion configuration."""
+    config = _load_config()
+    ingestion = config.get("ingestion", {})
+    return {
+        "skip_existing": bool(ingestion.get("skip_existing", True)),
     }
 
 

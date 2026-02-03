@@ -4,7 +4,7 @@ VENV_DIR := .venv
 ACTIVATE := source $(VENV_DIR)/bin/activate
 
 .PHONY: install install-frontend test run clean docker-build docker-run \
-       singularity-build singularity-run singularity-stop
+       singularity-build singularity-run singularity-stop pull-slack
 
 # Create virtual environment and install all dependencies
 install: $(VENV_DIR)/bin/activate install-frontend
@@ -78,6 +78,26 @@ singularity-run:
 # Stop all Singularity instances
 singularity-stop:
 	./scripts/hpc-services.sh stop
+
+# Pull papers from Slack channel (default: C0A727EKAJV, override with SLACK_CHANNEL=...)
+# Token is read from ~/.ssh/.slack
+SLACK_CHANNEL ?= https://app.slack.com/client/T04MW5HMWV9/C0A727EKAJV
+SLACK_TOKEN_FILE := $(HOME)/.ssh/.slack
+
+pull-slack:
+	@if [ ! -f "$(SLACK_TOKEN_FILE)" ]; then \
+		echo "Error: Slack token not found at $(SLACK_TOKEN_FILE)"; \
+		echo "Create the file with your Slack User OAuth Token (xoxp-...)"; \
+		exit 1; \
+	fi
+	@echo "Starting Slack ingestion from: $(SLACK_CHANNEL)"
+	@SLACK_TOKEN=$$(cat "$(SLACK_TOKEN_FILE)") && \
+	curl -s -X POST http://localhost:3100/papers/batch-ingest \
+		-H "Content-Type: application/json" \
+		-d "{\"slack_channel\": \"$(SLACK_CHANNEL)\", \"slack_token\": \"$$SLACK_TOKEN\"}" | \
+	python3 -c "import sys,json; d=json.load(sys.stdin); \
+		print('\\n'.join(d.get('progress_log',['No progress log'])[-20:])); \
+		print(f'\\n=== Result: {d.get(\"success\",0)} success, {d.get(\"skipped\",0)} skipped, {d.get(\"errors\",0)} errors ===')"
 
 # =============================================================================
 # End Singularity targets

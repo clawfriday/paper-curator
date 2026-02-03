@@ -23,12 +23,17 @@ From: node:20-slim
 %post
     cd /app
     npm ci || npm install
+    # Set BACKEND_URL for build-time (rewrites use this at build time)
+    # For Singularity/HPC, backend runs on localhost:3100
+    export BACKEND_URL="http://localhost:3100"
     npm run build
 
 %environment
     export NODE_ENV=production
     export PORT=3000
     export HOSTNAME="0.0.0.0"
+    # Runtime BACKEND_URL for API routes
+    export BACKEND_URL="http://localhost:3100"
 
 %runscript
     cd /app/.next/standalone

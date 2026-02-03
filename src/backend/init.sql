@@ -82,6 +82,18 @@ CREATE TABLE IF NOT EXISTS similar_papers_cache (
 
 CREATE INDEX IF NOT EXISTS idx_similar_paper ON similar_papers_cache(paper_id);
 
+-- QA queries cache: stores question-answer history for papers
+CREATE TABLE IF NOT EXISTS paper_queries (
+    id SERIAL PRIMARY KEY,
+    paper_id INTEGER REFERENCES papers(id) ON DELETE CASCADE,
+    question TEXT NOT NULL,
+    answer TEXT NOT NULL,
+    model VARCHAR(100),
+    created_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_queries_paper ON paper_queries(paper_id);
+
 
 -- Function to update updated_at timestamp
 CREATE OR REPLACE FUNCTION update_updated_at_column()

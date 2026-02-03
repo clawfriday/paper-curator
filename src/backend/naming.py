@@ -304,12 +304,12 @@ class AsyncTreeNamer:
                 if isinstance(result, Exception):
                     print(f"  ✗ Error naming {node_id}: {result}")
         
-        # Debug: save LLM calls to file
+        # Debug: save LLM calls to file (use storage dir for Singularity compatibility)
         if self.debug and self.llm_calls:
-            os.makedirs("schemas", exist_ok=True)
-            with open("schemas/llm_naming.json", "w") as f:
+            os.makedirs("storage/schemas", exist_ok=True)
+            with open("storage/schemas/llm_naming.json", "w") as f:
                 json.dump(self.llm_calls, f, indent=2)
-            print(f"Debug: Saved {len(self.llm_calls)} LLM calls to schemas/llm_naming.json")
+            print(f"Debug: Saved {len(self.llm_calls)} LLM calls to storage/schemas/llm_naming.json")
         
         return {
             "nodes_named": self.nodes_named,
@@ -594,11 +594,12 @@ async def name_tree_nodes(debug: bool = False) -> dict[str, Any]:
             r["children"] = [simplify_node(c) for c in node.get("children", [])]
         return r
 
-    os.makedirs("schemas", exist_ok=True)
-    with open("schemas/named_tree.json", "w") as f:
+    # Use storage directory which is writable in Singularity containers
+    os.makedirs("storage/schemas", exist_ok=True)
+    with open("storage/schemas/named_tree.json", "w") as f:
         json.dump(simplify_node(tree), f, indent=2)
     if debug:
-        print("Debug: Saved named tree to schemas/named_tree.json")
+        print("Debug: Saved named tree to storage/schemas/named_tree.json")
     
     return result
 
@@ -665,9 +666,9 @@ if __name__ == "__main__":
     id_counts = Counter(all_node_ids)
     duplicates = {k: v for k, v in id_counts.items() if v > 1}
     
-    # Save
-    os.makedirs("schemas", exist_ok=True)
-    output_path = "schemas/named_tree.json"
+    # Save (use storage dir for Singularity compatibility)
+    os.makedirs("storage/schemas", exist_ok=True)
+    output_path = "storage/schemas/named_tree.json"
     with open(output_path, "w") as f:
         json.dump(simplified_tree, f, indent=2)
     

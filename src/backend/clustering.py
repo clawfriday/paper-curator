@@ -677,9 +677,11 @@ if __name__ == "__main__":
     print("Tree structure (saved to tree.json):")
     print("=" * 60)
     
-    # Remove metadata for cleaner output
+    # Remove metadata for cleaner output (use storage dir for Singularity compatibility)
+    import os
+    os.makedirs("storage/schemas", exist_ok=True)
     output = {k: v for k, v in result.items() if k not in ['total_papers', 'total_clusters', 'message']}
-    with open("tree.json", "w") as f:
+    with open("storage/schemas/tree.json", "w") as f:
         json.dump(output, f, indent=2, default=str)
     
-    print(f"Tree saved to tree.json")
+    print(f"Tree saved to storage/schemas/tree.json")

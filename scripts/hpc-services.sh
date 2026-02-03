@@ -136,12 +136,29 @@ start_db() {
     # Wait for database to be ready
     wait_for_port "$DB_PORT" "Database" 60
     
-    # Create database and user if this is first run
+    # Create database user and run init.sql on first run
     if [[ -f "$PGDATA/init.sql" ]]; then
-        log "Running database initialization..."
+        log "Creating database user and database..."
+        
+        # Get the OS username (this is the superuser created by initdb)
+        local os_user
+        os_user=$(whoami)
+        
+        # Create the curator user and database
         singularity exec instance://paper-curator-db \
-            /usr/lib/postgresql/16/bin/psql -h localhost -p "$DB_PORT" -U postgres -f /var/lib/postgresql/data/init.sql 2>/dev/null || true
-        # Remove init.sql after running to avoid re-running
+            /usr/lib/postgresql/16/bin/psql -h localhost -p "$DB_PORT" -U "$os_user" -d postgres \
+            -c "CREATE USER $DB_USER WITH PASSWORD '$DB_PASS' SUPERUSER;" 2>/dev/null || true
+        
+        singularity exec instance://paper-curator-db \
+            /usr/lib/postgresql/16/bin/psql -h localhost -p "$DB_PORT" -U "$os_user" -d postgres \
+            -c "CREATE DATABASE $DB_NAME OWNER $DB_USER;" 2>/dev/null || true
+        
+        log "Running database schema initialization..."
+        # Run init.sql using the curator user on the paper_curator database
+        cat "${PROJECT_ROOT}/src/backend/init.sql" | singularity exec instance://paper-curator-db \
+            /usr/lib/postgresql/16/bin/psql -h localhost -p "$DB_PORT" -U "$DB_USER" -d "$DB_NAME"
+        
+        # Remove init.sql marker to avoid re-running
         rm -f "$PGDATA/init.sql"
     fi
 }

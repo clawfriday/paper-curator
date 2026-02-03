@@ -1,59 +1,73 @@
 /** @type {import('next').NextConfig} */
+
+// Backend URL: defaults to Docker service name, override with BACKEND_URL env var
+// For Docker: http://backend:8000 (default)
+// For Singularity/HPC: http://localhost:3100
+const backendUrl = process.env.BACKEND_URL || "http://backend:8000";
+
 const nextConfig = {
   output: "standalone",
+  // Expose BACKEND_URL to API routes at runtime
+  serverRuntimeConfig: {
+    backendUrl: backendUrl,
+  },
+  // Also expose for build-time rewrites
+  env: {
+    BACKEND_URL: backendUrl,
+  },
   async rewrites() {
     return [
       // Core endpoints
       {
         source: "/api/arxiv/:path*",
-        destination: "http://backend:8000/arxiv/:path*",
+        destination: `${backendUrl}/arxiv/:path*`,
       },
       {
         source: "/api/pdf/:path*",
-        destination: "http://backend:8000/pdf/:path*",
+        destination: `${backendUrl}/pdf/:path*`,
       },
       {
         source: "/api/classify",
-        destination: "http://backend:8000/classify",
+        destination: `${backendUrl}/classify`,
       },
       {
         source: "/api/abbreviate",
-        destination: "http://backend:8000/abbreviate",
+        destination: `${backendUrl}/abbreviate`,
       },
       {
         source: "/api/embed",
-        destination: "http://backend:8000/embed",
+        destination: `${backendUrl}/embed`,
       },
       // Note: /api/qa is handled by custom API route with extended timeout
       {
         source: "/api/health",
-        destination: "http://backend:8000/health",
+        destination: `${backendUrl}/health`,
       },
       {
         source: "/api/config",
-        destination: "http://backend:8000/config",
+        destination: `${backendUrl}/config`,
       },
       // Database & Tree endpoints
       {
         source: "/api/papers/:path*",
-        destination: "http://backend:8000/papers/:path*",
+        destination: `${backendUrl}/papers/:path*`,
       },
       {
         source: "/api/tree",
-        destination: "http://backend:8000/tree",
+        destination: `${backendUrl}/tree`,
       },
       {
         source: "/api/tree/:path*",
-        destination: "http://backend:8000/tree/:path*",
+        destination: `${backendUrl}/tree/:path*`,
       },
       // Feature endpoints
       {
         source: "/api/repos/:path*",
-        destination: "http://backend:8000/repos/:path*",
+        destination: `${backendUrl}/repos/:path*`,
       },
       {
         source: "/api/references/:path*",
-        destination: "http://backend:8000/references/:path*",
+        destination: `${backendUrl}/references/:path*`,
       },
       // Note: /api/summarize is handled by custom API route with extended timeout
     ];

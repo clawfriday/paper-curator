@@ -1,5 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 
+const BACKEND_URL = process.env.BACKEND_URL || "http://backend:8000";
+
 export async function DELETE(request: NextRequest) {
   const body = await request.json();
   const arxivId = body.arxiv_id;
@@ -8,7 +10,7 @@ export async function DELETE(request: NextRequest) {
     return NextResponse.json({ error: "arxiv_id is required" }, { status: 400 });
   }
   
-  const res = await fetch(`http://backend:8000/papers/${encodeURIComponent(arxivId)}`, {
+  const res = await fetch(`${BACKEND_URL}/papers/${encodeURIComponent(arxivId)}`, {
     method: "DELETE",
     headers: { "Content-Type": "application/json" },
   });

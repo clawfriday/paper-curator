@@ -27,6 +27,7 @@ from config import (
     _get_classification_config,
     _get_endpoint_config,
     _get_external_apis_config,
+    _get_ingestion_config,
     _get_ui_config,
     _load_prompt,
     get_prompt,
@@ -1099,6 +1100,10 @@ async def batch_ingest(payload: BatchIngestRequest) -> dict[str, Any]:
     embed_base_url = endpoint_config["embedding_base_url"]
     api_key = endpoint_config["api_key"]
     
+    # Get skip_existing from config (payload.skip_existing is ignored now - config.yaml controls this)
+    ingestion_config = _get_ingestion_config()
+    skip_existing = ingestion_config["skip_existing"]
+    
     # Verify endpoints before starting
     try:
         model = _resolve_model(base_url, api_key)
@@ -1185,13 +1190,50 @@ async def batch_ingest(payload: BatchIngestRequest) -> dict[str, Any]:
             # Extract arXiv IDs from all messages
             log_progress("Extracting arXiv IDs from messages...")
             all_arxiv_ids = set()
+            debug_sample_logged = False
             try:
                 for i, message in enumerate(messages):
                     if (i + 1) % 100 == 0:
                         log_progress(f"  Processing message {i+1}/{len(messages)}...")
+                    
+                    # Debug: log first message with attachments or blocks to understand structure
+                    if not debug_sample_logged and (message.get("attachments") or message.get("blocks")):
+                        import json
+                        log_progress(f"  [DEBUG] Sample message structure: {json.dumps(message, indent=2)[:2000]}")
+                        debug_sample_logged = True
+                    
+                    # Extract from main text
                     text = message.get("text", "")
                     arxiv_ids = _extract_arxiv_ids_from_text(text)
                     all_arxiv_ids.update(arxiv_ids)
+                    
+                    # Also check attachments (unfurled URLs)
+                    for attachment in message.get("attachments", []):
+                        # Check title_link, original_url, and text in attachments
+                        for field in ["title_link", "original_url", "from_url", "text", "fallback"]:
+                            if field in attachment:
+                                arxiv_ids = _extract_arxiv_ids_from_text(str(attachment[field]))
+                                all_arxiv_ids.update(arxiv_ids)
+                    
+                    # Also check blocks (rich text format)
+                    for block in message.get("blocks", []):
+                        # Extract URLs from section blocks
+                        if block.get("type") == "section":
+                            block_text = block.get("text", {})
+                            if isinstance(block_text, dict):
+                                arxiv_ids = _extract_arxiv_ids_from_text(block_text.get("text", ""))
+                                all_arxiv_ids.update(arxiv_ids)
+                        # Extract from rich_text blocks
+                        if block.get("type") == "rich_text":
+                            for element in block.get("elements", []):
+                                for sub_element in element.get("elements", []):
+                                    if sub_element.get("type") == "link":
+                                        url = sub_element.get("url", "")
+                                        arxiv_ids = _extract_arxiv_ids_from_text(url)
+                                        all_arxiv_ids.update(arxiv_ids)
+                                    elif sub_element.get("type") == "text":
+                                        arxiv_ids = _extract_arxiv_ids_from_text(sub_element.get("text", ""))
+                                        all_arxiv_ids.update(arxiv_ids)
                 log_progress(f"✓ Found {len(all_arxiv_ids)} unique arXiv papers")
             except Exception as e:
                 import traceback
@@ -1231,7 +1273,7 @@ async def batch_ingest(payload: BatchIngestRequest) -> dict[str, Any]:
                 try:
                     # Check if already exists
                     log_progress(f"  [{arxiv_id}] Checking if paper already exists...")
-                    if payload.skip_existing and db.get_paper_by_arxiv_id(arxiv_id):
+                    if skip_existing and db.get_paper_by_arxiv_id(arxiv_id):
                         log_progress(f"  [{arxiv_id}] ⏭ Skipped (already exists)")
                         results.append({
                             "file": arxiv_id,
@@ -1405,7 +1447,7 @@ async def batch_ingest(payload: BatchIngestRequest) -> dict[str, Any]:
                 paper_id = f"local_{hashlib.md5(filename.encode()).hexdigest()[:12]}"
                 
                 # Check if already exists
-                if payload.skip_existing and db.get_paper_by_arxiv_id(paper_id):
+                if skip_existing and db.get_paper_by_arxiv_id(paper_id):
                     results.append({
                         "file": pdf_file.name,
                         "status": "skipped",

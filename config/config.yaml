@@ -6,6 +6,12 @@ server:
   backend_port: 3100
 
 # =============================================================================
+# Ingestion settings
+# =============================================================================
+ingestion:
+  skip_existing: true  # Set to true to skip papers already in database during batch ingest
+
+# =============================================================================
 # OpenAI-compatible API endpoints
 # NOTE: You can use localhost URLs - they auto-convert to host.docker.internal in Docker
 # =============================================================================
