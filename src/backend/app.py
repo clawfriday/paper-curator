@@ -909,32 +909,41 @@ async def abbreviate(payload: AbbreviateRequest) -> dict[str, Any]:
 
 class ReabbreviateRequest(BaseModel):
     arxiv_id: str
+    custom_name: Optional[str] = None  # If provided, use this instead of LLM
 
 
 @app.post("/papers/reabbreviate")
 async def reabbreviate_paper(payload: ReabbreviateRequest) -> dict[str, Any]:
-    """Re-generate abbreviation for an existing paper and update tree node."""
+    """Re-generate abbreviation for an existing paper and update tree node.
+    
+    If custom_name is provided, use it directly.
+    Otherwise, generate using LLM with temperature=0.7 for variety.
+    """
     # Get paper from DB
     paper = db.get_paper_by_arxiv_id(payload.arxiv_id)
     if not paper:
         raise HTTPException(status_code=404, detail="Paper not found")
     
-    # Generate new abbreviation
-    endpoint_config = _get_endpoint_config()
-    base_url = endpoint_config["llm_base_url"]
-    api_key = endpoint_config["api_key"]
-    model = _resolve_model(base_url, api_key)
-    client = _get_async_openai_client(base_url, api_key)
-    
-    prompt = get_prompt("abbreviate", title=paper["title"])
-    
-    response = await client.chat.completions.create(
-        model=model,
-        messages=[{"role": "user", "content": prompt}],
-        max_tokens=20,
-        temperature=0.1,
-    )
-    abbrev = response.choices[0].message.content.strip().strip('"\'').strip()
+    if payload.custom_name:
+        # Use custom name provided by user
+        abbrev = payload.custom_name.strip()
+    else:
+        # Generate new abbreviation using LLM
+        endpoint_config = _get_endpoint_config()
+        base_url = endpoint_config["llm_base_url"]
+        api_key = endpoint_config["api_key"]
+        model = _resolve_model(base_url, api_key)
+        client = _get_async_openai_client(base_url, api_key)
+        
+        prompt = get_prompt("abbreviate", title=paper["title"])
+        
+        response = await client.chat.completions.create(
+            model=model,
+            messages=[{"role": "user", "content": prompt}],
+            max_tokens=20,
+            temperature=0.7,  # Higher temperature for variety on re-runs
+        )
+        abbrev = response.choices[0].message.content.strip().strip('"\'').strip()
     
     # Store abbreviation in papers table
     db.update_paper_abbreviation(paper["id"], abbrev)
@@ -982,6 +991,32 @@ async def reabbreviate_all_papers() -> dict[str, Any]:
     results = await asyncio.gather(*[abbreviate_one(p) for p in papers])
     
     return {"updated": len(results), "results": results}
+
+
+class RenameCategoryRequest(BaseModel):
+    node_id: str
+    custom_name: Optional[str] = None  # If provided, use this instead of LLM
+
+
+@app.post("/categories/rename")
+async def rename_category(payload: RenameCategoryRequest) -> dict[str, Any]:
+    """Rename a category node using LLM or custom name.
+    
+    Uses contrastive naming logic (considers siblings and their children).
+    If custom_name is provided, uses it directly.
+    Otherwise, generates using LLM with temperature=0.7 for variety.
+    """
+    import naming
+    
+    try:
+        result = await naming.rename_single_category(
+            node_id=payload.node_id,
+            custom_name=payload.custom_name,
+            temperature=0.7,
+        )
+        return result
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
 
 
 # =============================================================================

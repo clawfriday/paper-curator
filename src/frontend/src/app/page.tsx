@@ -1374,6 +1374,78 @@ export default function Home() {
     }, 100);
   };
 
+  // Re-abbreviate handler for papers and categories
+  const handleReabbreviate = async (node: PaperNode) => {
+    // Show prompt dialog
+    const result = window.prompt(
+      `Re-abbreviate "${node.name}"\n\nEnter a custom name, or leave empty and click OK to auto-generate with AI.\nClick Cancel to abort.`
+    );
+    
+    // If user clicked Cancel (result is null), do nothing
+    if (result === null) {
+      return;
+    }
+    
+    const customName = result.trim() || undefined;
+    
+    try {
+      let endpoint: string;
+      let body: Record<string, string | undefined>;
+      
+      if (isCategory(node)) {
+        // Category rename
+        endpoint = "/api/categories/rename";
+        body = { 
+          node_id: node.node_id || node.name,
+          custom_name: customName,
+        };
+      } else {
+        // Paper re-abbreviation
+        const arxivId = node.attributes?.arxivId;
+        if (!arxivId) {
+          alert("Cannot re-abbreviate: Paper has no arXiv ID");
+          return;
+        }
+        endpoint = "/api/papers/reabbreviate";
+        body = {
+          arxiv_id: arxivId,
+          custom_name: customName,
+        };
+      }
+      
+      const res = await fetch(endpoint, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      });
+      
+      if (res.ok) {
+        const data = await res.json();
+        const newName = data.name || data.abbreviation;
+        
+        // Refresh tree to get updated node names
+        const treeRes = await fetch("/api/tree");
+        if (treeRes.ok) {
+          const treeData = await treeRes.json();
+          setTaxonomy(treeData);
+        }
+        
+        // Update selected node locally for immediate feedback
+        if (selectedNode && (selectedNode.node_id === node.node_id || selectedNode.name === node.name)) {
+          setSelectedNode({ ...selectedNode, name: newName });
+        }
+        
+        console.log(`Re-abbreviated to: ${newName}`);
+      } else {
+        const errorData = await res.json().catch(() => ({}));
+        alert(`Failed to re-abbreviate: ${errorData.detail || res.statusText}`);
+      }
+    } catch (e) {
+      console.error("Re-abbreviate error:", e);
+      alert(`Error: ${e}`);
+    }
+  };
+
   const handleQuery = async () => {
     if (!selectedNode?.attributes?.arxivId || !queryInput.trim()) return;
     setIsQuerying(true);
@@ -1524,38 +1596,6 @@ export default function Home() {
       logFeature(`✗ Error: ${e}`);
     } finally {
       setIsDedupingSummary(false);
-      logFeature("Done");
-    }
-  };
-
-  const handleReabbreviate = async () => {
-    if (!selectedNode?.attributes?.arxivId) return;
-    setIsReabbreviating(true);
-    clearFeatureLog();
-    logFeature(`Re-generating abbreviation for ${selectedNode.attributes.arxivId}...`);
-    
-    try {
-      const res = await fetch("/api/papers/reabbreviate", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ arxiv_id: selectedNode.attributes.arxivId }),
-      });
-      if (res.ok) {
-        const data = await res.json();
-        logFeature(`✓ New abbreviation: ${data.abbreviation}`);
-        // Reload tree to reflect changes
-        const treeRes = await fetch("/api/tree");
-        if (treeRes.ok) {
-          const treeData = await treeRes.json();
-          setTaxonomy(treeData);
-        }
-      } else {
-        logFeature(`✗ Error: ${res.status}`);
-      }
-    } catch (e) {
-      logFeature(`✗ Error: ${e}`);
-    } finally {
-      setIsReabbreviating(false);
       logFeature("Done");
     }
   };
@@ -2579,7 +2619,16 @@ export default function Home() {
                       {/* Category Details */}
                       {selectedNode && isCategory(selectedNode) && (
                         <div className="mb-4 pb-4 border-b border-gray-200">
-                          <h2 className="font-semibold mb-3" style={{ fontSize: `${panelFontSize + 2}px` }}>Category Details</h2>
+                          <div className="flex items-center justify-between mb-3">
+                            <h2 className="font-semibold" style={{ fontSize: `${panelFontSize + 2}px` }}>Category Details</h2>
+                            <button
+                              onClick={() => handleReabbreviate(selectedNode)}
+                              className="px-2 py-1 text-xs bg-blue-100 hover:bg-blue-200 text-blue-700 rounded transition-colors"
+                              title="Re-generate category name using AI or enter custom name"
+                            >
+                              Re-name
+                            </button>
+                          </div>
                           <h3 className="font-semibold mb-2">{selectedNode.name}</h3>
                           
                           {/* Ancestry chain */}
@@ -2647,7 +2696,16 @@ export default function Home() {
                       {/* Paper Details */}
                       {selectedNode && !isCategory(selectedNode) && selectedNode.attributes && (
                         <div className="mb-4 pb-4 border-b border-gray-200">
-                          <h2 className="font-semibold mb-3" style={{ fontSize: `${panelFontSize + 2}px` }}>Paper Details</h2>
+                          <div className="flex items-center justify-between mb-3">
+                            <h2 className="font-semibold" style={{ fontSize: `${panelFontSize + 2}px` }}>Paper Details</h2>
+                            <button
+                              onClick={() => handleReabbreviate(selectedNode)}
+                              className="px-2 py-1 text-xs bg-blue-100 hover:bg-blue-200 text-blue-700 rounded transition-colors"
+                              title="Re-generate paper abbreviation using AI or enter custom name"
+                            >
+                              Re-abbreviate
+                            </button>
+                          </div>
                           <h3 className="font-semibold mb-2">{selectedNode.attributes.title || selectedNode.name}</h3>
                           
                           {/* Ancestry chain */}

@@ -432,7 +432,7 @@ class AsyncTreeNamer:
                     model=self.model,
                     messages=[{"role": "user", "content": prompt}],
                     max_tokens=50,
-                    temperature=0.1,
+                    temperature=0.7,  # Higher temperature for variety on re-naming
                 )
                 
                 response_text = response.choices[0].message.content
@@ -602,6 +602,127 @@ async def name_tree_nodes(debug: bool = False) -> dict[str, Any]:
         print("Debug: Saved named tree to storage/schemas/named_tree.json")
     
     return result
+
+
+# =============================================================================
+# Single Node Rename (For UI Re-abbreviation)
+# =============================================================================
+
+async def rename_single_category(
+    node_id: str,
+    custom_name: str | None = None,
+    temperature: float = 0.7,
+) -> dict[str, Any]:
+    """Rename a single category node using LLM or custom name.
+    
+    This function is used by the frontend's "Re-abbreviate" button for categories.
+    It uses the same contrastive naming logic as the full tree naming process.
+    
+    Args:
+        node_id: The category node ID to rename
+        custom_name: If provided, use this name directly (skip LLM)
+        temperature: LLM temperature (default 0.7 for variety)
+    
+    Returns:
+        dict with 'name', 'node_id', 'used_custom'
+    """
+    from llm_clients import get_async_openai_client, get_llm_config
+    
+    # Get tree and build index
+    tree = db.get_tree()
+    
+    # Find the node
+    def find_node(node: dict, target_id: str) -> dict | None:
+        if node.get("node_id") == target_id:
+            return node
+        for child in node.get("children", []):
+            found = find_node(child, target_id)
+            if found:
+                return found
+        return None
+    
+    target_node = find_node(tree, node_id)
+    if not target_node:
+        raise ValueError(f"Node {node_id} not found")
+    
+    if target_node.get("node_type") == "paper":
+        raise ValueError("Use /papers/reabbreviate for paper nodes")
+    
+    # If custom name provided, use it directly
+    if custom_name:
+        new_name = custom_name.strip()
+        db.update_tree_node_name(node_id, new_name)
+        return {"name": new_name, "node_id": node_id, "used_custom": True}
+    
+    # Build context using tree index
+    index = TreeIndex(tree)
+    
+    # Get child names
+    child_ids = index.children_of.get(node_id, [])
+    child_names = [
+        index.node_ref.get(cid, {}).get("name", cid)
+        for cid in child_ids
+    ]
+    
+    # Get sibling context
+    sibling_ids = index.get_siblings(node_id)
+    sibling_context: list[str] = []
+    
+    for sib_id in sibling_ids:
+        sib_name = index.node_ref.get(sib_id, {}).get("name", sib_id)
+        sibling_context.append(f"Sibling: {sib_name}")
+        
+        sib_child_ids = index.children_of.get(sib_id, [])
+        for sib_child_id in sib_child_ids:
+            sib_child_name = index.node_ref.get(sib_child_id, {}).get("name", sib_child_id)
+            sibling_context.append(f"  - {sib_child_name}")
+    
+    # Build children content
+    is_leaf = index.is_leaf_category(node_id)
+    if is_leaf:
+        # Use paper summaries for leaf categories
+        children_content = []
+        for child in target_node.get("children", []):
+            if child.get("paper_id"):
+                summary = index.get_paper_summary(child["paper_id"])
+                if summary:
+                    children_content.append(summary[:500])
+    else:
+        # Use child category names
+        children_content = list(child_names)
+    
+    # Call LLM
+    llm_config = get_llm_config()
+    client = get_async_openai_client(llm_config["base_url"], llm_config["api_key"])
+    model = llm_config["model"]
+    
+    children_text = "\n\n".join([
+        f"Child {i+1}:\n{content}"
+        for i, content in enumerate(children_content)
+    ]) if children_content else "No children content available"
+    
+    siblings_text = "\n".join(sibling_context) if sibling_context else "None"
+    
+    prompt = _get_prompt(
+        "node_naming",
+        children_summaries=children_text,
+        sibling_summaries=siblings_text,
+    )
+    
+    response = await client.chat.completions.create(
+        model=model,
+        messages=[{"role": "user", "content": prompt}],
+        max_tokens=50,
+        temperature=temperature,
+    )
+    
+    raw_name = response.choices[0].message.content.strip().strip('"\'')
+    new_name = AsyncTreeNamer._sanitize_name(raw_name)
+    
+    # Update database
+    db.update_tree_node_name(node_id, new_name)
+    
+    return {"name": new_name, "node_id": node_id, "used_custom": False}
 
 
 # =============================================================================

@@ -112,3 +112,32 @@ def reset_litellm_callbacks() -> None:
                 manager._callbacks = []
     except Exception:
         pass  # Ignore if attribute structure is different
+
+
+def get_llm_config() -> dict[str, str]:
+    """Load LLM configuration from config.yaml.
+    
+    Returns:
+        dict with 'base_url', 'api_key', 'model'
+    """
+    import yaml
+    from pathlib import Path
+    
+    config_paths = [
+        Path("config/config.yaml"),
+        Path("../config/config.yaml"),
+        Path("../../config/config.yaml"),
+    ]
+    
+    config = {}
+    for path in config_paths:
+        if path.exists():
+            with open(path, "r") as f:
+                config = yaml.safe_load(f) or {}
+            break
+    
+    base_url = config.get("llm_base_url", "http://localhost:8001/v1")
+    api_key = config.get("api_key", "dummy")
+    model = resolve_model(base_url, api_key)
+    
+    return {"base_url": base_url, "api_key": api_key, "model": model}
