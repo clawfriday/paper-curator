@@ -32,43 +32,21 @@ logger = logging.getLogger(__name__)
 # =============================================================================
 
 def _get_clustering_config() -> dict[str, Any]:
-    """Get clustering configuration from config file.
+    """Get clustering configuration from config (with DB overrides).
     
     Returns:
         Dictionary with clustering parameters:
         - branching_factor: Maximum children before branching
         - clustering_method: Clustering algorithm (currently only "divisive")
     """
-    import yaml
-    from pathlib import Path
+    from config import _get_classification_config
     
-    # Try multiple paths
-    config_paths = [
-        Path("config/config.yaml"),
-        Path("../config/config.yaml"),
-        Path("../../config/config.yaml"),
-    ]
+    # Get config from centralized config module (supports DB overrides)
+    classification_config = _get_classification_config()
     
-    config_path = None
-    for path in config_paths:
-        if path.exists():
-            config_path = path
-            break
-    
-    if not config_path:
-        # Default config
-        return {
-            "branching_factor": 3,
-            "clustering_method": "divisive",
-        }
-    
-    with open(config_path, "r") as f:
-        config = yaml.safe_load(f)
-    
-    classification = config.get("classification", {})
     return {
-        "branching_factor": int(classification.get("branching_factor", 3)),
-        "clustering_method": classification.get("clustering_method", "divisive"),
+        "branching_factor": classification_config["branching_factor"],
+        "clustering_method": "divisive",  # Currently only divisive is supported
     }
 
 

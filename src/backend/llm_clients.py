@@ -115,29 +115,18 @@ def reset_litellm_callbacks() -> None:
 
 
 def get_llm_config() -> dict[str, str]:
-    """Load LLM configuration from config.yaml.
+    """Load LLM configuration from config (with DB overrides).
     
     Returns:
         dict with 'base_url', 'api_key', 'model'
     """
-    import yaml
-    from pathlib import Path
+    from config import _get_endpoint_config
     
-    config_paths = [
-        Path("config/config.yaml"),
-        Path("../config/config.yaml"),
-        Path("../../config/config.yaml"),
-    ]
+    # Get config from centralized config module (supports DB overrides)
+    endpoint_config = _get_endpoint_config()
     
-    config = {}
-    for path in config_paths:
-        if path.exists():
-            with open(path, "r") as f:
-                config = yaml.safe_load(f) or {}
-            break
-    
-    base_url = config.get("llm_base_url", "http://localhost:8001/v1")
-    api_key = config.get("api_key", "dummy")
+    base_url = endpoint_config["llm_base_url"]
+    api_key = endpoint_config["api_key"]
     model = resolve_model(base_url, api_key)
     
     return {"base_url": base_url, "api_key": api_key, "model": model}
