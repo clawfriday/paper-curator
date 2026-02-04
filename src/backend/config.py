@@ -6,13 +6,38 @@ import json
 import os
 import pathlib
 from functools import lru_cache
-from typing import Any
+from typing import Any, Optional
 
 import yaml
 from fastapi import HTTPException
 
 _prompts_cache: dict[str, Any] | None = None
 _prompts_mtime: float = 0
+
+
+def _get_db_setting(key: str, default: Any = None, value_type: str = "string") -> Any:
+    """Get a setting from the database, with type conversion and fallback to default.
+    
+    This function is used to check DB overrides before falling back to config.yaml values.
+    """
+    try:
+        import db
+        value = db.get_setting(key)
+        if value is None:
+            return default
+        
+        # Type conversion
+        if value_type == "boolean":
+            return value.lower() in ("true", "1", "yes")
+        elif value_type == "integer":
+            return int(value)
+        elif value_type == "float":
+            return float(value)
+        else:
+            return value
+    except Exception:
+        # If DB is not available (e.g., during startup), return default
+        return default
 
 
 @lru_cache(maxsize=4)
@@ -91,11 +116,18 @@ def _convert_localhost_for_docker(url: str) -> str:
 
 
 def _get_endpoint_config() -> dict[str, str]:
-    """Get endpoint configuration."""
+    """Get endpoint configuration. DB settings override config.yaml."""
     config = _load_config()
     endpoints = config.get("endpoints", {})
-    llm_url = endpoints.get("llm_base_url", config.get("openai_api_base", ""))
-    embed_url = endpoints.get("embedding_base_url", config.get("openai_api_base3", ""))
+    
+    # Get defaults from config.yaml
+    llm_url_default = endpoints.get("llm_base_url", config.get("openai_api_base", ""))
+    embed_url_default = endpoints.get("embedding_base_url", config.get("openai_api_base3", ""))
+    
+    # Check DB overrides
+    llm_url = _get_db_setting("llm_base_url", llm_url_default, "string")
+    embed_url = _get_db_setting("embedding_base_url", embed_url_default, "string")
+    
     return {
         "llm_base_url": _convert_localhost_for_docker(llm_url),
         "embedding_base_url": _convert_localhost_for_docker(embed_url),
@@ -104,15 +136,22 @@ def _get_endpoint_config() -> dict[str, str]:
 
 
 def _get_paperqa_config() -> dict[str, Any]:
-    """Get PaperQA2 configuration."""
+    """Get PaperQA2 configuration. DB settings override config.yaml."""
     config = _load_config()
     pqa = config.get("paperqa", {})
+    
+    # Get defaults from config.yaml
+    chunk_chars_default = int(pqa.get("chunk_chars", config.get("paperqa_chunk_chars", 5000)))
+    chunk_overlap_default = int(pqa.get("chunk_overlap", config.get("paperqa_chunk_overlap", 250)))
+    evidence_k_default = int(pqa.get("evidence_k", config.get("paperqa_evidence_k", 10)))
+    evidence_summary_length_default = str(pqa.get("evidence_summary_length", config.get("paperqa_evidence_summary_length", "about 100 words")))
+    
     return {
-        "chunk_chars": int(pqa.get("chunk_chars", config.get("paperqa_chunk_chars", 5000))),
-        "chunk_overlap": int(pqa.get("chunk_overlap", config.get("paperqa_chunk_overlap", 250))),
+        "chunk_chars": _get_db_setting("chunk_chars", chunk_chars_default, "integer"),
+        "chunk_overlap": _get_db_setting("chunk_overlap", chunk_overlap_default, "integer"),
         "use_doc_details": bool(pqa.get("use_doc_details", config.get("paperqa_use_doc_details", True))),
-        "evidence_k": int(pqa.get("evidence_k", config.get("paperqa_evidence_k", 10))),
-        "evidence_summary_length": str(pqa.get("evidence_summary_length", config.get("paperqa_evidence_summary_length", "about 100 words"))),
+        "evidence_k": _get_db_setting("evidence_k", evidence_k_default, "integer"),
+        "evidence_summary_length": _get_db_setting("evidence_summary_length", evidence_summary_length_default, "string"),
         "evidence_skip_summary": bool(pqa.get("evidence_skip_summary", config.get("paperqa_evidence_skip_summary", False))),
         "evidence_relevance_score_cutoff": float(pqa.get("evidence_relevance_score_cutoff", config.get("paperqa_evidence_relevance_score_cutoff", 1))),
     }
@@ -139,11 +178,14 @@ def _get_classification_config() -> dict[str, Any]:
 
 
 def _get_ingestion_config() -> dict[str, Any]:
-    """Get ingestion configuration."""
+    """Get ingestion configuration. DB settings override config.yaml."""
     config = _load_config()
     ingestion = config.get("ingestion", {})
+    
+    skip_existing_default = bool(ingestion.get("skip_existing", True))
+    
     return {
-        "skip_existing": bool(ingestion.get("skip_existing", True)),
+        "skip_existing": _get_db_setting("skip_existing", skip_existing_default, "boolean"),
     }
 
 
@@ -161,12 +203,19 @@ def _get_external_apis_config() -> dict[str, Any]:
 
 
 def _get_topic_query_config() -> dict[str, Any]:
-    """Get topic query configuration for multi-paper RAG."""
+    """Get topic query configuration for multi-paper RAG. DB settings override config.yaml."""
     config = _load_config()
     topic = config.get("topic_query", {})
+    
+    # Get defaults from config.yaml
+    max_papers_default = int(topic.get("max_papers_per_batch", 10))
+    similarity_default = float(topic.get("similarity_threshold", 0.5))
+    chunks_default = int(topic.get("chunks_per_paper", 5))
+    debug_default = bool(topic.get("debug_mode", False))
+    
     return {
-        "max_papers_per_batch": int(topic.get("max_papers_per_batch", 10)),
-        "similarity_threshold": float(topic.get("similarity_threshold", 0.5)),
-        "chunks_per_paper": int(topic.get("chunks_per_paper", 5)),
-        "debug_mode": bool(topic.get("debug_mode", False)),
+        "max_papers_per_batch": _get_db_setting("max_papers_per_batch", max_papers_default, "integer"),
+        "similarity_threshold": _get_db_setting("similarity_threshold", similarity_default, "float"),
+        "chunks_per_paper": _get_db_setting("chunks_per_paper", chunks_default, "integer"),
+        "debug_mode": _get_db_setting("topic_debug_mode", debug_default, "boolean"),
     }

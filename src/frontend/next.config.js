@@ -47,6 +47,14 @@ const nextConfig = {
         source: "/api/config",
         destination: `${backendUrl}/config`,
       },
+      {
+        source: "/api/config/reset",
+        destination: `${backendUrl}/config/reset`,
+      },
+      {
+        source: "/api/ui-config",
+        destination: `${backendUrl}/ui-config`,
+      },
       // Database & Tree endpoints
       {
         source: "/api/papers/:path*",

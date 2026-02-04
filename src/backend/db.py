@@ -1045,3 +1045,84 @@ def search_papers_by_embedding(
                 results = results[:limit]
             
             return results, has_more
+
+
+# =============================================================================
+# Settings CRUD Functions
+# =============================================================================
+
+def get_all_settings() -> dict[str, Any]:
+    """Get all settings from database as a dict keyed by setting key."""
+    with get_db() as conn:
+        with conn.cursor(cursor_factory=RealDictCursor) as cur:
+            cur.execute("SELECT key, value, category, updated_at FROM settings")
+            rows = cur.fetchall()
+            return {row["key"]: {"value": row["value"], "category": row["category"], "updated_at": row["updated_at"]} for row in rows}
+
+
+def get_setting(key: str) -> Optional[str]:
+    """Get a single setting value by key."""
+    with get_db() as conn:
+        with conn.cursor(cursor_factory=RealDictCursor) as cur:
+            cur.execute("SELECT value FROM settings WHERE key = %s", (key,))
+            row = cur.fetchone()
+            return row["value"] if row else None
+
+
+def set_setting(key: str, value: str, category: str, updated_by: Optional[str] = None) -> None:
+    """Set a setting value (upsert)."""
+    with get_db() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                INSERT INTO settings (key, value, category, updated_by)
+                VALUES (%s, %s, %s, %s)
+                ON CONFLICT (key) DO UPDATE SET
+                    value = EXCLUDED.value,
+                    category = EXCLUDED.category,
+                    updated_by = EXCLUDED.updated_by,
+                    updated_at = NOW()
+                """,
+                (key, value, category, updated_by)
+            )
+        conn.commit()
+
+
+def set_settings_batch(settings: list[dict[str, str]], updated_by: Optional[str] = None) -> None:
+    """Set multiple settings at once."""
+    with get_db() as conn:
+        with conn.cursor() as cur:
+            for s in settings:
+                cur.execute(
+                    """
+                    INSERT INTO settings (key, value, category, updated_by)
+                    VALUES (%s, %s, %s, %s)
+                    ON CONFLICT (key) DO UPDATE SET
+                        value = EXCLUDED.value,
+                        category = EXCLUDED.category,
+                        updated_by = EXCLUDED.updated_by,
+                        updated_at = NOW()
+                    """,
+                    (s["key"], s["value"], s["category"], updated_by)
+                )
+        conn.commit()
+
+
+def delete_setting(key: str) -> bool:
+    """Delete a single setting."""
+    with get_db() as conn:
+        with conn.cursor() as cur:
+            cur.execute("DELETE FROM settings WHERE key = %s", (key,))
+            deleted = cur.rowcount > 0
+        conn.commit()
+        return deleted
+
+
+def clear_all_settings() -> int:
+    """Clear all settings (reset to defaults from config.yaml)."""
+    with get_db() as conn:
+        with conn.cursor() as cur:
+            cur.execute("DELETE FROM settings")
+            deleted = cur.rowcount
+        conn.commit()
+        return deleted

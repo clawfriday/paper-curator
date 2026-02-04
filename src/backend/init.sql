@@ -166,3 +166,27 @@ CREATE TRIGGER update_topics_updated_at
     BEFORE UPDATE ON topics
     FOR EACH ROW
     EXECUTE FUNCTION update_updated_at_column();
+
+-- =============================================================================
+-- Global Settings Table: Runtime configuration overrides
+-- =============================================================================
+
+-- Settings table: stores runtime config overrides (DB takes precedence over config.yaml)
+CREATE TABLE IF NOT EXISTS settings (
+    id SERIAL PRIMARY KEY,
+    key VARCHAR(100) UNIQUE NOT NULL,         -- Setting key (e.g., 'llm_base_url', 'skip_existing')
+    value TEXT NOT NULL,                       -- Setting value (stored as text, parsed by application)
+    category VARCHAR(50) NOT NULL,             -- Category for UI grouping (e.g., 'llm', 'ingestion', 'paperqa')
+    updated_at TIMESTAMPTZ DEFAULT NOW(),
+    updated_by VARCHAR(100)                    -- Optional: who made the change
+);
+
+CREATE INDEX IF NOT EXISTS idx_settings_key ON settings(key);
+CREATE INDEX IF NOT EXISTS idx_settings_category ON settings(category);
+
+-- Trigger for settings updated_at
+DROP TRIGGER IF EXISTS update_settings_updated_at ON settings;
+CREATE TRIGGER update_settings_updated_at
+    BEFORE UPDATE ON settings
+    FOR EACH ROW
+    EXECUTE FUNCTION update_updated_at_column();

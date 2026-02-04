@@ -378,8 +378,8 @@ def health() -> dict[str, str]:
     return {"status": "ok"}
 
 
-@app.get("/config")
-def get_config() -> dict[str, Any]:
+@app.get("/ui-config")
+def get_ui_config() -> dict[str, Any]:
     """Return UI configuration for the frontend."""
     return _get_ui_config()
 
@@ -2497,3 +2497,208 @@ Please synthesize these responses into a coherent, comprehensive answer.
         result["paper_responses"] = paper_responses
     
     return result
+
+
+# =============================================================================
+# Settings/Config Endpoints
+# =============================================================================
+
+# Define the settings schema with metadata
+SETTINGS_SCHEMA = {
+    # LLM Settings
+    "llm_base_url": {"category": "llm", "type": "string", "label": "LLM Base URL", "readonly": False},
+    "embedding_base_url": {"category": "llm", "type": "string", "label": "Embedding Base URL", "readonly": False},
+    # api_key is intentionally excluded (not shown in GUI per user requirement)
+    
+    # Ingestion Settings
+    "skip_existing": {"category": "ingestion", "type": "boolean", "label": "Skip Existing Papers", "readonly": False},
+    
+    # PaperQA Settings
+    "chunk_chars": {"category": "paperqa", "type": "integer", "label": "Chunk Size (chars)", "readonly": False},
+    "chunk_overlap": {"category": "paperqa", "type": "integer", "label": "Chunk Overlap (chars)", "readonly": False},
+    "evidence_k": {"category": "paperqa", "type": "integer", "label": "Evidence K", "readonly": False},
+    "evidence_summary_length": {"category": "paperqa", "type": "string", "label": "Evidence Summary Length", "readonly": False},
+    
+    # Topic Query Settings
+    "max_papers_per_batch": {"category": "topic_query", "type": "integer", "label": "Papers Per Batch", "readonly": False},
+    "similarity_threshold": {"category": "topic_query", "type": "float", "label": "Similarity Threshold", "readonly": False},
+    "chunks_per_paper": {"category": "topic_query", "type": "integer", "label": "Chunks Per Paper", "readonly": False},
+    "topic_debug_mode": {"category": "topic_query", "type": "boolean", "label": "Debug Mode", "readonly": False},
+    
+    # Port Settings (read-only, require restart)
+    "frontend_port": {"category": "ports", "type": "integer", "label": "Frontend Port", "readonly": True},
+    "backend_port": {"category": "ports", "type": "integer", "label": "Backend Port", "readonly": True},
+    "database_port": {"category": "ports", "type": "integer", "label": "Database Port", "readonly": True},
+}
+
+
+def _load_config_yaml() -> dict[str, Any]:
+    """Load config.yaml as defaults."""
+    import yaml
+    config_paths = [
+        pathlib.Path("config/config.yaml"),
+        pathlib.Path("../config/config.yaml"),
+        pathlib.Path("../../config/config.yaml"),
+    ]
+    for path in config_paths:
+        if path.exists():
+            with open(path, "r") as f:
+                return yaml.safe_load(f) or {}
+    return {}
+
+
+def _get_effective_config() -> dict[str, Any]:
+    """Get effective config: DB settings override config.yaml defaults."""
+    # Load defaults from config.yaml
+    yaml_config = _load_config_yaml()
+    
+    # Flatten nested config for easy access
+    defaults = {
+        "llm_base_url": yaml_config.get("llm_base_url", "http://localhost:8001/v1"),
+        "embedding_base_url": yaml_config.get("embedding_base_url", "http://localhost:8004/v1"),
+        "skip_existing": yaml_config.get("ingestion", {}).get("skip_existing", False),
+        "chunk_chars": yaml_config.get("paperqa", {}).get("chunk_chars", 3000),
+        "chunk_overlap": yaml_config.get("paperqa", {}).get("chunk_overlap", 100),
+        "evidence_k": yaml_config.get("paperqa", {}).get("evidence_k", 10),
+        "evidence_summary_length": yaml_config.get("paperqa", {}).get("evidence_summary_length", "about 100 words"),
+        "max_papers_per_batch": yaml_config.get("topic_query", {}).get("max_papers_per_batch", 10),
+        "similarity_threshold": yaml_config.get("topic_query", {}).get("similarity_threshold", 0.5),
+        "chunks_per_paper": yaml_config.get("topic_query", {}).get("chunks_per_paper", 5),
+        "topic_debug_mode": yaml_config.get("topic_query", {}).get("debug_mode", False),
+        "frontend_port": yaml_config.get("frontend_port", 3000),
+        "backend_port": yaml_config.get("backend_port", 3100),
+        "database_port": yaml_config.get("database_port", 5432),
+    }
+    
+    # Load DB overrides
+    db_settings = db.get_all_settings()
+    
+    # Merge: DB takes precedence
+    effective = {}
+    for key, schema in SETTINGS_SCHEMA.items():
+        if key in db_settings:
+            # Parse value based on type
+            raw_value = db_settings[key]["value"]
+            if schema["type"] == "boolean":
+                effective[key] = raw_value.lower() in ("true", "1", "yes")
+            elif schema["type"] == "integer":
+                effective[key] = int(raw_value)
+            elif schema["type"] == "float":
+                effective[key] = float(raw_value)
+            else:
+                effective[key] = raw_value
+        else:
+            effective[key] = defaults.get(key)
+    
+    return effective
+
+
+def _validate_setting(key: str, value: Any) -> tuple[bool, Optional[str]]:
+    """Validate a setting value. Returns (is_valid, warning_message)."""
+    schema = SETTINGS_SCHEMA.get(key)
+    if not schema:
+        return False, f"Unknown setting: {key}"
+    
+    if schema["readonly"]:
+        return False, f"Setting '{key}' is read-only"
+    
+    # Type validation
+    try:
+        if schema["type"] == "boolean":
+            if not isinstance(value, bool):
+                value = str(value).lower() in ("true", "1", "yes")
+        elif schema["type"] == "integer":
+            int(value)
+        elif schema["type"] == "float":
+            float(value)
+    except (ValueError, TypeError):
+        return False, f"Invalid type for {key}: expected {schema['type']}"
+    
+    # URL validation for endpoints
+    if key in ("llm_base_url", "embedding_base_url"):
+        if not str(value).startswith(("http://", "https://")):
+            return True, f"Warning: {key} should start with http:// or https://"
+    
+    return True, None
+
+
+class ConfigUpdateRequest(BaseModel):
+    settings: dict[str, Any]
+
+
+@app.get("/config")
+def get_config() -> dict[str, Any]:
+    """Get current configuration with schema metadata."""
+    effective = _get_effective_config()
+    db_settings = db.get_all_settings()
+    
+    # Build response with schema info
+    result = {
+        "settings": {},
+        "categories": {
+            "llm": {"label": "LLM Endpoints", "description": "Language model and embedding service URLs"},
+            "ingestion": {"label": "Ingestion", "description": "Paper ingestion behavior"},
+            "paperqa": {"label": "PaperQA", "description": "Document chunking and retrieval settings"},
+            "topic_query": {"label": "Topic Query", "description": "Multi-paper RAG query settings"},
+            "ports": {"label": "Ports", "description": "Service ports (read-only, change in server config)"},
+        }
+    }
+    
+    for key, schema in SETTINGS_SCHEMA.items():
+        is_overridden = key in db_settings
+        result["settings"][key] = {
+            "value": effective.get(key),
+            "category": schema["category"],
+            "type": schema["type"],
+            "label": schema["label"],
+            "readonly": schema["readonly"],
+            "is_overridden": is_overridden,
+            "updated_at": db_settings[key]["updated_at"].isoformat() if is_overridden else None,
+        }
+    
+    return result
+
+
+@app.post("/config")
+def update_config(payload: ConfigUpdateRequest) -> dict[str, Any]:
+    """Update configuration settings."""
+    warnings = []
+    errors = []
+    updated = []
+    
+    for key, value in payload.settings.items():
+        is_valid, message = _validate_setting(key, value)
+        
+        if not is_valid:
+            errors.append(message)
+            continue
+        
+        if message:  # Warning
+            warnings.append(message)
+        
+        # Convert to string for storage
+        schema = SETTINGS_SCHEMA[key]
+        str_value = str(value).lower() if schema["type"] == "boolean" else str(value)
+        
+        db.set_setting(key, str_value, schema["category"])
+        updated.append(key)
+    
+    return {
+        "success": len(errors) == 0,
+        "updated": updated,
+        "warnings": warnings,
+        "errors": errors,
+        "config": _get_effective_config(),
+    }
+
+
+@app.post("/config/reset")
+def reset_config() -> dict[str, Any]:
+    """Reset all settings to defaults from config.yaml."""
+    deleted_count = db.clear_all_settings()
+    
+    return {
+        "success": True,
+        "message": f"Reset {deleted_count} settings to defaults",
+        "config": _get_effective_config(),
+    }

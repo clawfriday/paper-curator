@@ -8,7 +8,7 @@ import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
 import { Accordion, AccordionItem, AccordionTrigger, AccordionContent } from "@/components/ui/accordion";
 import { Card, CardHeader, CardTitle, CardDescription, CardContent } from "@/components/ui/card";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
-import { Search } from "lucide-react";
+import { Search, Settings } from "lucide-react";
 
 interface PaperNode {
   name: string;
@@ -398,6 +398,13 @@ export default function Home() {
   const [isDebugPanelOpen, setIsDebugPanelOpen] = useState(true); // Debug log shown by default
   const [hasAutoZoomed, setHasAutoZoomed] = useState(false); // Track if initial auto-zoom done
   
+  // Settings modal state
+  const [showSettings, setShowSettings] = useState(false);
+  const [settingsData, setSettingsData] = useState<any>(null);
+  const [settingsLoading, setSettingsLoading] = useState(false);
+  const [settingsWarnings, setSettingsWarnings] = useState<string[]>([]);
+  const [settingsSaving, setSettingsSaving] = useState(false);
+  
   const hoverTimeoutRef = useRef<NodeJS.Timeout | null>(null);
   
   // Helper to add to feature log
@@ -421,13 +428,13 @@ export default function Home() {
     const loadInitialData = async () => {
       // Load UI config
       try {
-        const configRes = await fetch("/api/config");
+        const configRes = await fetch("/api/ui-config");
         if (configRes.ok) {
           const config = await configRes.json();
           setUiConfig(config);
         }
       } catch (e) {
-        console.error("Failed to load config:", e);
+        console.error("Failed to load UI config:", e);
       }
       
       // Load tree from database
@@ -628,6 +635,76 @@ export default function Home() {
     } finally {
       setIsReclassifying(false);
       logIngest("Done");
+    }
+  };
+
+  // =========================================================================
+  // Settings Handlers
+  // =========================================================================
+  
+  const loadSettings = async () => {
+    setSettingsLoading(true);
+    try {
+      const res = await fetch("/api/config");
+      if (res.ok) {
+        const data = await res.json();
+        setSettingsData(data);
+      }
+    } catch (e) {
+      console.error("Failed to load settings:", e);
+    } finally {
+      setSettingsLoading(false);
+    }
+  };
+  
+  const handleOpenSettings = () => {
+    setShowSettings(true);
+    setSettingsWarnings([]);
+    loadSettings();
+  };
+  
+  const handleSaveSettings = async (updates: Record<string, any>) => {
+    setSettingsSaving(true);
+    setSettingsWarnings([]);
+    try {
+      const res = await fetch("/api/config", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ settings: updates }),
+      });
+      if (res.ok) {
+        const data = await res.json();
+        if (data.warnings && data.warnings.length > 0) {
+          setSettingsWarnings(data.warnings);
+        }
+        // Reload settings to show updated values
+        await loadSettings();
+        if (data.errors && data.errors.length > 0) {
+          alert("Some settings failed to save: " + data.errors.join(", "));
+        }
+      }
+    } catch (e) {
+      console.error("Failed to save settings:", e);
+      alert("Failed to save settings");
+    } finally {
+      setSettingsSaving(false);
+    }
+  };
+  
+  const handleResetSettings = async () => {
+    if (!confirm("Reset all settings to defaults from config.yaml?")) return;
+    
+    setSettingsSaving(true);
+    try {
+      const res = await fetch("/api/config/reset", { method: "POST" });
+      if (res.ok) {
+        await loadSettings();
+        setSettingsWarnings([]);
+      }
+    } catch (e) {
+      console.error("Failed to reset settings:", e);
+    } finally {
+      setSettingsSaving(false);
     }
   };
 
@@ -2278,7 +2355,7 @@ export default function Home() {
       {/* Left panel: Tree visualization */}
       <div style={{ ...panelStyles.left, borderRight: isMobile ? "none" : "1px solid #e5e5e5", borderBottom: isMobile && !isFullscreen ? "1px solid #e5e5e5" : "none", display: "flex", flexDirection: "column", position: "relative", overflow: "hidden", minWidth: 0 }}>
         <div style={{ padding: isMobile ? "0.75rem" : "1rem", borderBottom: "1px solid #e5e5e5", backgroundColor: "#fafafa", fontSize: `${panelFontSize}px` }}>
-          {/* Title Row - Centered with Loading Indicator */}
+          {/* Title Row - Centered with Loading Indicator and Settings */}
           <div className="flex justify-center items-center gap-2 mb-3">
             <h1 style={{ margin: 0, fontSize: isMobile ? "1.5rem" : "1.75rem", fontWeight: 600 }}>Paper Curator</h1>
             {isLoadingTree && (
@@ -2290,6 +2367,13 @@ export default function Home() {
                 <span>Loading tree...</span>
               </div>
             )}
+            <button
+              onClick={handleOpenSettings}
+              className="p-1.5 rounded hover:bg-gray-200 transition-colors"
+              title="Settings"
+            >
+              <Settings className="h-5 w-5 text-gray-600" />
+            </button>
           </div>
           {/* Controls Row: Ingest + Reclassify + Search */}
           <div className="flex items-center gap-2">
@@ -3763,6 +3847,126 @@ export default function Home() {
                   Done ({topicPool.length} papers)
                 </button>
               )}
+            </div>
+          </div>
+        </div>
+      )}
+      
+      {/* Settings Modal */}
+      {showSettings && (
+        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
+          <div className="bg-white rounded-lg shadow-xl max-w-2xl w-full mx-4 max-h-[80vh] overflow-hidden flex flex-col">
+            <div className="px-6 py-4 border-b border-gray-200 flex justify-between items-center">
+              <h3 className="text-lg font-semibold">Settings</h3>
+              <button
+                onClick={() => setShowSettings(false)}
+                className="text-gray-500 hover:text-gray-700"
+              >
+                ✕
+              </button>
+            </div>
+            
+            <div className="px-6 py-4 flex-1 overflow-y-auto">
+              {settingsLoading ? (
+                <div className="flex items-center justify-center py-8">
+                  <div className="animate-spin h-8 w-8 border-4 border-blue-500 border-t-transparent rounded-full"></div>
+                </div>
+              ) : settingsData ? (
+                <div className="space-y-6">
+                  {/* Warnings */}
+                  {settingsWarnings.length > 0 && (
+                    <div className="bg-yellow-50 border border-yellow-200 rounded p-3">
+                      <div className="font-medium text-yellow-800 mb-1">Warnings</div>
+                      {settingsWarnings.map((w, i) => (
+                        <div key={i} className="text-sm text-yellow-700">{w}</div>
+                      ))}
+                    </div>
+                  )}
+                  
+                  {/* Settings by category */}
+                  {Object.entries(settingsData.categories || {}).map(([catKey, catInfo]: [string, any]) => (
+                    <div key={catKey} className="border border-gray-200 rounded-lg overflow-hidden">
+                      <div className="bg-gray-50 px-4 py-2 border-b border-gray-200">
+                        <h4 className="font-semibold">{catInfo.label}</h4>
+                        <p className="text-xs text-gray-500">{catInfo.description}</p>
+                      </div>
+                      <div className="p-4 space-y-3">
+                        {Object.entries(settingsData.settings || {})
+                          .filter(([_, s]: [string, any]) => s.category === catKey)
+                          .map(([key, setting]: [string, any]) => (
+                            <div key={key} className="flex items-center justify-between gap-4">
+                              <div className="flex-1">
+                                <label className="text-sm font-medium text-gray-700">
+                                  {setting.label}
+                                  {setting.is_overridden && (
+                                    <span className="ml-2 text-xs text-blue-600">(customized)</span>
+                                  )}
+                                </label>
+                              </div>
+                              <div className="w-64">
+                                {setting.readonly ? (
+                                  <div className="flex items-center gap-2">
+                                    <input
+                                      type="text"
+                                      value={setting.value}
+                                      disabled
+                                      className="w-full px-3 py-1.5 border border-gray-200 rounded bg-gray-100 text-gray-500 text-sm"
+                                    />
+                                    <span className="text-xs text-gray-400" title="Read-only. Change in server config.">🔒</span>
+                                  </div>
+                                ) : setting.type === "boolean" ? (
+                                  <select
+                                    value={setting.value ? "true" : "false"}
+                                    onChange={(e) => handleSaveSettings({ [key]: e.target.value === "true" })}
+                                    disabled={settingsSaving}
+                                    className="w-full px-3 py-1.5 border border-gray-300 rounded text-sm"
+                                  >
+                                    <option value="true">Enabled</option>
+                                    <option value="false">Disabled</option>
+                                  </select>
+                                ) : (
+                                  <input
+                                    type={setting.type === "integer" || setting.type === "float" ? "number" : "text"}
+                                    step={setting.type === "float" ? "0.01" : "1"}
+                                    defaultValue={setting.value}
+                                    onBlur={(e) => {
+                                      const newVal = setting.type === "integer" ? parseInt(e.target.value) :
+                                                     setting.type === "float" ? parseFloat(e.target.value) :
+                                                     e.target.value;
+                                      if (newVal !== setting.value) {
+                                        handleSaveSettings({ [key]: newVal });
+                                      }
+                                    }}
+                                    disabled={settingsSaving}
+                                    className="w-full px-3 py-1.5 border border-gray-300 rounded text-sm"
+                                  />
+                                )}
+                              </div>
+                            </div>
+                          ))}
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              ) : (
+                <p className="text-gray-500">Failed to load settings.</p>
+              )}
+            </div>
+            
+            <div className="px-6 py-4 border-t border-gray-200 flex justify-between">
+              <button
+                onClick={handleResetSettings}
+                disabled={settingsSaving}
+                className="px-4 py-2 text-red-600 border border-red-300 rounded hover:bg-red-50 disabled:opacity-50"
+              >
+                Reset to Defaults
+              </button>
+              <button
+                onClick={() => setShowSettings(false)}
+                className="px-4 py-2 bg-gray-600 text-white rounded hover:bg-gray-700"
+              >
+                Close
+              </button>
             </div>
           </div>
         </div>
