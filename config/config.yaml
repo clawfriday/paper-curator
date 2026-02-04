@@ -61,6 +61,15 @@ classification:
   rebuild_on_ingest: true  # If false, tree updates only on manual re-classify
 
 # =============================================================================
+# Topic Query settings (multi-paper RAG)
+# =============================================================================
+topic_query:
+  max_papers_per_batch: 10       # Papers shown per batch in paper selector
+  similarity_threshold: 0.5     # Minimum cosine similarity (0-1) for paper matching
+  chunks_per_paper: 5           # Top chunks retrieved per paper during query
+  debug_mode: false             # Save intermediate prompts to storage/schemas/topic_query.json
+
+# =============================================================================
 # External API settings
 # =============================================================================
 external_apis:

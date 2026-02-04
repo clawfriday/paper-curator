@@ -116,3 +116,53 @@ CREATE TRIGGER update_tree_state_updated_at
     BEFORE UPDATE ON tree_state
     FOR EACH ROW
     EXECUTE FUNCTION update_updated_at_column();
+
+-- =============================================================================
+-- Topic Query Tables: Multi-paper RAG queries by topic
+-- =============================================================================
+
+-- Topics table: paper pools organized by topic
+CREATE TABLE IF NOT EXISTS topics (
+    id SERIAL PRIMARY KEY,
+    name VARCHAR(255) NOT NULL,           -- User-provided prefix + topic (unique identifier)
+    topic_query TEXT NOT NULL,            -- Original search topic
+    embedding vector(4096),               -- Topic embedding for similarity search
+    created_at TIMESTAMPTZ DEFAULT NOW(),
+    updated_at TIMESTAMPTZ DEFAULT NOW(),
+    UNIQUE(name)
+);
+
+CREATE INDEX IF NOT EXISTS idx_topics_name ON topics(name);
+
+-- Topic papers: papers in each topic pool
+CREATE TABLE IF NOT EXISTS topic_papers (
+    id SERIAL PRIMARY KEY,
+    topic_id INTEGER REFERENCES topics(id) ON DELETE CASCADE,
+    paper_id INTEGER REFERENCES papers(id) ON DELETE CASCADE,
+    similarity_score FLOAT,               -- Similarity to topic when added
+    added_at TIMESTAMPTZ DEFAULT NOW(),
+    UNIQUE(topic_id, paper_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_topic_papers_topic ON topic_papers(topic_id);
+CREATE INDEX IF NOT EXISTS idx_topic_papers_paper ON topic_papers(paper_id);
+
+-- Topic queries: Q&A history for each topic
+CREATE TABLE IF NOT EXISTS topic_queries (
+    id SERIAL PRIMARY KEY,
+    topic_id INTEGER REFERENCES topics(id) ON DELETE CASCADE,
+    question TEXT NOT NULL,
+    answer TEXT NOT NULL,
+    paper_responses JSONB,                -- Individual paper responses for debugging
+    model VARCHAR(100),
+    created_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_topic_queries_topic ON topic_queries(topic_id);
+
+-- Trigger for topics updated_at
+DROP TRIGGER IF EXISTS update_topics_updated_at ON topics;
+CREATE TRIGGER update_topics_updated_at
+    BEFORE UPDATE ON topics
+    FOR EACH ROW
+    EXECUTE FUNCTION update_updated_at_column();

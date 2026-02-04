@@ -158,3 +158,15 @@ def _get_external_apis_config() -> dict[str, Any]:
         "github_token": apis.get("github_token"),
         "semantic_scholar_api_key": apis.get("semantic_scholar_api_key"),
     }
+
+
+def _get_topic_query_config() -> dict[str, Any]:
+    """Get topic query configuration for multi-paper RAG."""
+    config = _load_config()
+    topic = config.get("topic_query", {})
+    return {
+        "max_papers_per_batch": int(topic.get("max_papers_per_batch", 10)),
+        "similarity_threshold": float(topic.get("similarity_threshold", 0.5)),
+        "chunks_per_paper": int(topic.get("chunks_per_paper", 5)),
+        "debug_mode": bool(topic.get("debug_mode", False)),
+    }

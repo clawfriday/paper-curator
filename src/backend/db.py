@@ -780,3 +780,268 @@ def get_paper_cached_data(paper_id: int) -> dict[str, Any]:
         "similar_papers": get_cached_similar_papers(paper_id),
         "queries": get_queries(paper_id),
     }
+
+
+# =============================================================================
+# Topic Query CRUD
+# =============================================================================
+
+def create_topic(
+    name: str,
+    topic_query: str,
+    embedding: Optional[list[float]] = None,
+) -> int:
+    """Create a topic and return its ID."""
+    import numpy as np
+    
+    with get_db() as conn:
+        with conn.cursor() as cur:
+            if embedding:
+                embedding_arr = np.array(embedding, dtype=np.float32)
+                cur.execute(
+                    """
+                    INSERT INTO topics (name, topic_query, embedding)
+                    VALUES (%s, %s, %s::vector)
+                    RETURNING id
+                    """,
+                    (name, topic_query, embedding_arr)
+                )
+            else:
+                cur.execute(
+                    """
+                    INSERT INTO topics (name, topic_query)
+                    VALUES (%s, %s)
+                    RETURNING id
+                    """,
+                    (name, topic_query)
+                )
+            topic_id = cur.fetchone()[0]
+            conn.commit()
+            return topic_id
+
+
+def get_topic_by_id(topic_id: int) -> Optional[dict[str, Any]]:
+    """Get topic by ID with paper and query counts."""
+    with get_db() as conn:
+        with conn.cursor(cursor_factory=RealDictCursor) as cur:
+            cur.execute(
+                """
+                SELECT t.id, t.name, t.topic_query, t.created_at, t.updated_at,
+                       (SELECT COUNT(*) FROM topic_papers tp WHERE tp.topic_id = t.id) as paper_count,
+                       (SELECT COUNT(*) FROM topic_queries tq WHERE tq.topic_id = t.id) as query_count
+                FROM topics t
+                WHERE t.id = %s
+                """,
+                (topic_id,)
+            )
+            row = cur.fetchone()
+            return dict(row) if row else None
+
+
+def get_topic_by_name(name: str) -> Optional[dict[str, Any]]:
+    """Get topic by name."""
+    with get_db() as conn:
+        with conn.cursor(cursor_factory=RealDictCursor) as cur:
+            cur.execute("SELECT * FROM topics WHERE name = %s", (name,))
+            row = cur.fetchone()
+            return dict(row) if row else None
+
+
+def get_topics_by_query(topic_query: str) -> list[dict[str, Any]]:
+    """Get all topics matching a topic query string."""
+    with get_db() as conn:
+        with conn.cursor(cursor_factory=RealDictCursor) as cur:
+            cur.execute(
+                """
+                SELECT t.*, 
+                       (SELECT COUNT(*) FROM topic_papers tp WHERE tp.topic_id = t.id) as paper_count,
+                       (SELECT COUNT(*) FROM topic_queries tq WHERE tq.topic_id = t.id) as query_count
+                FROM topics t
+                WHERE t.topic_query = %s
+                ORDER BY t.created_at DESC
+                """,
+                (topic_query,)
+            )
+            return [dict(row) for row in cur.fetchall()]
+
+
+def get_all_topics() -> list[dict[str, Any]]:
+    """Get all topics ordered by recency with paper and query counts."""
+    with get_db() as conn:
+        with conn.cursor(cursor_factory=RealDictCursor) as cur:
+            cur.execute(
+                """
+                SELECT t.id, t.name, t.topic_query, t.created_at, t.updated_at,
+                       (SELECT COUNT(*) FROM topic_papers tp WHERE tp.topic_id = t.id) as paper_count,
+                       (SELECT COUNT(*) FROM topic_queries tq WHERE tq.topic_id = t.id) as query_count
+                FROM topics t
+                ORDER BY t.created_at DESC
+                """
+            )
+            return [dict(row) for row in cur.fetchall()]
+
+
+def delete_topic(topic_id: int) -> bool:
+    """Delete a topic (cascades to topic_papers and topic_queries)."""
+    with get_db() as conn:
+        with conn.cursor() as cur:
+            cur.execute("DELETE FROM topics WHERE id = %s RETURNING id", (topic_id,))
+            deleted = cur.fetchone() is not None
+            conn.commit()
+            return deleted
+
+
+def add_papers_to_topic(topic_id: int, paper_ids: list[int], similarity_scores: Optional[list[float]] = None) -> int:
+    """Add papers to a topic pool. Returns number of papers added."""
+    added = 0
+    with get_db() as conn:
+        with conn.cursor() as cur:
+            for i, paper_id in enumerate(paper_ids):
+                similarity = similarity_scores[i] if similarity_scores and i < len(similarity_scores) else None
+                try:
+                    cur.execute(
+                        """
+                        INSERT INTO topic_papers (topic_id, paper_id, similarity_score)
+                        VALUES (%s, %s, %s)
+                        ON CONFLICT (topic_id, paper_id) DO NOTHING
+                        """,
+                        (topic_id, paper_id, similarity)
+                    )
+                    if cur.rowcount > 0:
+                        added += 1
+                except Exception:
+                    pass  # Skip duplicates
+            conn.commit()
+    return added
+
+
+def remove_paper_from_topic(topic_id: int, paper_id: int) -> bool:
+    """Remove a paper from a topic pool."""
+    with get_db() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "DELETE FROM topic_papers WHERE topic_id = %s AND paper_id = %s RETURNING id",
+                (topic_id, paper_id)
+            )
+            deleted = cur.fetchone() is not None
+            conn.commit()
+            return deleted
+
+
+def get_topic_papers(topic_id: int) -> list[dict[str, Any]]:
+    """Get all papers in a topic pool with paper details."""
+    with get_db() as conn:
+        with conn.cursor(cursor_factory=RealDictCursor) as cur:
+            cur.execute(
+                """
+                SELECT p.id as paper_id, p.arxiv_id, p.title, p.authors, p.summary, p.pdf_path,
+                       tp.similarity_score, tp.added_at,
+                       EXTRACT(YEAR FROM p.published_at) as year
+                FROM topic_papers tp
+                JOIN papers p ON p.id = tp.paper_id
+                WHERE tp.topic_id = %s
+                ORDER BY tp.similarity_score DESC NULLS LAST
+                """,
+                (topic_id,)
+            )
+            return [dict(row) for row in cur.fetchall()]
+
+
+def add_topic_query(
+    topic_id: int,
+    question: str,
+    answer: str,
+    paper_responses: Optional[dict] = None,
+    model: Optional[str] = None,
+) -> int:
+    """Save a topic query and return its ID."""
+    import json
+    
+    with get_db() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                INSERT INTO topic_queries (topic_id, question, answer, paper_responses, model)
+                VALUES (%s, %s, %s, %s, %s)
+                RETURNING id
+                """,
+                (topic_id, question, answer, json.dumps(paper_responses) if paper_responses else None, model)
+            )
+            query_id = cur.fetchone()[0]
+            conn.commit()
+            return query_id
+
+
+def get_topic_queries(topic_id: int) -> list[dict[str, Any]]:
+    """Get query history for a topic."""
+    with get_db() as conn:
+        with conn.cursor(cursor_factory=RealDictCursor) as cur:
+            cur.execute(
+                "SELECT * FROM topic_queries WHERE topic_id = %s ORDER BY created_at DESC",
+                (topic_id,)
+            )
+            return [dict(row) for row in cur.fetchall()]
+
+
+def get_topic_full(topic_id: int) -> Optional[dict[str, Any]]:
+    """Get full topic details with papers and queries."""
+    topic = get_topic_by_id(topic_id)
+    if not topic:
+        return None
+    
+    topic["papers"] = get_topic_papers(topic_id)
+    topic["queries"] = get_topic_queries(topic_id)
+    return topic
+
+
+def search_papers_by_embedding(
+    embedding: list[float],
+    limit: int = 10,
+    offset: int = 0,
+    min_similarity: float = 0.0,
+    exclude_paper_ids: Optional[list[int]] = None,
+) -> tuple[list[dict[str, Any]], bool]:
+    """Search papers by embedding similarity.
+    
+    Returns:
+        Tuple of (papers list, has_more bool)
+    """
+    import numpy as np
+    embedding_arr = np.array(embedding, dtype=np.float32)
+    
+    with get_db() as conn:
+        with conn.cursor(cursor_factory=RealDictCursor) as cur:
+            # Build exclusion clause
+            exclusion_clause = ""
+            params = [embedding_arr, embedding_arr, min_similarity]
+            
+            if exclude_paper_ids:
+                placeholders = ",".join(["%s"] * len(exclude_paper_ids))
+                exclusion_clause = f"AND p.id NOT IN ({placeholders})"
+                params.extend(exclude_paper_ids)
+            
+            # Fetch one more than limit to check if there are more results
+            params.extend([limit + 1, offset])
+            
+            cur.execute(
+                f"""
+                SELECT p.id as paper_id, p.arxiv_id, p.title, 
+                       EXTRACT(YEAR FROM p.published_at) as year,
+                       1 - (p.embedding <=> %s::vector) AS similarity
+                FROM papers p
+                WHERE p.embedding IS NOT NULL
+                  AND 1 - (p.embedding <=> %s::vector) >= %s
+                  {exclusion_clause}
+                ORDER BY p.embedding <=> %s::vector
+                LIMIT %s OFFSET %s
+                """,
+                params[:3] + (params[3:-2] if exclude_paper_ids else []) + [embedding_arr] + params[-2:]
+            )
+            
+            results = [dict(row) for row in cur.fetchall()]
+            
+            has_more = len(results) > limit
+            if has_more:
+                results = results[:limit]
+            
+            return results, has_more

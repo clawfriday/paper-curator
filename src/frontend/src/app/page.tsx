@@ -95,6 +95,40 @@ interface TreeLayout {
   dimsById: Record<string, { width: number; height: number; lineHeight: number; paddingY: number }>;
 }
 
+// Topic Query Interfaces
+interface TopicPaper {
+  paper_id: number;
+  arxiv_id: string;
+  title: string;
+  year?: number;
+  similarity: number;
+  selected?: boolean;
+}
+
+interface Topic {
+  id: number;
+  name: string;
+  topic_query: string;
+  paper_count: number;
+  query_count: number;
+  created_at: string;
+  papers?: TopicPaper[];
+  queries?: TopicQuery[];
+}
+
+interface TopicQuery {
+  id: number;
+  question: string;
+  answer: string;
+  paper_responses?: Array<{
+    paper_id: number;
+    title: string;
+    response: string;
+    success: boolean;
+  }>;
+  created_at: string;
+}
+
 // Component to render formatted text with LaTeX, bold, and lists
 function FormattedText({ text, className }: { text: string; className?: string }) {
   // Parse text into segments: LaTeX (inline/block), bold, and plain text
@@ -257,7 +291,7 @@ export default function Home() {
   });
   
   // Feature panel states
-  const [activePanel, setActivePanel] = useState<"explorer" | "repos" | "references" | "similar" | "query">("explorer");
+  const [activePanel, setActivePanel] = useState<"explorer" | "repos" | "references" | "similar" | "query" | "topic-query">("explorer");
   const [repos, setRepos] = useState<RepoResult[]>([]);
   const [queryInput, setQueryInput] = useState("");
   const [queryAnswer, setQueryAnswer] = useState("");
@@ -326,7 +360,24 @@ export default function Home() {
   const [searchQuery, setSearchQuery] = useState("");
   const [searchResults, setSearchResults] = useState<PaperNode[]>([]);
   const [isSearchFocused, setIsSearchFocused] = useState(false);
-  const [searchMode, setSearchMode] = useState<"paper" | "category" | "tree">("paper");
+  const [searchMode, setSearchMode] = useState<"paper" | "category" | "topic">("paper");
+  
+  // Topic Query State
+  const [topicList, setTopicList] = useState<Topic[]>([]);
+  const [topicSearchResults, setTopicSearchResults] = useState<TopicPaper[]>([]);
+  const [topicPool, setTopicPool] = useState<TopicPaper[]>([]);
+  const [currentTopic, setCurrentTopic] = useState<Topic | null>(null);
+  const [topicSearchOffset, setTopicSearchOffset] = useState(0);
+  const [showTopicDialog, setShowTopicDialog] = useState(false);
+  const [topicDialogMode, setTopicDialogMode] = useState<"check" | "select" | "create" | "building">("check");
+  const [existingTopics, setExistingTopics] = useState<Topic[]>([]);
+  const [topicNamePrefix, setTopicNamePrefix] = useState("");
+  const [currentTopicQuery, setCurrentTopicQuery] = useState("");
+  const [topicQueryInput, setTopicQueryInput] = useState("");
+  const [isLoadingTopicSearch, setIsLoadingTopicSearch] = useState(false);
+  const [isLoadingTopicQuery, setIsLoadingTopicQuery] = useState(false);
+  const [topicEmbedding, setTopicEmbedding] = useState<number[] | null>(null);
+  const [expandedTopicId, setExpandedTopicId] = useState<number | null>(null);
   
   // Parent map for ancestor chain navigation (node_id -> parent node)
   const [parentMap, setParentMap] = useState<Map<string, PaperNode>>(new Map());
@@ -397,6 +448,17 @@ export default function Home() {
         console.error("Failed to load tree:", e);
       } finally {
         setIsLoadingTree(false);
+      }
+      
+      // Load topics
+      try {
+        const topicsRes = await fetch("/api/topic/list");
+        if (topicsRes.ok) {
+          const data = await topicsRes.json();
+          setTopicList(data.topics || []);
+        }
+      } catch (e) {
+        console.error("Failed to load topics:", e);
       }
     };
     
@@ -566,6 +628,257 @@ export default function Home() {
     } finally {
       setIsReclassifying(false);
       logIngest("Done");
+    }
+  };
+
+  // =========================================================================
+  // Topic Query Handlers
+  // =========================================================================
+  
+  // Handle topic search when user presses Enter in search box with topic mode
+  const handleTopicSearch = async (topic: string) => {
+    if (!topic.trim()) return;
+    
+    setCurrentTopicQuery(topic);
+    setIsLoadingTopicSearch(true);
+    
+    try {
+      // Check if topics exist for this query
+      const checkRes = await fetch(`/api/topic/check?topic_query=${encodeURIComponent(topic)}`);
+      if (checkRes.ok) {
+        const data = await checkRes.json();
+        if (data.exists && data.topics.length > 0) {
+          // Show dialog to choose resume or create new
+          setExistingTopics(data.topics);
+          setTopicDialogMode("select");
+          setShowTopicDialog(true);
+        } else {
+          // No existing topics, start creating new one
+          await startNewTopic(topic);
+        }
+      }
+    } catch (e) {
+      console.error("Topic check failed:", e);
+    } finally {
+      setIsLoadingTopicSearch(false);
+    }
+  };
+  
+  // Start a new topic with paper search
+  const startNewTopic = async (topic: string, prefix: string = "") => {
+    setIsLoadingTopicSearch(true);
+    setTopicDialogMode("building");
+    setShowTopicDialog(true);
+    
+    try {
+      // Search for papers matching the topic
+      const searchRes = await fetch("/api/topic/search", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ topic, offset: 0, limit: 10 }),
+      });
+      
+      if (searchRes.ok) {
+        const data = await searchRes.json();
+        setTopicSearchResults(data.papers.map((p: TopicPaper) => ({ ...p, selected: false })));
+        setTopicEmbedding(data.topic_embedding);
+        setTopicSearchOffset(10);
+        
+        // Create the topic in DB
+        const topicName = prefix ? `${prefix}: ${topic}` : topic;
+        const createRes = await fetch("/api/topic/create", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ name: topicName, topic_query: topic }),
+        });
+        
+        if (createRes.ok) {
+          const topicData = await createRes.json();
+          setCurrentTopic({ 
+            id: topicData.topic_id, 
+            name: topicData.name, 
+            topic_query: topic,
+            paper_count: 0,
+            query_count: 0,
+            created_at: new Date().toISOString(),
+          });
+          setTopicPool([]);
+        }
+      }
+    } catch (e) {
+      console.error("Topic search failed:", e);
+    } finally {
+      setIsLoadingTopicSearch(false);
+    }
+  };
+  
+  // Resume an existing topic
+  const resumeTopic = async (topic: Topic) => {
+    setIsLoadingTopicSearch(true);
+    
+    try {
+      const res = await fetch(`/api/topic/${topic.id}`);
+      if (res.ok) {
+        const data = await res.json();
+        setCurrentTopic(data);
+        setTopicPool(data.papers || []);
+        setShowTopicDialog(false);
+        // Switch to topic-query tab
+        setActivePanel("topic-query" as any);
+      }
+    } catch (e) {
+      console.error("Failed to load topic:", e);
+    } finally {
+      setIsLoadingTopicSearch(false);
+    }
+  };
+  
+  // Load more papers for topic selection
+  const loadMoreTopicPapers = async () => {
+    if (!currentTopicQuery || !topicEmbedding) return;
+    
+    setIsLoadingTopicSearch(true);
+    
+    try {
+      const excludeIds = [...topicPool.map(p => p.paper_id), ...topicSearchResults.map(p => p.paper_id)];
+      const searchRes = await fetch("/api/topic/search", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ 
+          topic: currentTopicQuery, 
+          offset: topicSearchOffset, 
+          limit: 10,
+          exclude_paper_ids: excludeIds,
+        }),
+      });
+      
+      if (searchRes.ok) {
+        const data = await searchRes.json();
+        setTopicSearchResults(data.papers.map((p: TopicPaper) => ({ ...p, selected: false })));
+        setTopicSearchOffset(topicSearchOffset + 10);
+      }
+    } catch (e) {
+      console.error("Load more failed:", e);
+    } finally {
+      setIsLoadingTopicSearch(false);
+    }
+  };
+  
+  // Add selected papers to pool
+  const addSelectedPapersToPool = async () => {
+    if (!currentTopic) return;
+    
+    const selected = topicSearchResults.filter(p => p.selected);
+    if (selected.length === 0) return;
+    
+    try {
+      const res = await fetch(`/api/topic/${currentTopic.id}/papers`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          paper_ids: selected.map(p => p.paper_id),
+          similarity_scores: selected.map(p => p.similarity),
+        }),
+      });
+      
+      if (res.ok) {
+        // Add to local pool
+        setTopicPool(prev => [...prev, ...selected]);
+        // Clear selection and load more
+        setTopicSearchResults([]);
+        await loadMoreTopicPapers();
+      }
+    } catch (e) {
+      console.error("Failed to add papers:", e);
+    }
+  };
+  
+  // Remove a paper from the pool
+  const removePaperFromPool = async (paperId: number) => {
+    if (!currentTopic) return;
+    
+    try {
+      await fetch(`/api/topic/${currentTopic.id}/papers/${paperId}`, {
+        method: "DELETE",
+      });
+      setTopicPool(prev => prev.filter(p => p.paper_id !== paperId));
+    } catch (e) {
+      console.error("Failed to remove paper:", e);
+    }
+  };
+  
+  // Finish paper selection and go to query mode
+  const finishPaperSelection = () => {
+    setShowTopicDialog(false);
+    setTopicSearchResults([]);
+    setActivePanel("topic-query" as any);
+    // Refresh topic list
+    loadTopicList();
+  };
+  
+  // Load all topics
+  const loadTopicList = async () => {
+    try {
+      const res = await fetch("/api/topic/list");
+      if (res.ok) {
+        const data = await res.json();
+        setTopicList(data.topics);
+      }
+    } catch (e) {
+      console.error("Failed to load topics:", e);
+    }
+  };
+  
+  // Delete a topic
+  const deleteTopic = async (topicId: number) => {
+    if (!confirm("Delete this topic and all its queries?")) return;
+    
+    try {
+      await fetch(`/api/topic/${topicId}`, { method: "DELETE" });
+      setTopicList(prev => prev.filter(t => t.id !== topicId));
+      if (currentTopic?.id === topicId) {
+        setCurrentTopic(null);
+        setTopicPool([]);
+      }
+    } catch (e) {
+      console.error("Failed to delete topic:", e);
+    }
+  };
+  
+  // Query the current topic
+  const handleTopicQuerySubmit = async () => {
+    if (!currentTopic || !topicQueryInput.trim()) return;
+    
+    setIsLoadingTopicQuery(true);
+    
+    try {
+      const res = await fetch(`/api/topic/${currentTopic.id}/query`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ question: topicQueryInput }),
+      });
+      
+      if (res.ok) {
+        const data = await res.json();
+        // Refresh topic to get updated queries
+        const topicRes = await fetch(`/api/topic/${currentTopic.id}`);
+        if (topicRes.ok) {
+          const topicData = await topicRes.json();
+          setCurrentTopic(topicData);
+          setTopicPool(topicData.papers || []);
+        }
+        setTopicQueryInput("");
+        // Refresh topic list
+        loadTopicList();
+      } else {
+        const error = await res.json().catch(() => ({}));
+        alert(`Query failed: ${error.detail || res.statusText}`);
+      }
+    } catch (e) {
+      console.error("Topic query failed:", e);
+      alert(`Error: ${e}`);
+    } finally {
+      setIsLoadingTopicQuery(false);
     }
   };
 
@@ -1988,13 +2301,13 @@ export default function Home() {
               {/* Search mode dropdown */}
               <select
                 value={searchMode}
-                onChange={(e) => setSearchMode(e.target.value as "paper" | "category" | "tree")}
+                onChange={(e) => setSearchMode(e.target.value as "paper" | "category" | "topic")}
                 className="px-2 py-2 border border-r-0 border-gray-300 rounded-l bg-gray-50 text-sm text-gray-700 focus:outline-none focus:ring-1 focus:ring-blue-500"
                 title="Search mode"
               >
                 <option value="paper">Paper</option>
                 <option value="category" disabled className="text-gray-400">Category</option>
-                <option value="tree" disabled className="text-gray-400">Tree</option>
+                <option value="topic">Topic</option>
               </select>
               <div className="relative flex-1">
                 <Search className="absolute left-3 top-1/2 transform -translate-y-1/2 text-gray-400" size={18} />
@@ -2003,11 +2316,19 @@ export default function Home() {
                   value={searchQuery}
                   onChange={(e) => {
                     setSearchQuery(e.target.value);
-                    performSearch(e.target.value);
+                    if (searchMode !== "topic") {
+                      performSearch(e.target.value);
+                    }
+                  }}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter" && searchMode === "topic" && searchQuery.trim()) {
+                      e.preventDefault();
+                      handleTopicSearch(searchQuery.trim());
+                    }
                   }}
                   onFocus={() => setIsSearchFocused(true)}
                   onBlur={() => setTimeout(() => setIsSearchFocused(false), 200)}
-                  placeholder={searchMode === "paper" ? "Search papers..." : searchMode === "category" ? "Search categories..." : "Search tree..."}
+                  placeholder={searchMode === "paper" ? "Search papers..." : searchMode === "category" ? "Search categories..." : "Enter topic to find papers..."}
                   className="w-full pl-10 pr-4 py-2 border border-gray-300 rounded-r focus:outline-none focus:ring-1 focus:ring-blue-500"
                 />
               {isSearchFocused && searchResults.length > 0 && (
@@ -2553,12 +2874,13 @@ export default function Home() {
                   >
                     {/* Tabs row with font size controls */}
                     <div className="flex items-center justify-between mb-2">
-                      <TabsList className="grid grid-cols-5 h-10">
-                        <TabsTrigger value="explorer" className="px-2">Explorer</TabsTrigger>
-                        <TabsTrigger value="repos" className="px-2">Repos</TabsTrigger>
-                        <TabsTrigger value="refs" className="px-2">Refs</TabsTrigger>
-                        <TabsTrigger value="similar" className="px-2">Similar</TabsTrigger>
-                        <TabsTrigger value="query" className="px-2">Query</TabsTrigger>
+                      <TabsList className="grid grid-cols-6 h-10">
+                        <TabsTrigger value="explorer" className="px-1 text-xs">Explorer</TabsTrigger>
+                        <TabsTrigger value="repos" className="px-1 text-xs">Repos</TabsTrigger>
+                        <TabsTrigger value="refs" className="px-1 text-xs">Refs</TabsTrigger>
+                        <TabsTrigger value="similar" className="px-1 text-xs">Similar</TabsTrigger>
+                        <TabsTrigger value="query" className="px-1 text-xs">Query</TabsTrigger>
+                        <TabsTrigger value="topic-query" className="px-1 text-xs">Topic</TabsTrigger>
                       </TabsList>
                       <div className="flex items-center gap-1 ml-2">
                         <button
@@ -3076,6 +3398,134 @@ export default function Home() {
                         <p className="text-gray-500">Select a paper to ask questions.</p>
                       )}
                     </TabsContent>
+
+                    {/* Topic Query Panel */}
+                    <TabsContent value="topic-query" className="mt-3">
+                      <h2 className="font-semibold mb-4" style={{ fontSize: `${panelFontSize + 2}px` }}>Topic Queries</h2>
+                      
+                      {/* Topics List */}
+                      {topicList.length === 0 ? (
+                        <p className="text-gray-500 mb-4">
+                          No topics yet. Use the search box with "Topic" mode to create one.
+                        </p>
+                      ) : (
+                        <div className="space-y-2 mb-4 max-h-96 overflow-y-auto">
+                          {topicList.map((topic) => (
+                            <div key={topic.id} className="border border-gray-200 rounded">
+                              <div
+                                className="flex items-center justify-between px-3 py-2 cursor-pointer hover:bg-gray-50"
+                                onClick={() => {
+                                  if (expandedTopicId === topic.id) {
+                                    setExpandedTopicId(null);
+                                    setCurrentTopic(null);
+                                  } else {
+                                    setExpandedTopicId(topic.id);
+                                    resumeTopic(topic);
+                                  }
+                                }}
+                              >
+                                <div className="flex-1">
+                                  <div className="font-medium">{topic.name}</div>
+                                  <div className="text-xs text-gray-500">
+                                    {topic.paper_count} papers, {topic.query_count} queries
+                                  </div>
+                                </div>
+                                <div className="flex items-center gap-2">
+                                  <button
+                                    onClick={(e) => {
+                                      e.stopPropagation();
+                                      deleteTopic(topic.id);
+                                    }}
+                                    className="text-red-500 hover:text-red-700 text-xs"
+                                    title="Delete topic"
+                                  >
+                                    ✕
+                                  </button>
+                                  <span className="text-gray-400">
+                                    {expandedTopicId === topic.id ? "▼" : "▶"}
+                                  </span>
+                                </div>
+                              </div>
+                              
+                              {/* Expanded content */}
+                              {expandedTopicId === topic.id && currentTopic && (
+                                <div className="px-3 py-2 border-t border-gray-200 bg-gray-50">
+                                  {/* Papers in pool */}
+                                  <div className="mb-3">
+                                    <div className="text-sm font-medium mb-1">Papers ({topicPool.length}):</div>
+                                    <div className="text-xs text-gray-600 max-h-24 overflow-y-auto">
+                                      {topicPool.map((p) => (
+                                        <div key={p.paper_id} className="flex items-center justify-between py-0.5">
+                                          <span className="truncate flex-1" title={p.title}>{p.title}</span>
+                                          <button
+                                            onClick={() => removePaperFromPool(p.paper_id)}
+                                            className="text-red-400 hover:text-red-600 ml-1"
+                                            title="Remove from pool"
+                                          >
+                                            ✕
+                                          </button>
+                                        </div>
+                                      ))}
+                                    </div>
+                                  </div>
+                                  
+                                  {/* Query history */}
+                                  {currentTopic.queries && currentTopic.queries.length > 0 && (
+                                    <div className="mb-3">
+                                      <div className="text-sm font-medium mb-1">Query History:</div>
+                                      <div className="space-y-2 max-h-48 overflow-y-auto">
+                                        {currentTopic.queries.map((q) => (
+                                          <div key={q.id} className="bg-white p-2 rounded border border-gray-200">
+                                            <div className="text-xs text-gray-500">
+                                              {new Date(q.created_at).toLocaleString()}
+                                            </div>
+                                            <div className="font-medium text-sm">Q: {q.question}</div>
+                                            <div className="text-sm text-gray-700 mt-1">
+                                              <FormattedText text={q.answer} />
+                                            </div>
+                                          </div>
+                                        ))}
+                                      </div>
+                                    </div>
+                                  )}
+                                  
+                                  {/* Query input */}
+                                  <div className="flex gap-2">
+                                    <input
+                                      type="text"
+                                      value={topicQueryInput}
+                                      onChange={(e) => setTopicQueryInput(e.target.value)}
+                                      onKeyDown={(e) => {
+                                        if (e.key === "Enter" && !isLoadingTopicQuery) {
+                                          handleTopicQuerySubmit();
+                                        }
+                                      }}
+                                      placeholder="Ask a question about this topic..."
+                                      className="flex-1 px-2 py-1 border border-gray-300 rounded text-sm"
+                                      disabled={isLoadingTopicQuery || topicPool.length === 0}
+                                    />
+                                    <button
+                                      onClick={handleTopicQuerySubmit}
+                                      disabled={isLoadingTopicQuery || !topicQueryInput.trim() || topicPool.length === 0}
+                                      className="px-3 py-1 bg-blue-600 text-white rounded text-sm disabled:bg-gray-400"
+                                    >
+                                      {isLoadingTopicQuery ? "..." : "Ask"}
+                                    </button>
+                                  </div>
+                                  {topicPool.length === 0 && (
+                                    <p className="text-xs text-amber-600 mt-1">Add papers to the pool first.</p>
+                                  )}
+                                </div>
+                              )}
+                            </div>
+                          ))}
+                        </div>
+                      )}
+                      
+                      <p className="text-xs text-gray-500">
+                        Tip: Select "Topic" in the search dropdown and press Enter to create a new topic.
+                      </p>
+                    </TabsContent>
                   </Tabs>
                     )}
                   </div>
@@ -3087,6 +3537,195 @@ export default function Home() {
         
         {/* Debug Panel section removed - now integrated above tabs */}
       </div>
+      
+      {/* Topic Dialog for paper selection */}
+      {showTopicDialog && (
+        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
+          <div className="bg-white rounded-lg shadow-xl max-w-2xl w-full mx-4 max-h-[80vh] overflow-hidden flex flex-col">
+            <div className="px-6 py-4 border-b border-gray-200">
+              <h3 className="text-lg font-semibold">
+                {topicDialogMode === "select" ? "Topic Exists" : 
+                 topicDialogMode === "create" ? "Create New Topic" :
+                 topicDialogMode === "building" ? "Build Paper Pool" : "Checking..."}
+              </h3>
+            </div>
+            
+            <div className="px-6 py-4 flex-1 overflow-y-auto">
+              {/* Select existing or create new */}
+              {topicDialogMode === "select" && (
+                <div>
+                  <p className="mb-4 text-gray-600">
+                    Topics already exist for "{currentTopicQuery}". Choose an option:
+                  </p>
+                  
+                  <div className="space-y-2 mb-4">
+                    {existingTopics.map((topic) => (
+                      <div
+                        key={topic.id}
+                        className="border border-gray-200 rounded p-3 hover:bg-gray-50 cursor-pointer"
+                        onClick={() => resumeTopic(topic)}
+                      >
+                        <div className="font-medium">{topic.name}</div>
+                        <div className="text-sm text-gray-500">
+                          {topic.paper_count} papers, {topic.query_count} queries
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                  
+                  <div className="border-t border-gray-200 pt-4">
+                    <p className="text-sm text-gray-600 mb-2">Or create a new topic with a prefix:</p>
+                    <div className="flex gap-2">
+                      <input
+                        type="text"
+                        value={topicNamePrefix}
+                        onChange={(e) => setTopicNamePrefix(e.target.value)}
+                        placeholder="Enter prefix (e.g., 'v2' or 'detailed')"
+                        className="flex-1 px-3 py-2 border border-gray-300 rounded"
+                      />
+                      <button
+                        onClick={() => {
+                          if (topicNamePrefix.trim()) {
+                            startNewTopic(currentTopicQuery, topicNamePrefix.trim());
+                          }
+                        }}
+                        disabled={!topicNamePrefix.trim()}
+                        className="px-4 py-2 bg-blue-600 text-white rounded disabled:bg-gray-400"
+                      >
+                        Create
+                      </button>
+                    </div>
+                  </div>
+                </div>
+              )}
+              
+              {/* Building paper pool */}
+              {topicDialogMode === "building" && (
+                <div>
+                  <p className="mb-2 text-gray-600">
+                    Topic: <strong>{currentTopic?.name || currentTopicQuery}</strong>
+                  </p>
+                  
+                  {/* Current pool */}
+                  {topicPool.length > 0 && (
+                    <div className="mb-4 p-3 bg-blue-50 rounded">
+                      <div className="text-sm font-medium mb-1">Papers in pool ({topicPool.length}):</div>
+                      <div className="max-h-24 overflow-y-auto">
+                        {topicPool.map((p) => (
+                          <div key={p.paper_id} className="flex items-center justify-between text-sm py-0.5">
+                            <span className="truncate flex-1">{p.title}</span>
+                            <span className="text-gray-500 mx-2">{(p.similarity * 100).toFixed(0)}%</span>
+                            <button
+                              onClick={() => removePaperFromPool(p.paper_id)}
+                              className="text-red-500 hover:text-red-700"
+                            >
+                              ✕
+                            </button>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+                  
+                  {/* Paper selection */}
+                  <div className="mb-4">
+                    <div className="flex items-center justify-between mb-2">
+                      <span className="text-sm font-medium">Select papers to add:</span>
+                      <div className="flex gap-2">
+                        <button
+                          onClick={() => setTopicSearchResults(r => r.map(p => ({ ...p, selected: true })))}
+                          className="text-xs text-blue-600 hover:underline"
+                        >
+                          Select All
+                        </button>
+                        <button
+                          onClick={() => setTopicSearchResults(r => r.map(p => ({ ...p, selected: false })))}
+                          className="text-xs text-blue-600 hover:underline"
+                        >
+                          Select None
+                        </button>
+                      </div>
+                    </div>
+                    
+                    {isLoadingTopicSearch ? (
+                      <p className="text-gray-500 py-4 text-center">Loading papers...</p>
+                    ) : topicSearchResults.length === 0 ? (
+                      <p className="text-gray-500 py-4 text-center">No more papers found above threshold.</p>
+                    ) : (
+                      <div className="max-h-48 overflow-y-auto border border-gray-200 rounded">
+                        {topicSearchResults.map((paper) => (
+                          <div
+                            key={paper.paper_id}
+                            className={`flex items-center gap-2 px-3 py-2 border-b border-gray-100 last:border-b-0 cursor-pointer hover:bg-gray-50 ${paper.selected ? 'bg-blue-50' : ''}`}
+                            onClick={() => {
+                              setTopicSearchResults(r => r.map(p => 
+                                p.paper_id === paper.paper_id ? { ...p, selected: !p.selected } : p
+                              ));
+                            }}
+                          >
+                            <input
+                              type="checkbox"
+                              checked={paper.selected || false}
+                              onChange={() => {}}
+                              className="cursor-pointer"
+                            />
+                            <div className="flex-1 min-w-0">
+                              <div className="font-medium truncate">{paper.title}</div>
+                              <div className="text-xs text-gray-500">
+                                {paper.year && `${paper.year} · `}
+                                Similarity: {(paper.similarity * 100).toFixed(0)}%
+                              </div>
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                  
+                  {/* Actions */}
+                  <div className="flex gap-2">
+                    <button
+                      onClick={addSelectedPapersToPool}
+                      disabled={!topicSearchResults.some(p => p.selected)}
+                      className="flex-1 py-2 bg-blue-600 text-white rounded disabled:bg-gray-400"
+                    >
+                      Add Selected to Pool
+                    </button>
+                    <button
+                      onClick={loadMoreTopicPapers}
+                      disabled={isLoadingTopicSearch}
+                      className="px-4 py-2 border border-gray-300 rounded hover:bg-gray-50"
+                    >
+                      Load More
+                    </button>
+                  </div>
+                </div>
+              )}
+            </div>
+            
+            <div className="px-6 py-4 border-t border-gray-200 flex justify-between">
+              <button
+                onClick={() => {
+                  setShowTopicDialog(false);
+                  setTopicSearchResults([]);
+                  setTopicNamePrefix("");
+                }}
+                className="px-4 py-2 border border-gray-300 rounded hover:bg-gray-50"
+              >
+                Cancel
+              </button>
+              {topicDialogMode === "building" && topicPool.length > 0 && (
+                <button
+                  onClick={finishPaperSelection}
+                  className="px-4 py-2 bg-green-600 text-white rounded hover:bg-green-700"
+                >
+                  Done ({topicPool.length} papers)
+                </button>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
     </div>
     </TooltipProvider>
   );

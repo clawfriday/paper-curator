@@ -28,6 +28,7 @@ from config import (
     _get_endpoint_config,
     _get_external_apis_config,
     _get_ingestion_config,
+    _get_topic_query_config,
     _get_ui_config,
     _load_prompt,
     get_prompt,
@@ -174,6 +175,28 @@ class ExplainReferenceRequest(BaseModel):
 
 class SimilarPapersRequest(BaseModel):
     arxiv_id: str
+
+
+# Topic Query Request Models
+class TopicSearchRequest(BaseModel):
+    topic: str = Field(description="Topic to search for similar papers")
+    offset: int = Field(default=0, description="Pagination offset")
+    limit: Optional[int] = Field(default=None, description="Override max_papers_per_batch from config")
+    exclude_paper_ids: list[int] = Field(default=[], description="Paper IDs to exclude from results")
+
+
+class TopicCreateRequest(BaseModel):
+    name: str = Field(description="Unique name for the topic (user prefix + topic)")
+    topic_query: str = Field(description="Original search topic")
+
+
+class TopicAddPapersRequest(BaseModel):
+    paper_ids: list[int] = Field(description="Paper IDs to add to the topic pool")
+    similarity_scores: Optional[list[float]] = Field(default=None, description="Similarity scores for each paper")
+
+
+class TopicQueryRequest(BaseModel):
+    question: str = Field(description="Question to ask across all papers in the topic pool")
 
 
 # =============================================================================
@@ -2175,3 +2198,301 @@ async def find_similar_papers(payload: SimilarPapersRequest) -> dict[str, Any]:
             )
     
     return {"similar_papers": similar, "from_cache": False}
+
+
+# =============================================================================
+# Topic Query Endpoints (Multi-Paper RAG)
+# =============================================================================
+
+@app.post("/topic/search")
+async def topic_search(payload: TopicSearchRequest) -> dict[str, Any]:
+    """Search for papers similar to a topic using embedding similarity.
+    
+    Returns paginated results ordered by similarity score.
+    """
+    topic_config = _get_topic_query_config()
+    limit = payload.limit or topic_config["max_papers_per_batch"]
+    min_similarity = topic_config["similarity_threshold"]
+    
+    # Get embedding endpoint config
+    endpoint_config = _get_endpoint_config()
+    embed_base_url = endpoint_config["embedding_base_url"]
+    api_key = endpoint_config["api_key"]
+    
+    # Embed the topic
+    client = _get_async_openai_client(embed_base_url, api_key)
+    embed_model = resolve_model(embed_base_url, api_key)
+    
+    response = await client.embeddings.create(
+        model=embed_model,
+        input=payload.topic,
+    )
+    topic_embedding = response.data[0].embedding
+    
+    # Search papers by embedding
+    papers, has_more = db.search_papers_by_embedding(
+        embedding=topic_embedding,
+        limit=limit,
+        offset=payload.offset,
+        min_similarity=min_similarity,
+        exclude_paper_ids=payload.exclude_paper_ids if payload.exclude_paper_ids else None,
+    )
+    
+    return {
+        "papers": papers,
+        "has_more": has_more,
+        "topic_embedding": topic_embedding,  # Return for creating topic
+    }
+
+
+@app.get("/topic/list")
+async def topic_list() -> dict[str, Any]:
+    """Get all topics ordered by recency."""
+    topics = db.get_all_topics()
+    return {"topics": topics}
+
+
+@app.post("/topic/create")
+async def topic_create(payload: TopicCreateRequest) -> dict[str, Any]:
+    """Create a new topic for paper pool."""
+    # Check if topic name already exists
+    existing = db.get_topic_by_name(payload.name)
+    if existing:
+        raise HTTPException(status_code=400, detail=f"Topic with name '{payload.name}' already exists")
+    
+    # Get embedding for the topic
+    endpoint_config = _get_endpoint_config()
+    embed_base_url = endpoint_config["embedding_base_url"]
+    api_key = endpoint_config["api_key"]
+    
+    client = _get_async_openai_client(embed_base_url, api_key)
+    embed_model = resolve_model(embed_base_url, api_key)
+    
+    response = await client.embeddings.create(
+        model=embed_model,
+        input=payload.topic_query,
+    )
+    topic_embedding = response.data[0].embedding
+    
+    # Create the topic
+    topic_id = db.create_topic(
+        name=payload.name,
+        topic_query=payload.topic_query,
+        embedding=topic_embedding,
+    )
+    
+    return {"topic_id": topic_id, "name": payload.name}
+
+
+@app.get("/topic/check")
+async def topic_check(topic_query: str) -> dict[str, Any]:
+    """Check if topics exist for a given topic query string."""
+    existing = db.get_topics_by_query(topic_query)
+    return {
+        "exists": len(existing) > 0,
+        "topics": existing,
+    }
+
+
+@app.get("/topic/{topic_id}")
+async def topic_get(topic_id: int) -> dict[str, Any]:
+    """Get full topic details with papers and queries."""
+    topic = db.get_topic_full(topic_id)
+    if not topic:
+        raise HTTPException(status_code=404, detail="Topic not found")
+    return topic
+
+
+@app.post("/topic/{topic_id}/papers")
+async def topic_add_papers(topic_id: int, payload: TopicAddPapersRequest) -> dict[str, Any]:
+    """Add papers to a topic pool."""
+    # Verify topic exists
+    topic = db.get_topic_by_id(topic_id)
+    if not topic:
+        raise HTTPException(status_code=404, detail="Topic not found")
+    
+    added = db.add_papers_to_topic(
+        topic_id=topic_id,
+        paper_ids=payload.paper_ids,
+        similarity_scores=payload.similarity_scores,
+    )
+    
+    return {"added": added, "topic_id": topic_id}
+
+
+@app.delete("/topic/{topic_id}/papers/{paper_id}")
+async def topic_remove_paper(topic_id: int, paper_id: int) -> dict[str, Any]:
+    """Remove a paper from a topic pool."""
+    removed = db.remove_paper_from_topic(topic_id, paper_id)
+    return {"removed": removed}
+
+
+@app.delete("/topic/{topic_id}")
+async def topic_delete(topic_id: int) -> dict[str, Any]:
+    """Delete a topic and all its associated data."""
+    deleted = db.delete_topic(topic_id)
+    if not deleted:
+        raise HTTPException(status_code=404, detail="Topic not found")
+    return {"deleted": True}
+
+
+@app.post("/topic/{topic_id}/query")
+async def topic_query(topic_id: int, payload: TopicQueryRequest) -> dict[str, Any]:
+    """Query across all papers in a topic pool using hierarchical RAG.
+    
+    1. Get all papers in the pool
+    2. Query each paper with PaperQA
+    3. Aggregate responses into final summary
+    """
+    topic_config = _get_topic_query_config()
+    debug_mode = topic_config["debug_mode"]
+    
+    # Get topic with papers
+    topic = db.get_topic_full(topic_id)
+    if not topic:
+        raise HTTPException(status_code=404, detail="Topic not found")
+    
+    papers = topic.get("papers", [])
+    if not papers:
+        raise HTTPException(status_code=400, detail="Topic has no papers in pool")
+    
+    # Get LLM config
+    endpoint_config = _get_endpoint_config()
+    base_url = endpoint_config["llm_base_url"]
+    api_key = endpoint_config["api_key"]
+    model = resolve_model(base_url, api_key)
+    client = _get_async_openai_client(base_url, api_key)
+    
+    # Query each paper using PaperQA
+    paper_responses = []
+    
+    # Get embed config once
+    embed_base_url = endpoint_config["embedding_base_url"]
+    embed_model = f"openai/{resolve_model(embed_base_url, api_key)}"
+    
+    async def query_single_paper(paper: dict) -> dict[str, Any]:
+        """Query a single paper and return response."""
+        arxiv_id = paper.get("arxiv_id")
+        pdf_path = paper.get("pdf_path")
+        title = paper.get("title", "Unknown")
+        
+        try:
+            # Reset litellm callbacks to prevent accumulation
+            reset_litellm_callbacks()
+            
+            # Use existing PaperQA query function
+            answer = await paperqa_answer_async(
+                text=None,
+                pdf_path=pdf_path,
+                question=payload.question,
+                llm_base_url=base_url,
+                embed_base_url=embed_base_url,
+                api_key=api_key,
+                llm_model=model,
+                embed_model=embed_model,
+                arxiv_id=arxiv_id,
+            )
+            
+            return {
+                "paper_id": paper["paper_id"],
+                "arxiv_id": arxiv_id,
+                "title": title,
+                "response": answer,
+                "success": True,
+            }
+        except Exception as e:
+            import traceback
+            print(f"[TOPIC QUERY] Error querying paper {arxiv_id}: {e}")
+            traceback.print_exc()
+            return {
+                "paper_id": paper["paper_id"],
+                "arxiv_id": arxiv_id,
+                "title": title,
+                "response": f"Error: {str(e)}",
+                "success": False,
+            }
+    
+    # Query papers in parallel (with semaphore to limit concurrency)
+    semaphore = asyncio.Semaphore(3)  # Limit to 3 concurrent queries
+    
+    async def query_with_semaphore(paper: dict) -> dict[str, Any]:
+        async with semaphore:
+            return await query_single_paper(paper)
+    
+    paper_responses = await asyncio.gather(*[query_with_semaphore(p) for p in papers])
+    
+    # Filter successful responses
+    successful_responses = [r for r in paper_responses if r["success"]]
+    
+    if not successful_responses:
+        raise HTTPException(status_code=500, detail="All paper queries failed")
+    
+    # Aggregate responses into final summary
+    aggregation_prompt = f"""You are summarizing answers from multiple research papers about a topic.
+
+Question: {payload.question}
+
+Here are the responses from individual papers:
+
+"""
+    for i, resp in enumerate(successful_responses, 1):
+        aggregation_prompt += f"""
+Paper {i}: {resp['title']}
+Response: {resp['response']}
+
+---
+"""
+    
+    aggregation_prompt += """
+Please synthesize these responses into a coherent, comprehensive answer. 
+- Cite which papers support each point using [Paper N] format
+- Note any disagreements or different perspectives between papers
+- Prioritize findings that appear across multiple papers
+- Be concise but thorough
+"""
+    
+    # Generate final summary
+    response = await client.chat.completions.create(
+        model=model,
+        messages=[{"role": "user", "content": aggregation_prompt}],
+        max_tokens=2000,
+        temperature=0.3,
+    )
+    
+    final_answer = response.choices[0].message.content.strip()
+    
+    # Save to database
+    db.add_topic_query(
+        topic_id=topic_id,
+        question=payload.question,
+        answer=final_answer,
+        paper_responses=paper_responses if debug_mode else None,
+        model=model,
+    )
+    
+    # Save debug output if enabled
+    if debug_mode:
+        import os
+        os.makedirs("storage/schemas", exist_ok=True)
+        debug_data = {
+            "topic_id": topic_id,
+            "topic_name": topic["name"],
+            "question": payload.question,
+            "paper_responses": paper_responses,
+            "aggregation_prompt": aggregation_prompt,
+            "final_answer": final_answer,
+            "model": model,
+        }
+        with open("storage/schemas/topic_query.json", "w") as f:
+            json.dump(debug_data, f, indent=2)
+    
+    result = {
+        "answer": final_answer,
+        "papers_queried": len(papers),
+        "successful_queries": len(successful_responses),
+    }
+    
+    if debug_mode:
+        result["paper_responses"] = paper_responses
+    
+    return result

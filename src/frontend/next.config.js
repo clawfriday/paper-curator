@@ -62,6 +62,11 @@ const nextConfig = {
         source: "/api/categories/:path*",
         destination: `${backendUrl}/categories/:path*`,
       },
+      // Topic Query endpoints
+      {
+        source: "/api/topic/:path*",
+        destination: `${backendUrl}/topic/:path*`,
+      },
       // Feature endpoints
       {
         source: "/api/repos/:path*",
