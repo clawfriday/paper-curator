@@ -12,6 +12,16 @@ ingestion:
   skip_existing: true  # Set to true to skip papers already in database during batch ingest
 
 # =============================================================================
+# Slack channels for paper ingestion
+# =============================================================================
+slack:
+  # Add Slack channel URLs here (one per line)
+  # Format: https://app.slack.com/client/WORKSPACE_ID/CHANNEL_ID
+  channels:
+    - https://app.slack.com/client/T04MW5HMWV9/C0A727EKAJV
+    - https://app.slack.com/client/T04MW5HMWV9/C04SVKLPERH
+
+# =============================================================================
 # OpenAI-compatible API endpoints
 # NOTE: You can use localhost URLs - they auto-convert to host.docker.internal in Docker
 # =============================================================================

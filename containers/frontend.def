@@ -27,6 +27,14 @@ From: node:20-slim
     # For Singularity/HPC, backend runs on localhost:3100
     export BACKEND_URL="http://localhost:3100"
     npm run build
+    
+    # For standalone output, copy static files to standalone directory
+    # This is required for Next.js standalone mode to serve static assets
+    cp -r /app/.next/static /app/.next/standalone/.next/static
+    # Copy public folder if it exists
+    if [ -d /app/public ]; then
+        cp -r /app/public /app/.next/standalone/public
+    fi
 
 %environment
     export NODE_ENV=production

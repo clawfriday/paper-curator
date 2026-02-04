@@ -52,10 +52,7 @@ const nextConfig = {
         source: "/api/papers/:path*",
         destination: `${backendUrl}/papers/:path*`,
       },
-      {
-        source: "/api/tree",
-        destination: `${backendUrl}/tree`,
-      },
+      // Note: /api/tree is handled by custom API route with extended timeout
       {
         source: "/api/tree/:path*",
         destination: `${backendUrl}/tree/:path*`,

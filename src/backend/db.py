@@ -227,6 +227,8 @@ def find_similar_papers(embedding: list[float], limit: int = 5, exclude_id: Opti
 def get_tree() -> dict[str, Any]:
     """Get full tree structure from JSONB and enrich with paper metadata.
     
+    OPTIMIZED: Fetches all papers in a single query instead of N+1 queries.
+    
     Returns:
         Frontend format tree structure with paper metadata:
         {
@@ -256,6 +258,7 @@ def get_tree() -> dict[str, Any]:
     
     with get_db() as conn:
         with conn.cursor(cursor_factory=RealDictCursor) as cur:
+            # Fetch tree structure
             cur.execute("SELECT tree_data, node_names FROM tree_state WHERE id = 1")
             row = cur.fetchone()
             if not row or not row.get("tree_data"):
@@ -265,13 +268,21 @@ def get_tree() -> dict[str, Any]:
             tree_structure = tree_data if isinstance(tree_data, dict) else json.loads(tree_data)
             node_names_raw = row.get("node_names") or {}
             node_names = node_names_raw if isinstance(node_names_raw, dict) else json.loads(node_names_raw)
+            
+            # OPTIMIZATION: Fetch ALL papers in a single query and build lookup map
+            cur.execute(
+                """SELECT id, arxiv_id, title, authors, summary, pdf_path, abbreviation 
+                   FROM papers"""
+            )
+            all_papers = cur.fetchall()
+            papers_by_id = {p["id"]: p for p in all_papers}
     
-    # Enrich tree with paper metadata
+    # Enrich tree with paper metadata using pre-fetched lookup
     def enrich_node(node: dict[str, Any]) -> dict[str, Any]:
         """Recursively enrich nodes with paper metadata."""
         if node.get("node_type") == "paper" and node.get("paper_id"):
-            # Fetch paper data from database
-            paper = get_paper_by_id(node["paper_id"])
+            # Use pre-fetched paper data (O(1) lookup instead of DB query)
+            paper = papers_by_id.get(node["paper_id"])
             if paper:
                 node["attributes"] = {
                     "arxivId": paper.get("arxiv_id"),

@@ -79,10 +79,10 @@ singularity-run:
 singularity-stop:
 	./scripts/hpc-services.sh stop
 
-# Pull papers from Slack channel (default: C0A727EKAJV, override with SLACK_CHANNEL=...)
+# Pull papers from Slack channels configured in config/config.yaml
 # Token is read from ~/.ssh/.slack
-SLACK_CHANNEL ?= https://app.slack.com/client/T04MW5HMWV9/C0A727EKAJV
 SLACK_TOKEN_FILE := $(HOME)/.ssh/.slack
+CONFIG_FILE := config/config.yaml
 
 pull-slack:
 	@if [ ! -f "$(SLACK_TOKEN_FILE)" ]; then \
@@ -90,14 +90,18 @@ pull-slack:
 		echo "Create the file with your Slack User OAuth Token (xoxp-...)"; \
 		exit 1; \
 	fi
-	@echo "Starting Slack ingestion from: $(SLACK_CHANNEL)"
 	@SLACK_TOKEN=$$(cat "$(SLACK_TOKEN_FILE)") && \
-	curl -s -X POST http://localhost:3100/papers/batch-ingest \
-		-H "Content-Type: application/json" \
-		-d "{\"slack_channel\": \"$(SLACK_CHANNEL)\", \"slack_token\": \"$$SLACK_TOKEN\"}" | \
-	python3 -c "import sys,json; d=json.load(sys.stdin); \
-		print('\\n'.join(d.get('progress_log',['No progress log'])[-20:])); \
-		print(f'\\n=== Result: {d.get(\"success\",0)} success, {d.get(\"skipped\",0)} skipped, {d.get(\"errors\",0)} errors ===')"
+	echo "=== Pulling from all Slack channels in config.yaml ==="; \
+	grep -A 100 "^slack:" "$(CONFIG_FILE)" | grep "^\s*-\s*http" | sed 's/^\s*-\s*//' | while read channel; do \
+		echo ""; \
+		echo "=== Processing channel: $$channel ==="; \
+		curl -s -X POST http://localhost:3100/papers/batch-ingest \
+			-H "Content-Type: application/json" \
+			-d "{\"slack_channel\": \"$$channel\", \"slack_token\": \"$$SLACK_TOKEN\"}" | \
+		python3 -c "import sys,json; d=json.load(sys.stdin); \
+			print('\\n'.join(d.get('progress_log',['No progress log'])[-20:])); \
+			print(f'\\n=== Result: {d.get(\"success\",0)} success, {d.get(\"skipped\",0)} skipped, {d.get(\"errors\",0)} errors ===')"; \
+	done;
 
 # =============================================================================
 # End Singularity targets

@@ -84,13 +84,31 @@ def resolve_model(base_url: str, api_key: str) -> str:
 
 
 def reset_litellm_callbacks() -> None:
-    """Reset LiteLLM callbacks to prevent accumulation."""
+    """Reset LiteLLM callbacks to prevent accumulation.
+    
+    LiteLLM has a MAX_CALLBACKS limit of 30. PaperQA2 adds callbacks for each
+    query, which can accumulate and hit this limit during batch operations.
+    This function clears all callback lists to prevent the warning.
+    """
     try:
         import litellm
     except ImportError:
         return
+    
+    # Clear main callback lists
     litellm.input_callback = []
     litellm.success_callback = []
     litellm.failure_callback = []
     litellm._async_success_callback = []
     litellm._async_failure_callback = []
+    
+    # Also clear the logging callback manager if it exists
+    try:
+        if hasattr(litellm, 'logging_callback_manager'):
+            manager = litellm.logging_callback_manager
+            if hasattr(manager, 'callbacks'):
+                manager.callbacks = []
+            if hasattr(manager, '_callbacks'):
+                manager._callbacks = []
+    except Exception:
+        pass  # Ignore if attribute structure is different

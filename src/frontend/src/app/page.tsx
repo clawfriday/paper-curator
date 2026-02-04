@@ -95,70 +95,138 @@ interface TreeLayout {
   dimsById: Record<string, { width: number; height: number; lineHeight: number; paddingY: number }>;
 }
 
-// Component to render text with LaTeX formulas
-function TextWithMath({ text, style }: { text: string; style?: React.CSSProperties }) {
-  // Split by lines first to preserve line breaks
-  const lines = text.split('\n');
+// Component to render formatted text with LaTeX, bold, and lists
+function FormattedText({ text, className }: { text: string; className?: string }) {
+  // Parse text into segments: LaTeX (inline/block), bold, and plain text
+  const parseSegment = (segment: string): React.ReactNode[] => {
+    const result: React.ReactNode[] = [];
+    let remaining = segment;
+    let keyCounter = 0;
+    
+    while (remaining.length > 0) {
+      // Find the earliest match of any pattern
+      const patterns = [
+        { regex: /\\\(([\s\S]*?)\\\)/, type: 'inline-math' },
+        { regex: /\\\[([\s\S]*?)\\\]/, type: 'block-math' },
+        { regex: /\$([^$]+)\$/, type: 'inline-math-dollar' },
+        { regex: /\*\*([^*]+)\*\*/, type: 'bold' },
+      ];
+      
+      let earliestMatch: { index: number; length: number; type: string; content: string } | null = null;
+      
+      for (const pattern of patterns) {
+        const match = pattern.regex.exec(remaining);
+        if (match && (earliestMatch === null || match.index < earliestMatch.index)) {
+          earliestMatch = {
+            index: match.index,
+            length: match[0].length,
+            type: pattern.type,
+            content: match[1],
+          };
+        }
+      }
+      
+      if (earliestMatch) {
+        // Add text before the match
+        if (earliestMatch.index > 0) {
+          result.push(<span key={keyCounter++}>{remaining.substring(0, earliestMatch.index)}</span>);
+        }
+        
+        // Add the matched element
+        if (earliestMatch.type === 'inline-math' || earliestMatch.type === 'inline-math-dollar') {
+          result.push(<InlineMath key={keyCounter++} math={earliestMatch.content} />);
+        } else if (earliestMatch.type === 'block-math') {
+          result.push(<BlockMath key={keyCounter++} math={earliestMatch.content} />);
+        } else if (earliestMatch.type === 'bold') {
+          result.push(<strong key={keyCounter++} className="font-semibold text-gray-900">{earliestMatch.content}</strong>);
+        }
+        
+        remaining = remaining.substring(earliestMatch.index + earliestMatch.length);
+      } else {
+        // No more patterns found, add remaining text
+        result.push(<span key={keyCounter++}>{remaining}</span>);
+        break;
+      }
+    }
+    
+    return result;
+  };
   
-  return (
-    <span style={style}>
-      {lines.map((line, lineIdx) => {
-        // Split each line by LaTeX patterns: \(...\) for inline and \[...\] for block
-        const parts: (string | { type: "inline" | "block"; content: string })[] = [];
-        let lastIndex = 0;
-        
-        // Match both inline \(...\) and block \[...\] math
-        const mathRegex = /(\\(?:\[|\())([\s\S]*?)(\\(?:\)|\]))/g;
-        let match;
-        
-        while ((match = mathRegex.exec(line)) !== null) {
-          // Add text before the match
-          if (match.index > lastIndex) {
-            parts.push(line.substring(lastIndex, match.index));
-          }
-          
-          // Add the math content
-          const isBlock = match[1] === "\\[";
-          parts.push({
-            type: isBlock ? "block" : "inline",
-            content: match[2],
-          });
-          
-          lastIndex = match.index + match[0].length;
+  // Helper to render a list
+  const renderList = (list: { type: 'ol' | 'ul'; items: React.ReactNode[] }, key: string) => {
+    if (list.type === 'ol') {
+      return <ol key={key} className="list-decimal list-inside ml-4 space-y-1">{list.items}</ol>;
+    }
+    return <ul key={key} className="list-disc list-inside ml-4 space-y-1">{list.items}</ul>;
+  };
+  
+  // Split text into lines and process each
+  const lines = text.split('\n');
+  const elements: React.ReactNode[] = [];
+  let currentList: { type: 'ol' | 'ul'; items: React.ReactNode[] } | null = null;
+  
+  lines.forEach((line, lineIdx) => {
+    const trimmedLine = line.trim();
+    
+    // Check for numbered list item (1., 2., etc.)
+    const numberedMatch = trimmedLine.match(/^(\d+)\.\s+(.*)$/);
+    // Check for bullet point (-, •, *)
+    const bulletMatch = trimmedLine.match(/^[-•*]\s+(.*)$/);
+    
+    if (numberedMatch) {
+      if (!currentList || currentList.type !== 'ol') {
+        // Start new ordered list
+        if (currentList) {
+          elements.push(renderList(currentList, `list-${lineIdx}`));
         }
-        
-        // Add remaining text
-        if (lastIndex < line.length) {
-          parts.push(line.substring(lastIndex));
+        currentList = { type: 'ol', items: [] };
+      }
+      currentList.items.push(
+        <li key={lineIdx} className="text-gray-600">{parseSegment(numberedMatch[2])}</li>
+      );
+    } else if (bulletMatch) {
+      if (!currentList || currentList.type !== 'ul') {
+        // Start new unordered list
+        if (currentList) {
+          elements.push(renderList(currentList, `list-${lineIdx}`));
         }
-        
-        // If no math found, return plain text
-        if (parts.length === 1 && typeof parts[0] === "string") {
-          return (
-            <span key={lineIdx}>
-              {parts[0]}
-              {lineIdx < lines.length - 1 && <br />}
-            </span>
-          );
-        }
-        
-        return (
-          <span key={lineIdx}>
-            {parts.map((part, idx) => {
-              if (typeof part === "string") {
-                return <span key={idx}>{part}</span>;
-              } else if (part.type === "block") {
-                return <BlockMath key={idx} math={part.content} />;
-              } else {
-                return <InlineMath key={idx} math={part.content} />;
-              }
-            })}
-            {lineIdx < lines.length - 1 && <br />}
+        currentList = { type: 'ul', items: [] };
+      }
+      currentList.items.push(
+        <li key={lineIdx} className="text-gray-600">{parseSegment(bulletMatch[1])}</li>
+      );
+    } else {
+      // Not a list item - flush any pending list
+      if (currentList) {
+        elements.push(renderList(currentList, `list-${lineIdx}`));
+        currentList = null;
+      }
+      
+      // Add the line (with line break if not last)
+      if (trimmedLine.length > 0) {
+        elements.push(
+          <span key={lineIdx} className="block">
+            {parseSegment(line)}
           </span>
         );
-      })}
-    </span>
-  );
+      } else if (lineIdx < lines.length - 1) {
+        // Empty line = paragraph break
+        elements.push(<span key={lineIdx} className="block h-2" />);
+      }
+    }
+  });
+  
+  // Flush any remaining list
+  if (currentList) {
+    elements.push(renderList(currentList, "list-final"));
+  }
+  
+  return <div className={className}>{elements}</div>;
+}
+
+// Legacy component for backward compatibility
+function TextWithMath({ text, style }: { text: string; style?: React.CSSProperties }) {
+  return <FormattedText text={text} className="" />;
 }
 
 // Note: CollapsibleSection replaced with Shadcn/ui Accordion component
@@ -173,9 +241,10 @@ export default function Home() {
   const [taxonomy, setTaxonomy] = useState<PaperNode>(initialTaxonomy);
   const [selectedNode, setSelectedNode] = useState<PaperNode | null>(null);
   const [isIngesting, setIsIngesting] = useState(false);
+  const [isLoadingTree, setIsLoadingTree] = useState(true); // Start with loading state
   
-  // Right panel font size (in pixels) - default 19 (increased by 5 from original 14)
-  const [panelFontSize, setPanelFontSize] = useState(19);
+  // Right panel font size (in pixels) - default 14
+  const [panelFontSize, setPanelFontSize] = useState(14);
   const [steps, setSteps] = useState<IngestionStep[]>([]);
   const [uiConfig, setUiConfig] = useState<UIConfig | null>(null);
   
@@ -257,6 +326,13 @@ export default function Home() {
   const [searchQuery, setSearchQuery] = useState("");
   const [searchResults, setSearchResults] = useState<PaperNode[]>([]);
   const [isSearchFocused, setIsSearchFocused] = useState(false);
+  const [searchMode, setSearchMode] = useState<"paper" | "category" | "tree">("paper");
+  
+  // Parent map for ancestor chain navigation (node_id -> parent node)
+  const [parentMap, setParentMap] = useState<Map<string, PaperNode>>(new Map());
+  
+  // Pulse animation for centered node
+  const [pulsingNodeId, setPulsingNodeId] = useState<string | null>(null);
   
   // Phase 4: Responsive Design & Polish states
   const [windowWidth, setWindowWidth] = useState(typeof window !== 'undefined' ? window.innerWidth : 1024);
@@ -304,6 +380,7 @@ export default function Home() {
       }
       
       // Load tree from database
+      setIsLoadingTree(true);
       try {
         const treeRes = await fetch("/api/tree");
         if (treeRes.ok) {
@@ -318,10 +395,76 @@ export default function Home() {
         }
       } catch (e) {
         console.error("Failed to load tree:", e);
+      } finally {
+        setIsLoadingTree(false);
       }
     };
     
     loadInitialData();
+  }, []);
+
+  // Build parent map whenever taxonomy changes (for ancestor chain navigation)
+  useEffect(() => {
+    const newParentMap = new Map<string, PaperNode>();
+    
+    const buildParentMap = (node: PaperNode, parent: PaperNode | null) => {
+      const nodeId = node.node_id || node.name;
+      if (parent) {
+        newParentMap.set(nodeId, parent);
+      }
+      node.children?.forEach(child => buildParentMap(child, node));
+    };
+    
+    buildParentMap(taxonomy, null);
+    setParentMap(newParentMap);
+  }, [taxonomy]);
+  
+  // Get ancestor chain for a node (from root to parent, not including the node itself)
+  const getAncestorChain = useCallback((node: PaperNode): PaperNode[] => {
+    const ancestors: PaperNode[] = [];
+    const nodeId = node.node_id || node.name;
+    let current = parentMap.get(nodeId);
+    
+    while (current) {
+      ancestors.unshift(current); // Add to beginning for root-first order
+      const currentId = current.node_id || current.name;
+      current = parentMap.get(currentId);
+    }
+    
+    return ancestors;
+  }, [parentMap]);
+  
+  // Center tree view on a specific node with optional pulse animation
+  const centerOnNode = useCallback((nodeId: string) => {
+    if (!treeContainerRef.current) return;
+    
+    // Find the node in treeLayout (need to access via closure since it's computed later)
+    // This will be called when treeLayout is available
+    const container = treeContainerRef.current;
+    
+    // Find node element by data attribute or node ID
+    const nodeElement = container.querySelector(`[data-node-id="${nodeId}"]`) as HTMLElement | null;
+    
+    if (nodeElement) {
+      // Get node position relative to container
+      const containerRect = container.getBoundingClientRect();
+      const nodeRect = nodeElement.getBoundingClientRect();
+      
+      // Calculate scroll position to center the node
+      const scrollLeft = container.scrollLeft + (nodeRect.left - containerRect.left) - (containerRect.width / 2) + (nodeRect.width / 2);
+      const scrollTop = container.scrollTop + (nodeRect.top - containerRect.top) - (containerRect.height / 2) + (nodeRect.height / 2);
+      
+      // Smooth scroll to center
+      container.scrollTo({
+        left: Math.max(0, scrollLeft),
+        top: Math.max(0, scrollTop),
+        behavior: 'smooth'
+      });
+      
+      // Trigger pulse animation
+      setPulsingNodeId(nodeId);
+      setTimeout(() => setPulsingNodeId(null), 1500); // Remove pulse after 1.5s
+    }
   }, []);
 
   // Close context menu on click outside
@@ -1757,9 +1900,18 @@ export default function Home() {
       {/* Left panel: Tree visualization */}
       <div style={{ ...panelStyles.left, borderRight: isMobile ? "none" : "1px solid #e5e5e5", borderBottom: isMobile && !isFullscreen ? "1px solid #e5e5e5" : "none", display: "flex", flexDirection: "column", position: "relative", overflow: "hidden", minWidth: 0 }}>
         <div style={{ padding: isMobile ? "0.75rem" : "1rem", borderBottom: "1px solid #e5e5e5", backgroundColor: "#fafafa", fontSize: `${panelFontSize}px` }}>
-          {/* Title Row - Centered */}
-          <div className="flex justify-center mb-3">
+          {/* Title Row - Centered with Loading Indicator */}
+          <div className="flex justify-center items-center gap-2 mb-3">
             <h1 style={{ margin: 0, fontSize: isMobile ? "1.5rem" : "1.75rem", fontWeight: 600 }}>Paper Curator</h1>
+            {isLoadingTree && (
+              <div className="flex items-center gap-1 text-sm text-gray-500">
+                <svg className="animate-spin h-4 w-4" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+                  <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
+                  <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+                </svg>
+                <span>Loading tree...</span>
+              </div>
+            )}
           </div>
           {/* Controls Row: Ingest + Reclassify + Search */}
           <div className="flex items-center gap-2">
@@ -1791,30 +1943,45 @@ export default function Home() {
             >
               {isReclassifying ? "Re-classifying..." : "Re-classify"}
             </button>
-            {/* Search */}
-            <div className="relative flex-1">
-              <Search className="absolute left-3 top-1/2 transform -translate-y-1/2 text-gray-400" size={18} />
-              <input
-                type="text"
-                value={searchQuery}
-                onChange={(e) => {
-                  setSearchQuery(e.target.value);
-                  performSearch(e.target.value);
-                }}
-                onFocus={() => setIsSearchFocused(true)}
-                onBlur={() => setTimeout(() => setIsSearchFocused(false), 200)}
-                placeholder="Search papers..."
-                className="w-full pl-10 pr-4 py-2 border border-gray-300 rounded focus:outline-none focus:ring-1 focus:ring-blue-500"
-              />
+            {/* Search with mode dropdown */}
+            <div className="relative flex-1 flex">
+              {/* Search mode dropdown */}
+              <select
+                value={searchMode}
+                onChange={(e) => setSearchMode(e.target.value as "paper" | "category" | "tree")}
+                className="px-2 py-2 border border-r-0 border-gray-300 rounded-l bg-gray-50 text-sm text-gray-700 focus:outline-none focus:ring-1 focus:ring-blue-500"
+                title="Search mode"
+              >
+                <option value="paper">Paper</option>
+                <option value="category" disabled className="text-gray-400">Category</option>
+                <option value="tree" disabled className="text-gray-400">Tree</option>
+              </select>
+              <div className="relative flex-1">
+                <Search className="absolute left-3 top-1/2 transform -translate-y-1/2 text-gray-400" size={18} />
+                <input
+                  type="text"
+                  value={searchQuery}
+                  onChange={(e) => {
+                    setSearchQuery(e.target.value);
+                    performSearch(e.target.value);
+                  }}
+                  onFocus={() => setIsSearchFocused(true)}
+                  onBlur={() => setTimeout(() => setIsSearchFocused(false), 200)}
+                  placeholder={searchMode === "paper" ? "Search papers..." : searchMode === "category" ? "Search categories..." : "Search tree..."}
+                  className="w-full pl-10 pr-4 py-2 border border-gray-300 rounded-r focus:outline-none focus:ring-1 focus:ring-blue-500"
+                />
               {isSearchFocused && searchResults.length > 0 && (
                 <div className="absolute z-50 w-full mt-1 bg-white border border-gray-200 rounded-lg shadow-lg max-h-64 overflow-y-auto">
                   {searchResults.map((result, idx) => (
                     <div
                       key={idx}
                       onClick={() => {
-                        handleNodeClick(result.node_id || result.name);
+                        const nodeId = result.node_id || result.name;
+                        handleNodeClick(nodeId);
                         setSearchQuery("");
                         setSearchResults([]);
+                        // Center on the selected node after a short delay
+                        setTimeout(() => centerOnNode(nodeId), 100);
                       }}
                       className="px-4 py-2 hover:bg-gray-100 cursor-pointer border-b border-gray-100 last:border-b-0"
                     >
@@ -1832,6 +1999,7 @@ export default function Home() {
                   ))}
                 </div>
               )}
+              </div>
             </div>
           </div>
         </div>
@@ -2057,9 +2225,11 @@ export default function Home() {
                   const isPaper = node.data.node_type === "paper";
                   const nodeId = node.nodeId;
                   const lines = treeLayout.linesById[nodeId] || [node.data.name];
+                  const isPulsing = pulsingNodeId === nodeId;
                   return (
                     <g
                       key={nodeId}
+                      data-node-id={nodeId}
                       transform={`translate(${x}, ${y})`}
                       onClick={() => handleNodeClick(nodeId)}
                       onContextMenu={(e) => handleNodeRightClick(e, nodeId)}
@@ -2071,8 +2241,9 @@ export default function Home() {
                         rx={10}
                         ry={10}
                         fill={isPaper ? "#e2e8f0" : "#1d4ed8"}
-                        stroke={isPaper ? "#cbd5f5" : "#1e3a8a"}
-                        strokeWidth={1}
+                        stroke={isPulsing ? "#f59e0b" : (isPaper ? "#cbd5f5" : "#1e3a8a")}
+                        strokeWidth={isPulsing ? 3 : 1}
+                        style={isPulsing ? { animation: "pulse 0.5s ease-in-out 3" } : undefined}
                       />
                       <text
                         x={dims.width / 2}
@@ -2301,6 +2472,9 @@ export default function Home() {
       
       {/* Right panel: Details and ingest */}
       <div style={{ ...panelStyles.right, padding: isMobile ? "1rem" : "1.5rem", display: "flex", flexDirection: "column", backgroundColor: "#f9fafb", overflowY: "auto", position: "relative", fontSize: `${panelFontSize}px` }}>
+        {/* Static "Details" header at the top */}
+        <h1 className="text-xl font-bold mb-4 text-gray-800">Details</h1>
+        
         {/* Paper Details Section - Accordion */}
         <Card className="flex-1 flex flex-col">
           <Accordion type="single" collapsible defaultValue="details" className="w-full flex-1 flex flex-col">
@@ -2408,6 +2582,36 @@ export default function Home() {
                           <h2 className="font-semibold mb-3" style={{ fontSize: `${panelFontSize + 2}px` }}>Category Details</h2>
                           <h3 className="font-semibold mb-2">{selectedNode.name}</h3>
                           
+                          {/* Ancestry chain */}
+                          {(() => {
+                            const ancestors = getAncestorChain(selectedNode);
+                            return ancestors.length > 0 && (
+                              <div className="mb-3 text-sm">
+                                <strong className="text-gray-600">Ancestry:</strong>
+                                <div className="mt-1">
+                                  {ancestors.map((ancestor, idx) => (
+                                    <div
+                                      key={ancestor.node_id || idx}
+                                      style={{ marginLeft: `${idx * 16}px` }}
+                                      className="py-0.5"
+                                    >
+                                      <button
+                                        onClick={() => {
+                                          setSelectedNode(ancestor);
+                                          const ancestorId = ancestor.node_id || ancestor.name;
+                                          setTimeout(() => centerOnNode(ancestorId), 100);
+                                        }}
+                                        className="text-blue-600 hover:underline text-left"
+                                      >
+                                        {idx === 0 ? "📂" : "└─"} {ancestor.name}
+                                      </button>
+                                    </div>
+                                  ))}
+                                </div>
+                              </div>
+                            );
+                          })()}
+                          
                           {/* Child categories */}
                           {(() => {
                             const childCats = getChildCategories(selectedNode);
@@ -2445,6 +2649,37 @@ export default function Home() {
                         <div className="mb-4 pb-4 border-b border-gray-200">
                           <h2 className="font-semibold mb-3" style={{ fontSize: `${panelFontSize + 2}px` }}>Paper Details</h2>
                           <h3 className="font-semibold mb-2">{selectedNode.attributes.title || selectedNode.name}</h3>
+                          
+                          {/* Ancestry chain */}
+                          {(() => {
+                            const ancestors = getAncestorChain(selectedNode);
+                            return ancestors.length > 0 && (
+                              <div className="mb-3 text-sm">
+                                <strong className="text-gray-600">Ancestry:</strong>
+                                <div className="mt-1">
+                                  {ancestors.map((ancestor, idx) => (
+                                    <div
+                                      key={ancestor.node_id || idx}
+                                      style={{ marginLeft: `${idx * 16}px` }}
+                                      className="py-0.5"
+                                    >
+                                      <button
+                                        onClick={() => {
+                                          setSelectedNode(ancestor);
+                                          const ancestorId = ancestor.node_id || ancestor.name;
+                                          setTimeout(() => centerOnNode(ancestorId), 100);
+                                        }}
+                                        className="text-blue-600 hover:underline text-left"
+                                      >
+                                        {idx === 0 ? "📂" : "└─"} {ancestor.name}
+                                      </button>
+                                    </div>
+                                  ))}
+                                </div>
+                              </div>
+                            );
+                          })()}
+                          
                           {selectedNode.attributes.arxivId && (
                             <p className="text-gray-600 mb-2">
                               <strong>arXiv:</strong>{" "}
@@ -2462,7 +2697,9 @@ export default function Home() {
                           {selectedNode.attributes.summary && (
                             <div className="mt-3">
                               <strong className="text-gray-700">Summary:</strong>
-                              <p className="mt-1 text-gray-600 whitespace-pre-wrap">{selectedNode.attributes.summary}</p>
+                              <div className="mt-1 text-gray-600">
+                                <FormattedText text={selectedNode.attributes.summary} />
+                              </div>
                             </div>
                           )}
                           <div className="mt-4">
@@ -2479,25 +2716,49 @@ export default function Home() {
                             {isLoadingStructured ? (
                               <p className="text-gray-600">Running structured analysis...</p>
                             ) : structuredAnalysis ? (
-                              <div className="space-y-3">
+                              <Accordion type="multiple" className="space-y-2">
                                 {structuredAnalysis.sections.map((section, idx) => (
-                                  <div key={`${section.component}-${idx}`} className="border border-gray-200 rounded p-3">
-                                    <div className="font-semibold text-gray-800">{section.component}</div>
-                                    <div className="mt-2 text-gray-600 whitespace-pre-wrap">
-                                      <strong className="text-gray-700">Steps:</strong> {section.steps}
-                                    </div>
-                                    <div className="mt-2 text-gray-600 whitespace-pre-wrap">
-                                      <strong className="text-gray-700">Benefits:</strong> {section.benefits}
-                                    </div>
-                                    <div className="mt-2 text-gray-600 whitespace-pre-wrap">
-                                      <strong className="text-gray-700">Rationale:</strong> {section.rationale}
-                                    </div>
-                                    <div className="mt-2 text-gray-600 whitespace-pre-wrap">
-                                      <strong className="text-gray-700">Results:</strong> {section.results}
-                                    </div>
-                                  </div>
+                                  <AccordionItem 
+                                    key={`${section.component}-${idx}`} 
+                                    value={`section-${idx}`}
+                                    className="border border-gray-200 rounded-lg overflow-hidden"
+                                  >
+                                    <AccordionTrigger className="px-4 py-3 hover:bg-gray-50 font-semibold text-gray-800">
+                                      {section.component}
+                                    </AccordionTrigger>
+                                    <AccordionContent className="px-4 pb-4 space-y-3">
+                                      {/* Steps - Indigo */}
+                                      <div className="border-l-4 border-indigo-500 pl-3">
+                                        <div className="font-medium text-indigo-700 mb-1">Steps</div>
+                                        <div className="text-gray-600">
+                                          <FormattedText text={section.steps} />
+                                        </div>
+                                      </div>
+                                      {/* Benefits - Emerald */}
+                                      <div className="border-l-4 border-emerald-500 pl-3">
+                                        <div className="font-medium text-emerald-700 mb-1">Benefits</div>
+                                        <div className="text-gray-600">
+                                          <FormattedText text={section.benefits} />
+                                        </div>
+                                      </div>
+                                      {/* Rationale - Amber */}
+                                      <div className="border-l-4 border-amber-500 pl-3">
+                                        <div className="font-medium text-amber-700 mb-1">Rationale</div>
+                                        <div className="text-gray-600">
+                                          <FormattedText text={section.rationale} />
+                                        </div>
+                                      </div>
+                                      {/* Results - Violet */}
+                                      <div className="border-l-4 border-violet-500 pl-3">
+                                        <div className="font-medium text-violet-700 mb-1">Results</div>
+                                        <div className="text-gray-600">
+                                          <FormattedText text={section.results} />
+                                        </div>
+                                      </div>
+                                    </AccordionContent>
+                                  </AccordionItem>
                                 ))}
-                              </div>
+                              </Accordion>
                             ) : (
                               <p className="text-gray-500">Run structured analysis to see detailed component breakdowns.</p>
                             )}

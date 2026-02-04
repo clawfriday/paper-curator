@@ -1,8 +1,8 @@
 {
   "paper_summary": {
-    "id": "paper_summary_v2",
-    "description": "Legacy single-query summary (deprecated, use structured summary instead)",
-    "template": "You are summarizing an AI paper. Produce a concise markdown summary with:\n- What it does concretely as a logical chain of steps, plain language, no figurative speech.\n- The main area it benefits (model performance / training efficiency / inference throughput / etc.).\n- The rationale behind this benefit.\n- Quantifiable results in the main area it improves.\n- No duplication across the above."
+    "id": "paper_summary_v3",
+    "description": "Concise single-query summary with bold key findings",
+    "template": "You are summarizing an AI paper. Produce a concise summary with these sections:\n\n**Concrete Method:** What it does as logical steps. Plain language, no figurative speech.\n\n**Main Benefit Area:** Which area it improves (model performance / training efficiency / inference throughput / etc.).\n\n**Rationale:** Why this method provides the benefit. 1-2 sentences.\n\n**Quantifiable Results:** Key metrics with **bold numbers** (e.g., \"improves accuracy by **2.5%**\", \"reduces latency by **3x**\").\n\nRules:\n- Be concise. No filler phrases like \"In this paper, we...\" or \"The authors propose...\".\n- Bold ONLY the key numerical values and parameters, not full sentences.\n- Use \\( \\) for inline math formulas.\n- No duplication across sections."
   },
   "extract_components": {
     "id": "extract_components_v1",
@@ -11,27 +11,27 @@
     "variables": []
   },
   "component_steps": {
-    "id": "component_steps_v1",
-    "description": "Describe the logical steps or pseudo-code for a component",
-    "template": "Describe the logical chain of steps or pseudo-code for the following component/method from the paper.\n\nComponent: {component}\n\nRules:\n- Use plain language, no figurative speech\n- Be concrete and specific\n- Use numbered steps or pseudo-code format\n- Keep it concise (3-7 steps typically)\n\nRespond with the steps only, no preamble.",
+    "id": "component_steps_v2",
+    "description": "Describe the logical steps for a component with math notation",
+    "template": "Describe the logical steps for this component/method from the paper.\n\nComponent: {component}\n\nRules:\n- Use numbered steps (1., 2., 3., etc.)\n- Plain language, no figurative speech\n- Use \\( \\) for inline math formulas (e.g., \\( \\eta_{{\\text{{peak}}}} \\))\n- Bold key parameters with **value** (e.g., **batch size 4096**)\n- Be concise: 3-7 steps\n- No preamble, start directly with step 1",
     "variables": ["component"]
   },
   "component_benefits": {
-    "id": "component_benefits_v1",
-    "description": "Identify the main area a component benefits",
-    "template": "What is the main area that the following component/method benefits?\n\nComponent: {component}\n\nChoose from categories like:\n- Model performance (accuracy, quality)\n- Training efficiency (speed, memory, cost)\n- Inference throughput (latency, tokens/sec)\n- Scalability (larger models, more data)\n- Other (specify)\n\nRespond with a brief answer (1-2 sentences), stating the benefit area and a short explanation.",
+    "id": "component_benefits_v2",
+    "description": "Identify the main benefit area with bold key terms",
+    "template": "What area does this component/method benefit?\n\nComponent: {component}\n\nCategories: Model performance | Training efficiency | Inference throughput | Scalability | Memory efficiency | Other\n\nRules:\n- 1-2 sentences only\n- Bold the benefit category (e.g., **training efficiency**)\n- No preamble, state the benefit directly",
     "variables": ["component"]
   },
   "component_rationale": {
-    "id": "component_rationale_v1",
-    "description": "Explain the rationale behind a component's benefit",
-    "template": "Explain WHY the following component/method provides its benefits. What is the underlying insight or mechanism?\n\nComponent: {component}\n\nRules:\n- Focus on the 'why' not the 'what'\n- Be technical but accessible\n- 2-4 sentences\n\nRespond with the rationale only, no preamble.",
+    "id": "component_rationale_v2",
+    "description": "Explain why a component works",
+    "template": "Explain WHY this component provides its benefits.\n\nComponent: {component}\n\nRules:\n- Focus on the underlying insight or mechanism\n- 2-3 sentences\n- No preamble, explain directly\n- Use \\( \\) for math if needed",
     "variables": ["component"]
   },
   "component_results": {
-    "id": "component_results_v1",
-    "description": "Extract quantifiable results for a component",
-    "template": "What are the quantifiable results or metrics reported for the following component/method?\n\nComponent: {component}\n\nRules:\n- Include specific numbers, percentages, or comparisons\n- If no specific metrics for this component, state 'No specific metrics reported'\n- Be concise (1-3 bullet points)\n\nRespond with the results only, no preamble.",
+    "id": "component_results_v2",
+    "description": "Extract quantifiable results with bold metrics",
+    "template": "What are the quantifiable results for this component?\n\nComponent: {component}\n\nRules:\n- Bold all numerical values (e.g., **+2.5%**, **3x faster**, **1.68% improvement**)\n- Use bullet points (- item)\n- Include baseline comparisons when available\n- If no metrics, state \"No specific metrics reported\"\n- No preamble, start with results directly",
     "variables": ["component"]
   },
   "node_naming": {

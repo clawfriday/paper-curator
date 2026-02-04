@@ -37,3 +37,15 @@
   }
 }
 
+/* Pulse animation for centered nodes */
+@keyframes pulse {
+  0%, 100% {
+    stroke-width: 3;
+    stroke: #f59e0b;
+  }
+  50% {
+    stroke-width: 5;
+    stroke: #fbbf24;
+  }
+}
+
