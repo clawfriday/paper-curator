@@ -2360,7 +2360,8 @@ async def topic_query(topic_id: int, payload: TopicQueryRequest) -> dict[str, An
     endpoint_config = _get_endpoint_config()
     base_url = endpoint_config["llm_base_url"]
     api_key = endpoint_config["api_key"]
-    model = resolve_model(base_url, api_key)
+    raw_model = resolve_model(base_url, api_key)  # For OpenAI client
+    litellm_model = f"openai/{raw_model}"  # For PaperQA/LiteLLM (requires openai/ prefix)
     client = _get_async_openai_client(base_url, api_key)
     
     # Query each paper using PaperQA
@@ -2388,7 +2389,7 @@ async def topic_query(topic_id: int, payload: TopicQueryRequest) -> dict[str, An
                 llm_base_url=base_url,
                 embed_base_url=embed_base_url,
                 api_key=api_key,
-                llm_model=model,
+                llm_model=litellm_model,
                 embed_model=embed_model,
                 arxiv_id=arxiv_id,
             )
@@ -2453,7 +2454,7 @@ Please synthesize these responses into a coherent, comprehensive answer.
     
     # Generate final summary
     response = await client.chat.completions.create(
-        model=model,
+        model=raw_model,
         messages=[{"role": "user", "content": aggregation_prompt}],
         max_tokens=2000,
         temperature=0.3,
@@ -2467,7 +2468,7 @@ Please synthesize these responses into a coherent, comprehensive answer.
         question=payload.question,
         answer=final_answer,
         paper_responses=paper_responses if debug_mode else None,
-        model=model,
+        model=raw_model,
     )
     
     # Save debug output if enabled

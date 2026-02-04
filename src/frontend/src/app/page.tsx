@@ -1299,8 +1299,8 @@ export default function Home() {
     return node.node_type === "category" || (!node.paper_id && !node.attributes?.arxivId);
   }, []);
   
-  // Search function
-  const performSearch = useCallback((query: string) => {
+  // Search function - supports both paper and category modes
+  const performSearch = useCallback((query: string, mode: "paper" | "category" = searchMode as "paper" | "category") => {
     if (!query.trim()) {
       setSearchResults([]);
       return;
@@ -1312,8 +1312,8 @@ export default function Home() {
     const normalizeArxiv = (value?: string | null) =>
       (value || "").toLowerCase().replace(/v\d+$/i, "");
 
-    const searchTree = (node: PaperNode) => {
-      // Search in paper nodes (not categories)
+    const searchPapers = (node: PaperNode) => {
+      // Search in paper nodes (have arxivId)
       if (node.attributes?.arxivId) {
         const titleMatch = node.attributes.title?.toLowerCase().includes(searchLower);
         const nameMatch = node.name.toLowerCase().includes(searchLower);
@@ -1330,20 +1330,45 @@ export default function Home() {
       
       // Recursively search children
       if (node.children) {
-        node.children.forEach(child => searchTree(child));
+        node.children.forEach(child => searchPapers(child));
+      }
+    };
+
+    const searchCategories = (node: PaperNode) => {
+      // Search in category nodes (don't have arxivId)
+      if (!node.attributes?.arxivId) {
+        const nameMatch = node.name.toLowerCase().includes(searchLower);
+        const nodeIdMatch = (node.node_id || "").toLowerCase().includes(searchLower);
+        
+        if (nameMatch || nodeIdMatch) {
+          results.push(node);
+        }
+      }
+      
+      // Recursively search children
+      if (node.children) {
+        node.children.forEach(child => searchCategories(child));
       }
     };
     
-    if (taxonomy.children) {
-      taxonomy.children.forEach(category => {
-        if (category.children) {
-          category.children.forEach(paper => searchTree(paper));
-        }
-      });
+    if (mode === "paper") {
+      // Search papers
+      if (taxonomy.children) {
+        taxonomy.children.forEach(category => {
+          if (category.children) {
+            category.children.forEach(paper => searchPapers(paper));
+          }
+        });
+      }
+    } else if (mode === "category") {
+      // Search categories - include root children and all nested categories
+      if (taxonomy.children) {
+        taxonomy.children.forEach(category => searchCategories(category));
+      }
     }
     
     setSearchResults(results.slice(0, 10)); // Limit to 10 results
-  }, [taxonomy]);
+  }, [taxonomy, searchMode]);
 
   const handleNodeClick = useCallback(async (nodeId: string) => {
     const node = findNode(taxonomy, nodeId);
@@ -2306,7 +2331,7 @@ export default function Home() {
                 title="Search mode"
               >
                 <option value="paper">Paper</option>
-                <option value="category" disabled className="text-gray-400">Category</option>
+                <option value="category">Category</option>
                 <option value="topic">Topic</option>
               </select>
               <div className="relative flex-1">
@@ -2333,31 +2358,47 @@ export default function Home() {
                 />
               {isSearchFocused && searchResults.length > 0 && (
                 <div className="absolute z-50 w-full mt-1 bg-white border border-gray-200 rounded-lg shadow-lg max-h-64 overflow-y-auto">
-                  {searchResults.map((result, idx) => (
-                    <div
-                      key={idx}
-                      onClick={() => {
-                        const nodeId = result.node_id || result.name;
-                        handleNodeClick(nodeId);
-                        setSearchQuery("");
-                        setSearchResults([]);
-                        // Center on the selected node after a short delay
-                        setTimeout(() => centerOnNode(nodeId), 100);
-                      }}
-                      className="px-4 py-2 hover:bg-gray-100 cursor-pointer border-b border-gray-100 last:border-b-0"
-                    >
-                      <div className="font-medium">{result.name}</div>
-                      {result.attributes?.title && (
-                        <div className="text-gray-600 mt-1">{result.attributes.title}</div>
-                      )}
-                      {result.attributes?.authors && result.attributes.authors.length > 0 && (
-                        <div className="text-gray-500 mt-1">
-                          {result.attributes.authors.slice(0, 3).join(", ")}
-                          {result.attributes.authors.length > 3 && ` +${result.attributes.authors.length - 3} more`}
+                  {searchResults.map((result, idx) => {
+                    const isCategory = !result.attributes?.arxivId;
+                    return (
+                      <div
+                        key={idx}
+                        onClick={() => {
+                          const nodeId = result.node_id || result.name;
+                          handleNodeClick(nodeId);
+                          setSearchQuery("");
+                          setSearchResults([]);
+                          // Center on the selected node after a short delay
+                          setTimeout(() => centerOnNode(nodeId), 100);
+                        }}
+                        className="px-4 py-2 hover:bg-gray-100 cursor-pointer border-b border-gray-100 last:border-b-0"
+                      >
+                        <div className="flex items-center gap-2">
+                          <span className={isCategory ? "text-purple-600" : "text-blue-600"}>
+                            {isCategory ? "📁" : "📄"}
+                          </span>
+                          <div className="font-medium">{result.name}</div>
                         </div>
-                      )}
-                    </div>
-                  ))}
+                        {isCategory ? (
+                          <div className="text-gray-500 text-sm mt-1 ml-6">
+                            {result.children?.length || 0} child nodes
+                          </div>
+                        ) : (
+                          <>
+                            {result.attributes?.title && (
+                              <div className="text-gray-600 mt-1 ml-6">{result.attributes.title}</div>
+                            )}
+                            {result.attributes?.authors && result.attributes.authors.length > 0 && (
+                              <div className="text-gray-500 mt-1 ml-6">
+                                {result.attributes.authors.slice(0, 3).join(", ")}
+                                {result.attributes.authors.length > 3 && ` +${result.attributes.authors.length - 3} more`}
+                              </div>
+                            )}
+                          </>
+                        )}
+                      </div>
+                    );
+                  })}
                 </div>
               )}
               </div>
