@@ -158,22 +158,33 @@ def _get_paperqa_config() -> dict[str, Any]:
 
 
 def _get_ui_config() -> dict[str, Any]:
-    """Get UI configuration."""
+    """Get UI configuration. DB settings override config.yaml."""
     config = _load_config()
     ui = config.get("ui", {})
+    
+    # Get defaults from config.yaml
+    max_similar_default = int(ui.get("max_similar_papers", 5))
+    auto_save_default = int(ui.get("tree_auto_save_interval_ms", 30000))
+    
     return {
         "hover_debounce_ms": int(ui.get("hover_debounce_ms", 500)),
-        "max_similar_papers": int(ui.get("max_similar_papers", 5)),
-        "tree_auto_save_interval_ms": int(ui.get("tree_auto_save_interval_ms", 30000)),
+        "max_similar_papers": _get_db_setting("max_similar_papers", max_similar_default, "integer"),
+        "tree_auto_save_interval_ms": _get_db_setting("tree_auto_save_interval_ms", auto_save_default, "integer"),
     }
 
 
 def _get_classification_config() -> dict[str, Any]:
+    """Get classification configuration. DB settings override config.yaml."""
     config = _load_config()
     classification = config.get("classification", {})
+    
+    # Get defaults from config.yaml
+    branching_default = int(classification.get("branching_factor", 5))
+    rebuild_default = bool(classification.get("rebuild_on_ingest", True))
+    
     return {
-        "branching_factor": int(classification.get("branching_factor", 5)),
-        "rebuild_on_ingest": bool(classification.get("rebuild_on_ingest", True)),
+        "branching_factor": _get_db_setting("branching_factor", branching_default, "integer"),
+        "rebuild_on_ingest": _get_db_setting("rebuild_on_ingest", rebuild_default, "boolean"),
     }
 
 

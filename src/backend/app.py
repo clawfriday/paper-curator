@@ -2513,11 +2513,19 @@ SETTINGS_SCHEMA = {
     # Ingestion Settings
     "skip_existing": {"category": "ingestion", "type": "boolean", "label": "Skip Existing Papers", "readonly": False},
     
+    # Classification Settings
+    "branching_factor": {"category": "classification", "type": "integer", "label": "Branching Factor", "readonly": False},
+    "rebuild_on_ingest": {"category": "classification", "type": "boolean", "label": "Rebuild on Ingest", "readonly": False},
+    
     # PaperQA Settings
     "chunk_chars": {"category": "paperqa", "type": "integer", "label": "Chunk Size (chars)", "readonly": False},
     "chunk_overlap": {"category": "paperqa", "type": "integer", "label": "Chunk Overlap (chars)", "readonly": False},
     "evidence_k": {"category": "paperqa", "type": "integer", "label": "Evidence K", "readonly": False},
     "evidence_summary_length": {"category": "paperqa", "type": "string", "label": "Evidence Summary Length", "readonly": False},
+    
+    # UI Settings
+    "max_similar_papers": {"category": "ui", "type": "integer", "label": "Max Similar Papers", "readonly": False},
+    "tree_auto_save_interval_ms": {"category": "ui", "type": "integer", "label": "Tree Auto-save Interval (ms)", "readonly": False},
     
     # Topic Query Settings
     "max_papers_per_batch": {"category": "topic_query", "type": "integer", "label": "Papers Per Batch", "readonly": False},
@@ -2557,10 +2565,14 @@ def _get_effective_config() -> dict[str, Any]:
         "llm_base_url": yaml_config.get("llm_base_url", "http://localhost:8001/v1"),
         "embedding_base_url": yaml_config.get("embedding_base_url", "http://localhost:8004/v1"),
         "skip_existing": yaml_config.get("ingestion", {}).get("skip_existing", False),
+        "branching_factor": yaml_config.get("classification", {}).get("branching_factor", 5),
+        "rebuild_on_ingest": yaml_config.get("classification", {}).get("rebuild_on_ingest", True),
         "chunk_chars": yaml_config.get("paperqa", {}).get("chunk_chars", 3000),
         "chunk_overlap": yaml_config.get("paperqa", {}).get("chunk_overlap", 100),
         "evidence_k": yaml_config.get("paperqa", {}).get("evidence_k", 10),
         "evidence_summary_length": yaml_config.get("paperqa", {}).get("evidence_summary_length", "about 100 words"),
+        "max_similar_papers": yaml_config.get("ui", {}).get("max_similar_papers", 5),
+        "tree_auto_save_interval_ms": yaml_config.get("ui", {}).get("tree_auto_save_interval_ms", 30000),
         "max_papers_per_batch": yaml_config.get("topic_query", {}).get("max_papers_per_batch", 10),
         "similarity_threshold": yaml_config.get("topic_query", {}).get("similarity_threshold", 0.5),
         "chunks_per_paper": yaml_config.get("topic_query", {}).get("chunks_per_paper", 5),
@@ -2638,7 +2650,9 @@ def get_config() -> dict[str, Any]:
         "categories": {
             "llm": {"label": "LLM Endpoints", "description": "Language model and embedding service URLs"},
             "ingestion": {"label": "Ingestion", "description": "Paper ingestion behavior"},
+            "classification": {"label": "Classification", "description": "Tree clustering and auto-rebuild settings"},
             "paperqa": {"label": "PaperQA", "description": "Document chunking and retrieval settings"},
+            "ui": {"label": "UI", "description": "User interface behavior settings"},
             "topic_query": {"label": "Topic Query", "description": "Multi-paper RAG query settings"},
             "ports": {"label": "Ports", "description": "Service ports (read-only, change in server config)"},
         }
