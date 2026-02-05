@@ -826,7 +826,7 @@ def get_topic_by_id(topic_id: int) -> Optional[dict[str, Any]]:
         with conn.cursor(cursor_factory=RealDictCursor) as cur:
             cur.execute(
                 """
-                SELECT t.id, t.name, t.topic_query, t.created_at, t.updated_at,
+                SELECT t.id, t.name, t.topic_query, t.embedding, t.created_at, t.updated_at,
                        (SELECT COUNT(*) FROM topic_papers tp WHERE tp.topic_id = t.id) as paper_count,
                        (SELECT COUNT(*) FROM topic_queries tq WHERE tq.topic_id = t.id) as query_count
                 FROM topics t

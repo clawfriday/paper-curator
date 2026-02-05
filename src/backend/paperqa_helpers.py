@@ -12,6 +12,51 @@ from typing import Any, Optional
 import numpy as np
 from fastapi import HTTPException
 from paperqa import Doc, Docs
+
+
+def clean_pdf_text(text: str) -> str:
+    """Clean text extracted from PDFs, attempting to decode font escape sequences.
+    
+    Some PDFs use embedded fonts where glyphs are stored as /uniXXXXXXXX sequences.
+    This function attempts to decode them to actual unicode characters.
+    """
+    if not text:
+        return text
+    
+    def decode_uni_sequence(match):
+        """Decode a /uniXXXXXXXX sequence to unicode character."""
+        hex_str = match.group(1)
+        try:
+            # Try to convert 8-digit hex to unicode
+            code_point = int(hex_str, 16)
+            # Only decode if it's a printable character
+            if 0x20 <= code_point <= 0x10FFFF:
+                return chr(code_point)
+            return ""  # Skip control characters
+        except (ValueError, OverflowError):
+            return ""  # Remove if can't decode
+    
+    # Try to decode /uni escape sequences
+    cleaned = re.sub(r'/uni([0-9a-fA-F]{8})', decode_uni_sequence, text)
+    
+    # Also handle standard /uXXXX format
+    def decode_u_sequence(match):
+        hex_str = match.group(1)
+        try:
+            code_point = int(hex_str, 16)
+            if 0x20 <= code_point <= 0x10FFFF:
+                return chr(code_point)
+            return ""
+        except (ValueError, OverflowError):
+            return ""
+    
+    cleaned = re.sub(r'/u([0-9a-fA-F]{4})', decode_u_sequence, cleaned)
+    
+    # Clean up excessive whitespace
+    cleaned = re.sub(r'\s+', ' ', cleaned)
+    
+    return cleaned.strip()
+    
 from paperqa.settings import (
     AnswerSettings,
     MultimodalOptions,
@@ -214,8 +259,13 @@ async def paperqa_answer_async(
     llm_model: str,
     embed_model: str,
     arxiv_id: Optional[str] = None,
-) -> str:
-    """Query PaperQA2 for an answer (async). Uses cached index if available."""
+    return_details: bool = False,
+) -> str | dict[str, Any]:
+    """Query PaperQA2 for an answer (async). Uses cached index if available.
+    
+    Args:
+        return_details: If True, returns dict with answer and chunk details for debugging
+    """
     assert text or pdf_path, "Provide text or pdf_path."
     os.environ["OPENAI_API_BASE"] = llm_base_url
     os.environ["OPENAI_API_KEY"] = api_key
@@ -260,6 +310,47 @@ async def paperqa_answer_async(
     result = await docs.aquery(question, settings=settings)
     answer = str(result.answer) if hasattr(result, "answer") else str(result)
     answer = clean_paperqa_citations(answer)
+    
+    if return_details:
+        # Extract chunk details from PaperQA result
+        chunks_info = []
+        if hasattr(result, "contexts") and result.contexts:
+            for ctx in result.contexts:
+                # Get text content - handle PaperQA Text objects
+                text_content = ""
+                if hasattr(ctx, "text"):
+                    text_obj = ctx.text
+                    # Handle Text objects with .text attribute
+                    if hasattr(text_obj, "text"):
+                        raw_text = str(text_obj.text)
+                    else:
+                        raw_text = str(text_obj)
+                else:
+                    raw_text = str(ctx)
+                
+                # Clean the text to decode font escape sequences
+                cleaned_text = clean_pdf_text(raw_text)
+                text_content = cleaned_text[:500] if cleaned_text else raw_text[:500]
+                
+                chunk_info = {
+                    "text": text_content,
+                    "text_raw_sample": raw_text[:200] if raw_text != cleaned_text else None,  # Show raw if different
+                    "score": getattr(ctx, "score", None),
+                }
+                # Try to get chunk ID/name
+                if hasattr(ctx, "name"):
+                    chunk_info["name"] = str(ctx.name) if ctx.name else None
+                if hasattr(ctx, "doc"):
+                    doc = ctx.doc
+                    chunk_info["doc_name"] = str(getattr(doc, "docname", "")) if doc else None
+                chunks_info.append(chunk_info)
+        
+        return {
+            "answer": answer,
+            "chunks_retrieved": len(chunks_info),
+            "chunks": chunks_info,
+        }
+    
     return answer
 
 

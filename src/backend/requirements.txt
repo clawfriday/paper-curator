@@ -12,6 +12,7 @@ pyyaml
 openai
 
 # PDF processing
+pymupdf
 pillow
 
 # PaperQA2 for RAG and document processing

@@ -1,0 +1,25 @@
+#!/bin/bash
+
+#PBS -l select=1:mem=200gb:ncpus=16:ngpus=1
+#PBS -o ./logs/
+#PBS -e ./logs/
+#PBS -j oe
+#PBS -N deepseek-ocr-test
+#PBS -q AISG_debug
+#PBS -l walltime=2:00:00
+
+# Activate the uv environment
+uvenv infer
+
+# Set up cache directories
+export SHARED_FS="/scratch/Projects/SPEC-SF-AISG"
+export HF_HOME="${SHARED_FS}/cache/huggingface"
+export CACHE_ROOT="${SHARED_FS}/cache"
+export TORCH_HOME="$CACHE_ROOT/torch_cache"
+export XDG_CACHE_HOME="$CACHE_ROOT/xdg_cache"
+
+# Change to project directory
+cd /scratch/Projects/SPEC-SF-AISG/source_files/paper-curator
+
+# Run DeepSeek-OCR-2 extraction test
+python scripts/test_deepseek_ocr_extraction.py 2>&1 | tee logs/deepseek_ocr_test.log

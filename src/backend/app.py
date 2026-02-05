@@ -1,5 +1,9 @@
 from __future__ import annotations
 
+# Apply pymupdf patch before any paperqa imports
+from pdf_patch import patch_pypdf
+patch_pypdf()
+
 import asyncio
 import hashlib
 import json
@@ -2364,12 +2368,92 @@ async def topic_query(topic_id: int, payload: TopicQueryRequest) -> dict[str, An
     litellm_model = f"openai/{raw_model}"  # For PaperQA/LiteLLM (requires openai/ prefix)
     client = _get_async_openai_client(base_url, api_key)
     
+    # Get embed config once
+    embed_base_url = endpoint_config["embedding_base_url"]
+    embed_model_name = resolve_model(embed_base_url, api_key)
+    embed_model = f"openai/{embed_model_name}"
+    
+    # Get question embedding for debug output
+    question_embedding = None
+    if debug_mode:
+        embed_client = _get_async_openai_client(embed_base_url, api_key)
+        embed_response = await embed_client.embeddings.create(
+            model=embed_model_name,
+            input=payload.question,
+        )
+        question_embedding = embed_response.data[0].embedding
+    
     # Query each paper using PaperQA
     paper_responses = []
     
-    # Get embed config once
-    embed_base_url = endpoint_config["embedding_base_url"]
-    embed_model = f"openai/{resolve_model(embed_base_url, api_key)}"
+    # Per-paper prompt template (for debug output)
+    per_paper_prompt_template = f"""Question: {payload.question}
+
+[PaperQA internally retrieves relevant chunks from this paper and prompts the LLM to answer based on those chunks]"""
+
+    def detect_text_quality(text: str) -> dict:
+        """Detect text quality issues like font encoding problems."""
+        if not text:
+            return {"quality": "empty", "corrupted_ratio": 1.0, "uni_sequences": 0, "readable_ratio": 0.0}
+        
+        import re
+        
+        # Count /uni escape sequences (indicates font encoding issues)
+        uni_pattern = r'/uni[0-9a-fA-F]{8}'
+        uni_matches = re.findall(uni_pattern, text)
+        uni_count = len(uni_matches)
+        
+        # Detect gibberish patterns (decoded but still wrong characters)
+        # Count sequences of unusual character combinations
+        gibberish_patterns = [
+            r'[A-Z]{5,}',  # Long uppercase sequences like "WMKQSMH"
+            r'[0-9]{8,}',  # Long number sequences (leftover from /uni decoding)
+            r'\\[a-zA-Z]',  # Escaped characters
+            r'[^\x00-\x7F]+',  # Non-ASCII sequences (might be corrupted)
+        ]
+        gibberish_count = 0
+        for pattern in gibberish_patterns:
+            gibberish_count += len(re.findall(pattern, text))
+        
+        # Count readable English words (common words as sanity check)
+        common_words = ['the', 'and', 'for', 'with', 'this', 'that', 'from', 'are', 'was', 'were', 
+                        'have', 'been', 'model', 'data', 'learning', 'training', 'results', 'paper']
+        readable_words = sum(1 for word in common_words if word.lower() in text.lower())
+        
+        # Calculate quality metrics
+        total_chars = len(text)
+        uni_corrupted_chars = uni_count * 12
+        
+        # Estimate readability based on word presence and gibberish ratio
+        words_in_text = len(text.split())
+        gibberish_ratio = min(1.0, gibberish_count / max(1, words_in_text))
+        readable_ratio = min(1.0, readable_words / max(1, min(10, words_in_text)))
+        
+        # Combined corruption estimate
+        if uni_count > 0:
+            corrupted_ratio = min(1.0, uni_corrupted_chars / max(1, total_chars))
+        else:
+            corrupted_ratio = gibberish_ratio * 0.5  # Gibberish is a softer indicator
+        
+        # Determine quality level
+        if uni_count > total_chars / 20:  # More than 5% are /uni sequences
+            quality = "poor"
+        elif gibberish_ratio > 0.5 and readable_ratio < 0.3:
+            quality = "poor"
+        elif gibberish_ratio > 0.3 and readable_ratio < 0.5:
+            quality = "degraded"  
+        elif uni_count > 0 or gibberish_ratio > 0.2:
+            quality = "minor_issues"
+        else:
+            quality = "good"
+        
+        return {
+            "quality": quality,
+            "corrupted_ratio": round(corrupted_ratio, 3),
+            "uni_sequences": uni_count,
+            "readable_ratio": round(readable_ratio, 3),
+            "gibberish_ratio": round(gibberish_ratio, 3),
+        }
     
     async def query_single_paper(paper: dict) -> dict[str, Any]:
         """Query a single paper and return response."""
@@ -2381,8 +2465,8 @@ async def topic_query(topic_id: int, payload: TopicQueryRequest) -> dict[str, An
             # Reset litellm callbacks to prevent accumulation
             reset_litellm_callbacks()
             
-            # Use existing PaperQA query function
-            answer = await paperqa_answer_async(
+            # Use existing PaperQA query function (with details in debug mode)
+            result = await paperqa_answer_async(
                 text=None,
                 pdf_path=pdf_path,
                 question=payload.question,
@@ -2392,15 +2476,53 @@ async def topic_query(topic_id: int, payload: TopicQueryRequest) -> dict[str, An
                 llm_model=litellm_model,
                 embed_model=embed_model,
                 arxiv_id=arxiv_id,
+                return_details=debug_mode,
             )
             
-            return {
-                "paper_id": paper["paper_id"],
-                "arxiv_id": arxiv_id,
-                "title": title,
-                "response": answer,
-                "success": True,
-            }
+            if debug_mode and isinstance(result, dict):
+                # Analyze text quality of retrieved chunks using RAW text (before cleaning)
+                chunks = result.get("chunks", [])
+                
+                # Use raw text if available for quality detection
+                raw_texts = []
+                for c in chunks:
+                    raw = c.get("text_raw_sample") or c.get("text", "")
+                    raw_texts.append(raw)
+                
+                total_raw_text = " ".join(raw_texts)
+                text_quality = detect_text_quality(total_raw_text)
+                
+                # Add quality info to each chunk
+                chunks_with_quality = []
+                for c in chunks:
+                    raw_text = c.get("text_raw_sample") or c.get("text", "")
+                    chunk_quality = detect_text_quality(raw_text)
+                    chunks_with_quality.append({
+                        **c,
+                        "text_quality": chunk_quality["quality"],
+                    })
+                
+                return {
+                    "paper_id": paper["paper_id"],
+                    "arxiv_id": arxiv_id,
+                    "title": title,
+                    "similarity_score": paper.get("similarity_score"),
+                    "response": result["answer"],
+                    "chunks_retrieved": result.get("chunks_retrieved", 0),
+                    "chunks": chunks_with_quality,
+                    "overall_text_quality": text_quality,
+                    "per_paper_prompt": per_paper_prompt_template,
+                    "success": True,
+                }
+            else:
+                return {
+                    "paper_id": paper["paper_id"],
+                    "arxiv_id": arxiv_id,
+                    "title": title,
+                    "similarity_score": paper.get("similarity_score"),
+                    "response": result,
+                    "success": True,
+                }
         except Exception as e:
             import traceback
             print(f"[TOPIC QUERY] Error querying paper {arxiv_id}: {e}")
@@ -2409,6 +2531,7 @@ async def topic_query(topic_id: int, payload: TopicQueryRequest) -> dict[str, An
                 "paper_id": paper["paper_id"],
                 "arxiv_id": arxiv_id,
                 "title": title,
+                "similarity_score": paper.get("similarity_score"),
                 "response": f"Error: {str(e)}",
                 "success": False,
             }
@@ -2475,17 +2598,94 @@ Please synthesize these responses into a coherent, comprehensive answer.
     if debug_mode:
         import os
         os.makedirs("storage/schemas", exist_ok=True)
+        
+        # Build comprehensive debug data
+        papers_debug = []
+        for paper in papers:
+            paper_debug = {
+                "paper_id": paper["paper_id"],
+                "arxiv_id": paper.get("arxiv_id"),
+                "title": paper.get("title"),
+                "similarity_score": paper.get("similarity_score"),
+            }
+            # Get paper embedding from DB if available
+            full_paper = db.get_paper_by_id(paper["paper_id"])
+            if full_paper:
+                emb = full_paper.get("embedding")
+                if emb is not None and len(emb) > 0:
+                    # Convert to list for JSON serialization (truncate for readability)
+                    paper_debug["embedding_dim"] = len(emb)
+                    paper_debug["embedding_sample"] = list(emb[:5])
+            papers_debug.append(paper_debug)
+        
+        # Handle embeddings that might be numpy arrays
+        topic_emb = topic.get("embedding")
+        topic_emb_dim = len(topic_emb) if topic_emb is not None and hasattr(topic_emb, '__len__') else 0
+        topic_emb_sample = list(topic_emb[:5]) if topic_emb is not None and len(topic_emb) >= 5 else None
+        
+        q_emb_dim = len(question_embedding) if question_embedding is not None else 0
+        q_emb_sample = list(question_embedding[:5]) if question_embedding is not None else None
+        
+        # Calculate text quality summary across all papers
+        quality_summary = {
+            "total_papers": len(paper_responses),
+            "good_quality": 0,
+            "minor_issues": 0,
+            "degraded": 0,
+            "poor_quality": 0,
+            "errors": 0,
+        }
+        for pr in paper_responses:
+            if not pr.get("success"):
+                quality_summary["errors"] += 1
+            elif "overall_text_quality" in pr:
+                q = pr["overall_text_quality"]["quality"]
+                if q == "good":
+                    quality_summary["good_quality"] += 1
+                elif q == "minor_issues":
+                    quality_summary["minor_issues"] += 1
+                elif q == "degraded":
+                    quality_summary["degraded"] += 1
+                elif q == "poor":
+                    quality_summary["poor_quality"] += 1
+        
         debug_data = {
             "topic_id": topic_id,
             "topic_name": topic["name"],
+            "topic_embedding_dim": topic_emb_dim,
+            "topic_embedding_sample": topic_emb_sample,
             "question": payload.question,
+            "question_embedding_dim": q_emb_dim,
+            "question_embedding_sample": q_emb_sample,
+            "papers_in_pool": papers_debug,
+            "text_quality_summary": quality_summary,
             "paper_responses": paper_responses,
             "aggregation_prompt": aggregation_prompt,
             "final_answer": final_answer,
-            "model": model,
+            "model": raw_model,
         }
+        
+        # Custom JSON encoder for numpy types
+        import numpy as np
+        class NumpyEncoder(json.JSONEncoder):
+            def default(self, obj):
+                if isinstance(obj, np.ndarray):
+                    return obj.tolist()
+                if isinstance(obj, (np.float32, np.float64)):
+                    return float(obj)
+                if isinstance(obj, (np.int32, np.int64)):
+                    return int(obj)
+                return super().default(obj)
+        
+        # Save to topic-specific file
+        safe_topic_name = "".join(c if c.isalnum() or c in "-_" else "_" for c in topic["name"][:50])
+        debug_file = f"storage/schemas/topic_query_{safe_topic_name}.json"
+        with open(debug_file, "w") as f:
+            json.dump(debug_data, f, indent=2, cls=NumpyEncoder)
+        
+        # Also save to generic file for backwards compatibility
         with open("storage/schemas/topic_query.json", "w") as f:
-            json.dump(debug_data, f, indent=2)
+            json.dump(debug_data, f, indent=2, cls=NumpyEncoder)
     
     result = {
         "answer": final_answer,

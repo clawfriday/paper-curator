@@ -1,0 +1,48 @@
+#!/bin/bash
+
+#PBS -l select=1:mem=64gb:ncpus=8
+#PBS -o ./logs/
+#PBS -e ./logs/
+#PBS -j oe
+#PBS -N pymupdf-migrate
+#PBS -q AISG_debug
+#PBS -l walltime=24:00:00
+
+# Activate the uv environment
+uvenv infer
+
+# Set up environment
+export SHARED_FS="/scratch/Projects/SPEC-SF-AISG"
+export HF_HOME="${SHARED_FS}/cache/huggingface"
+
+# Database connection (adjust as needed)
+export PGHOST="localhost"
+export PGPORT="5432"
+export PGDATABASE="paper_curator"
+export PGUSER="curator"
+export PGPASSWORD="curator123"
+
+# Change to project directory
+cd /scratch/Projects/SPEC-SF-AISG/source_files/paper-curator
+
+# Ensure logs directory exists
+mkdir -p logs
+
+# Log start time
+echo "Migration started at: $(date)"
+echo "Host: $(hostname)"
+echo "Python: $(which python)"
+
+# NOTE: The backend must be running before this job starts!
+# This script will fail if backend is not available at localhost:3100
+#
+# To run the migration:
+# 1. Start the backend: make singularity-run
+# 2. Wait for backend to be healthy
+# 3. Submit this job: qsub scripts/migrate_to_pymupdf.pbs
+
+# Run migration script
+python scripts/migrate_to_pymupdf.py 2>&1 | tee logs/migration_$(date +%Y%m%d_%H%M%S).log
+
+# Log end time
+echo "Migration completed at: $(date)"

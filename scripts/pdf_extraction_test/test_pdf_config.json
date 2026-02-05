@@ -1,0 +1,615 @@
+{
+  "bad_papers": [
+    {
+      "arxiv_id": "2405.10938",
+      "pdf_path": "/scratch/Projects/SPEC-SF-AISG/source_files/paper-curator/storage/downloads/2405.10938v3.Observational_Scaling_Laws_and_the_Predictability_of_Language_Model_Performance.pdf",
+      "corrupted_ratio": 0.4071,
+      "uni_sequences": 2382
+    },
+    {
+      "arxiv_id": "2601.07351",
+      "pdf_path": "/scratch/Projects/SPEC-SF-AISG/source_files/paper-curator/storage/downloads/2601.07351v2.Beyond_Hard_Masks__Progressive_Token_Evolution_for_Diffusion_Language_Models.pdf",
+      "corrupted_ratio": 0.407,
+      "uni_sequences": 2221
+    },
+    {
+      "arxiv_id": "2306.06891",
+      "pdf_path": "/scratch/Projects/SPEC-SF-AISG/source_files/paper-curator/storage/downloads/2306.06891v1.Recursion_of_Thought__A_Divide_and_Conquer_Approach_to_Multi_Context_Reasoning_with_Language_Models.pdf",
+      "corrupted_ratio": 0.3341,
+      "uni_sequences": 1315
+    },
+    {
+      "arxiv_id": "2511.18903",
+      "pdf_path": "/scratch/Projects/SPEC-SF-AISG/source_files/paper-curator/storage/downloads/2511.18903v1.How_Learning_Rate_Decay_Wastes_Your_Best_Data_in_Curriculum_Based_LLM_Pretraining.pdf",
+      "corrupted_ratio": 0.3329,
+      "uni_sequences": 1861
+    },
+    {
+      "arxiv_id": "2402.11436",
+      "pdf_path": "/scratch/Projects/SPEC-SF-AISG/source_files/paper-curator/storage/downloads/2402.11436v2.Pride_and_Prejudice__LLM_Amplifies_Self_Bias_in_Self_Refinement.pdf",
+      "corrupted_ratio": 0.2451,
+      "uni_sequences": 1123
+    },
+    {
+      "arxiv_id": "2405.00263",
+      "pdf_path": "/scratch/Projects/SPEC-SF-AISG/source_files/paper-curator/storage/downloads/2405.00263v1.Clover__Regressive_Lightweight_Speculative_Decoding_with_Sequential_Knowledge.pdf",
+      "corrupted_ratio": 0.229,
+      "uni_sequences": 845
+    },
+    {
+      "arxiv_id": "2601.08955",
+      "pdf_path": "/scratch/Projects/SPEC-SF-AISG/source_files/paper-curator/storage/downloads/2601.08955v1.Imagine_then_Plan__Agent_Learning_from_Adaptive_Lookahead_with_World_Models.pdf",
+      "corrupted_ratio": 0.2174,
+      "uni_sequences": 971
+    },
+    {
+      "arxiv_id": "2402.14526",
+      "pdf_path": "/scratch/Projects/SPEC-SF-AISG/source_files/paper-curator/storage/downloads/2402.14526v2.Balanced_Data_Sampling_for_Language_Model_Training_with_Clustering.pdf",
+      "corrupted_ratio": 0.1768,
+      "uni_sequences": 717
+    },
+    {
+      "arxiv_id": "2406.02536",
+      "pdf_path": "/scratch/Projects/SPEC-SF-AISG/source_files/paper-curator/storage/downloads/2406.02536v3.Mitigate_Position_Bias_in_Large_Language_Models_via_Scaling_a_Single_Dimension.pdf",
+      "corrupted_ratio": 0.1521,
+      "uni_sequences": 608
+    },
+    {
+      "arxiv_id": "2601.11258",
+      "pdf_path": "/scratch/Projects/SPEC-SF-AISG/source_files/paper-curator/storage/downloads/2601.11258v1.Knowledge_is_Not_Enough__Injecting_RL_Skills_for_Continual_Adaptation.pdf",
+      "corrupted_ratio": 0.1378,
+      "uni_sequences": 602
+    },
+    {
+      "arxiv_id": "2601.06596",
+      "pdf_path": "/scratch/Projects/SPEC-SF-AISG/source_files/paper-curator/storage/downloads/2601.06596v1.Are_LLMs_Vulnerable_to_Preference_Undermining_Attacks__PUA___A_Factorial_Analysis_Methodology_for_Diagnosing_the_Trade_off_between_Preference_Alignment_and_Real_World_Validity.pdf",
+      "corrupted_ratio": 0.1356,
+      "uni_sequences": 567
+    },
+    {
+      "arxiv_id": "2402.19282",
+      "pdf_path": "/scratch/Projects/SPEC-SF-AISG/source_files/paper-curator/storage/downloads/2402.19282v6.WanJuan_CC__A_Safe_and_High_Quality_Open_sourced_English_Webtext_Dataset.pdf",
+      "corrupted_ratio": 0.1337,
+      "uni_sequences": 419
+    },
+    {
+      "arxiv_id": "2601.04786",
+      "pdf_path": "/scratch/Projects/SPEC-SF-AISG/source_files/paper-curator/storage/downloads/2601.04786v1.AgentOCR__Reimagining_Agent_History_via_Optical_Self_Compression.pdf",
+      "corrupted_ratio": 0.1176,
+      "uni_sequences": 364
+    },
+    {
+      "arxiv_id": "2601.14243",
+      "pdf_path": "/scratch/Projects/SPEC-SF-AISG/source_files/paper-curator/storage/downloads/2601.14243v2.Jet_RL__Enabling_On_Policy_FP8_Reinforcement_Learning_with_Unified_Training_and_Rollout_Precision_Flow.pdf",
+      "corrupted_ratio": 0.0989,
+      "uni_sequences": 365
+    },
+    {
+      "arxiv_id": "2601.06789",
+      "pdf_path": "/scratch/Projects/SPEC-SF-AISG/source_files/paper-curator/storage/downloads/2601.06789v2.MemGovern__Enhancing_Code_Agents_through_Learning_from_Governed_Human_Experiences.pdf",
+      "corrupted_ratio": 0.0831,
+      "uni_sequences": 235
+    },
+    {
+      "arxiv_id": "2202.13914",
+      "pdf_path": "/scratch/Projects/SPEC-SF-AISG/source_files/paper-curator/storage/downloads/2202.13914v2.Combining_Modular_Skills_in_Multitask_Learning.pdf",
+      "corrupted_ratio": 0.074,
+      "uni_sequences": 285
+    },
+    {
+      "arxiv_id": "2601.03192",
+      "pdf_path": "/scratch/Projects/SPEC-SF-AISG/source_files/paper-curator/storage/downloads/2601.03192v1.MemRL__Self_Evolving_Agents_via_Runtime_Reinforcement_Learning_on_Episodic_Memory.pdf",
+      "corrupted_ratio": 0.0645,
+      "uni_sequences": 192
+    },
+    {
+      "arxiv_id": "2304.06939",
+      "pdf_path": "/scratch/Projects/SPEC-SF-AISG/source_files/paper-curator/storage/downloads/2304.06939v3.Multimodal_C4__An_Open__Billion_scale_Corpus_of_Images_Interleaved_with_Text.pdf",
+      "corrupted_ratio": 0.0606,
+      "uni_sequences": 209
+    },
+    {
+      "arxiv_id": "2312.10793",
+      "pdf_path": "/scratch/Projects/SPEC-SF-AISG/source_files/paper-curator/storage/downloads/2312.10793v3.Demystifying_Instruction_Mixing_for_Fine_tuning_Large_Language_Models.pdf",
+      "corrupted_ratio": 0.0594,
+      "uni_sequences": 168
+    },
+    {
+      "arxiv_id": "2406.06565",
+      "pdf_path": "/scratch/Projects/SPEC-SF-AISG/source_files/paper-curator/storage/downloads/2406.06565v2.MixEval__Deriving_Wisdom_of_the_Crowd_from_LLM_Benchmark_Mixtures.pdf",
+      "corrupted_ratio": 0.0504,
+      "uni_sequences": 161
+    },
+    {
+      "arxiv_id": "2512.21309",
+      "pdf_path": "/scratch/Projects/SPEC-SF-AISG/source_files/paper-curator/storage/downloads/2512.21309v2.A_Plan_Reuse_Mechanism_for_LLM_Driven_Agent.pdf",
+      "corrupted_ratio": 0.0494,
+      "uni_sequences": 270
+    },
+    {
+      "arxiv_id": "2403.19390",
+      "pdf_path": "/scratch/Projects/SPEC-SF-AISG/source_files/paper-curator/storage/downloads/2403.19390v2.Checkpoint_Merging_via_Bayesian_Optimization_in_LLM_Pretraining.pdf",
+      "corrupted_ratio": 0.0435,
+      "uni_sequences": 166
+    },
+    {
+      "arxiv_id": "2401.10491",
+      "pdf_path": "/scratch/Projects/SPEC-SF-AISG/source_files/paper-curator/storage/downloads/2401.10491v2.Knowledge_Fusion_of_Large_Language_Models.pdf",
+      "corrupted_ratio": 0.0389,
+      "uni_sequences": 146
+    },
+    {
+      "arxiv_id": "2403.09073",
+      "pdf_path": "/scratch/Projects/SPEC-SF-AISG/source_files/paper-curator/storage/downloads/2403.09073v3.Revealing_the_Parallel_Multilingual_Learning_within_Large_Language_Models.pdf",
+      "corrupted_ratio": 0.0253,
+      "uni_sequences": 94
+    },
+    {
+      "arxiv_id": "2305.17740",
+      "pdf_path": "/scratch/Projects/SPEC-SF-AISG/source_files/paper-curator/storage/downloads/2305.17740v2.Bridging_the_Language_Gap__Dynamic_Learning_Strategies_for_Improving_Multilingual_Performance_in_LLMs.pdf",
+      "corrupted_ratio": 0.014,
+      "uni_sequences": 51
+    },
+    {
+      "arxiv_id": "2601.15808",
+      "pdf_path": "/scratch/Projects/SPEC-SF-AISG/source_files/paper-curator/storage/downloads/2601.15808v1.Inference_Time_Scaling_of_Verification__Self_Evolving_Deep_Research_Agents_via_Test_Time_Rubric_Guided_Verification.pdf",
+      "corrupted_ratio": 0.0,
+      "uni_sequences": 0
+    },
+    {
+      "arxiv_id": "2510.26788",
+      "pdf_path": "/scratch/Projects/SPEC-SF-AISG/source_files/paper-curator/storage/downloads/2510.26788v1.Defeating_the_Training_Inference_Mismatch_via_FP16.pdf",
+      "corrupted_ratio": 0.0,
+      "uni_sequences": 0
+    },
+    {
+      "arxiv_id": "2403.02271",
+      "pdf_path": "/scratch/Projects/SPEC-SF-AISG/source_files/paper-curator/storage/downloads/2403.02271v2.RIFF__Learning_to_Rephrase_Inputs_for_Few_shot_Fine_tuning_of_Language_Models.pdf",
+      "corrupted_ratio": 0.0,
+      "uni_sequences": 0
+    },
+    {
+      "arxiv_id": "2601.04300",
+      "pdf_path": "/scratch/Projects/SPEC-SF-AISG/source_files/paper-curator/storage/downloads/2601.04300v1.Beyond_Binary_Preference__Aligning_Diffusion_Models_to_Fine_grained_Criteria_by_Decoupling_Attributes.pdf",
+      "corrupted_ratio": 0.0,
+      "uni_sequences": 0
+    },
+    {
+      "arxiv_id": "2403.05696",
+      "pdf_path": "/scratch/Projects/SPEC-SF-AISG/source_files/paper-curator/storage/downloads/2403.05696v1.SeeGULL_Multilingual__a_Dataset_of_Geo_Culturally_Situated_Stereotypes.pdf",
+      "corrupted_ratio": 0.0,
+      "uni_sequences": 0
+    },
+    {
+      "arxiv_id": "2601.05905",
+      "pdf_path": "/scratch/Projects/SPEC-SF-AISG/source_files/paper-curator/storage/downloads/2601.05905v1.Illusions_of_Confidence__Diagnosing_LLM_Truthfulness_via_Neighborhood_Consistency.pdf",
+      "corrupted_ratio": 0.0,
+      "uni_sequences": 0
+    },
+    {
+      "arxiv_id": "2406.05981",
+      "pdf_path": "/scratch/Projects/SPEC-SF-AISG/source_files/paper-curator/storage/downloads/2406.05981v4.ShiftAddLLM__Accelerating_Pretrained_LLMs_via_Post_Training_Multiplication_Less_Reparameterization.pdf",
+      "corrupted_ratio": 0.0,
+      "uni_sequences": 0
+    },
+    {
+      "arxiv_id": "2406.08391",
+      "pdf_path": "/scratch/Projects/SPEC-SF-AISG/source_files/paper-curator/storage/downloads/2406.08391v3.Large_Language_Models_Must_Be_Taught_to_Know_What_They_Don_t_Know.pdf",
+      "corrupted_ratio": 0.0,
+      "uni_sequences": 0
+    },
+    {
+      "arxiv_id": "2304.15004",
+      "pdf_path": "/scratch/Projects/SPEC-SF-AISG/source_files/paper-curator/storage/downloads/2304.15004v2.Are_Emergent_Abilities_of_Large_Language_Models_a_Mirage_.pdf",
+      "corrupted_ratio": 0.0,
+      "uni_sequences": 0
+    },
+    {
+      "arxiv_id": "2601.16206",
+      "pdf_path": "/scratch/Projects/SPEC-SF-AISG/source_files/paper-curator/storage/downloads/2601.16206v1.LLM_in_Sandbox_Elicits_General_Agentic_Intelligence.pdf",
+      "corrupted_ratio": 0.0,
+      "uni_sequences": 0
+    },
+    {
+      "arxiv_id": "2403.05189",
+      "pdf_path": "/scratch/Projects/SPEC-SF-AISG/source_files/paper-curator/storage/downloads/2403.05189v1.Tracing_the_Roots_of_Facts_in_Multilingual_Language_Models__Independent__Shared__and_Transferred_Knowledge.pdf",
+      "corrupted_ratio": 0.0,
+      "uni_sequences": 0
+    },
+    {
+      "arxiv_id": "2402.04222",
+      "pdf_path": "/scratch/Projects/SPEC-SF-AISG/source_files/paper-curator/storage/downloads/2402.04222v4.What_is__Typological_Diversity__in_NLP_.pdf",
+      "corrupted_ratio": 0.0,
+      "uni_sequences": 0
+    },
+    {
+      "arxiv_id": "2402.13753",
+      "pdf_path": "/scratch/Projects/SPEC-SF-AISG/source_files/paper-curator/storage/downloads/2402.13753v1.LongRoPE__Extending_LLM_Context_Window_Beyond_2_Million_Tokens.pdf",
+      "corrupted_ratio": 0.0,
+      "uni_sequences": 0
+    },
+    {
+      "arxiv_id": "2403.19887",
+      "pdf_path": "/scratch/Projects/SPEC-SF-AISG/source_files/paper-curator/storage/downloads/2403.19887v2.Jamba__A_Hybrid_Transformer_Mamba_Language_Model.pdf",
+      "corrupted_ratio": 0.0,
+      "uni_sequences": 0
+    },
+    {
+      "arxiv_id": "2404.14219",
+      "pdf_path": "/scratch/Projects/SPEC-SF-AISG/source_files/paper-curator/storage/downloads/2404.14219v4.Phi_3_Technical_Report__A_Highly_Capable_Language_Model_Locally_on_Your_Phone.pdf",
+      "corrupted_ratio": 0.0,
+      "uni_sequences": 0
+    },
+    {
+      "arxiv_id": "2401.17377",
+      "pdf_path": "/scratch/Projects/SPEC-SF-AISG/source_files/paper-curator/storage/downloads/2401.17377v4.Infini_gram__Scaling_Unbounded_n_gram_Language_Models_to_a_Trillion_Tokens.pdf",
+      "corrupted_ratio": 0.0,
+      "uni_sequences": 0
+    },
+    {
+      "arxiv_id": "2309.04827",
+      "pdf_path": "/scratch/Projects/SPEC-SF-AISG/source_files/paper-curator/storage/downloads/2309.04827v1.Neurons_in_Large_Language_Models__Dead__N_gram__Positional.pdf",
+      "corrupted_ratio": 0.0,
+      "uni_sequences": 0
+    },
+    {
+      "arxiv_id": "2402.02655",
+      "pdf_path": "/scratch/Projects/SPEC-SF-AISG/source_files/paper-curator/storage/downloads/2402.02655v3.VlogQA__Task__Dataset__and_Baseline_Models_for_Vietnamese_Spoken_Based_Machine_Reading_Comprehension.pdf",
+      "corrupted_ratio": 0.0,
+      "uni_sequences": 0
+    },
+    {
+      "arxiv_id": "2304.12244",
+      "pdf_path": "/scratch/Projects/SPEC-SF-AISG/source_files/paper-curator/storage/downloads/2304.12244v3.WizardLM__Empowering_large_pre_trained_language_models_to_follow_complex_instructions.pdf",
+      "corrupted_ratio": 0.0,
+      "uni_sequences": 0
+    },
+    {
+      "arxiv_id": "2405.12612",
+      "pdf_path": "/scratch/Projects/SPEC-SF-AISG/source_files/paper-curator/storage/downloads/2405.12612v1.Tagengo__A_Multilingual_Chat_Dataset.pdf",
+      "corrupted_ratio": 0.0,
+      "uni_sequences": 0
+    },
+    {
+      "arxiv_id": "2406.07887",
+      "pdf_path": "/scratch/Projects/SPEC-SF-AISG/source_files/paper-curator/storage/downloads/2406.07887v1.An_Empirical_Study_of_Mamba_based_Language_Models.pdf",
+      "corrupted_ratio": 0.0,
+      "uni_sequences": 0
+    },
+    {
+      "arxiv_id": "2305.13048",
+      "pdf_path": "/scratch/Projects/SPEC-SF-AISG/source_files/paper-curator/storage/downloads/2305.13048v2.RWKV__Reinventing_RNNs_for_the_Transformer_Era.pdf",
+      "corrupted_ratio": 0.0,
+      "uni_sequences": 0
+    },
+    {
+      "arxiv_id": "2404.11216",
+      "pdf_path": "/scratch/Projects/SPEC-SF-AISG/source_files/paper-curator/storage/downloads/2404.11216v2.Position_Engineering__Boosting_Large_Language_Models_through_Positional_Information_Manipulation.pdf",
+      "corrupted_ratio": 0.0,
+      "uni_sequences": 0
+    },
+    {
+      "arxiv_id": "2411.18885",
+      "pdf_path": "/scratch/Projects/SPEC-SF-AISG/source_files/paper-curator/storage/downloads/2411.18885v2.Sneaking_Syntax_into_Transformer_Language_Models_with_Tree_Regularization.pdf",
+      "corrupted_ratio": 0.0,
+      "uni_sequences": 0
+    },
+    {
+      "arxiv_id": "2405.04515",
+      "pdf_path": "/scratch/Projects/SPEC-SF-AISG/source_files/paper-curator/storage/downloads/2405.04515v2.A_Transformer_with_Stack_Attention.pdf",
+      "corrupted_ratio": 0.0,
+      "uni_sequences": 0
+    }
+  ],
+  "good_papers": [
+    {
+      "arxiv_id": "2601.07226",
+      "pdf_path": "/scratch/Projects/SPEC-SF-AISG/source_files/paper-curator/storage/downloads/2601.07226v1.Lost_in_the_Noise__How_Reasoning_Models_Fail_with_Contextual_Distractors.pdf",
+      "corrupted_ratio": 0.0,
+      "uni_sequences": 0
+    },
+    {
+      "arxiv_id": "2601.05167",
+      "pdf_path": "/scratch/Projects/SPEC-SF-AISG/source_files/paper-curator/storage/downloads/2601.05167v1.RelayLLM__Efficient_Reasoning_via_Collaborative_Decoding.pdf",
+      "corrupted_ratio": 0.0,
+      "uni_sequences": 0
+    },
+    {
+      "arxiv_id": "2601.18292",
+      "pdf_path": "/scratch/Projects/SPEC-SF-AISG/source_files/paper-curator/storage/downloads/2601.18292v2.TriPlay_RL__Tri_Role_Self_Play_Reinforcement_Learning_for_LLM_Safety_Alignment.pdf",
+      "corrupted_ratio": 0.0,
+      "uni_sequences": 0
+    },
+    {
+      "arxiv_id": "2601.18217",
+      "pdf_path": "/scratch/Projects/SPEC-SF-AISG/source_files/paper-curator/storage/downloads/2601.18217v1.Paying_Less_Generalization_Tax__A_Cross_Domain_Generalization_Study_of_RL_Training_for_LLM_Agents.pdf",
+      "corrupted_ratio": 0.0,
+      "uni_sequences": 0
+    },
+    {
+      "arxiv_id": "2405.07883",
+      "pdf_path": "/scratch/Projects/SPEC-SF-AISG/source_files/paper-curator/storage/downloads/2405.07883v2.Zero_Shot_Tokenizer_Transfer.pdf",
+      "corrupted_ratio": 0.0,
+      "uni_sequences": 0
+    },
+    {
+      "arxiv_id": "2406.06046",
+      "pdf_path": "/scratch/Projects/SPEC-SF-AISG/source_files/paper-curator/storage/downloads/2406.06046v2.MATES__Model_Aware_Data_Selection_for_Efficient_Pretraining_with_Data_Influence_Models.pdf",
+      "corrupted_ratio": 0.0,
+      "uni_sequences": 0
+    },
+    {
+      "arxiv_id": "2404.00474",
+      "pdf_path": "/scratch/Projects/SPEC-SF-AISG/source_files/paper-curator/storage/downloads/2404.00474v2.Linguistic_Calibration_of_Long_Form_Generations.pdf",
+      "corrupted_ratio": 0.0,
+      "uni_sequences": 0
+    },
+    {
+      "arxiv_id": "2402.01364",
+      "pdf_path": "/scratch/Projects/SPEC-SF-AISG/source_files/paper-curator/storage/downloads/2402.01364v2.Continual_Learning_for_Large_Language_Models__A_Survey.pdf",
+      "corrupted_ratio": 0.0,
+      "uni_sequences": 0
+    },
+    {
+      "arxiv_id": "2404.14619",
+      "pdf_path": "/scratch/Projects/SPEC-SF-AISG/source_files/paper-curator/storage/downloads/2404.14619v2.OpenELM__An_Efficient_Language_Model_Family_with_Open_Training_and_Inference_Framework.pdf",
+      "corrupted_ratio": 0.0,
+      "uni_sequences": 0
+    },
+    {
+      "arxiv_id": "2303.17564",
+      "pdf_path": "/scratch/Projects/SPEC-SF-AISG/source_files/paper-curator/storage/downloads/2303.17564v3.BloombergGPT__A_Large_Language_Model_for_Finance.pdf",
+      "corrupted_ratio": 0.0,
+      "uni_sequences": 0
+    },
+    {
+      "arxiv_id": "2404.05866",
+      "pdf_path": "/scratch/Projects/SPEC-SF-AISG/source_files/paper-curator/storage/downloads/2404.05866v2.GeniL__A_Multilingual_Dataset_on_Generalizing_Language.pdf",
+      "corrupted_ratio": 0.0,
+      "uni_sequences": 0
+    },
+    {
+      "arxiv_id": "2303.12528",
+      "pdf_path": "/scratch/Projects/SPEC-SF-AISG/source_files/paper-curator/storage/downloads/2303.12528v4.MEGA__Multilingual_Evaluation_of_Generative_AI.pdf",
+      "corrupted_ratio": 0.0,
+      "uni_sequences": 0
+    },
+    {
+      "arxiv_id": "2601.05808",
+      "pdf_path": "/scratch/Projects/SPEC-SF-AISG/source_files/paper-curator/storage/downloads/2601.05808v1.EnvScaler__Scaling_Tool_Interactive_Environments_for_LLM_Agent_via_Programmatic_Synthesis.pdf",
+      "corrupted_ratio": 0.0,
+      "uni_sequences": 0
+    },
+    {
+      "arxiv_id": "2403.04652",
+      "pdf_path": "/scratch/Projects/SPEC-SF-AISG/source_files/paper-curator/storage/downloads/2403.04652v3.Yi__Open_Foundation_Models_by_01_AI.pdf",
+      "corrupted_ratio": 0.0,
+      "uni_sequences": 0
+    },
+    {
+      "arxiv_id": "2307.02486",
+      "pdf_path": "/scratch/Projects/SPEC-SF-AISG/source_files/paper-curator/storage/downloads/2307.02486v2.LongNet__Scaling_Transformers_to_1_000_000_000_Tokens.pdf",
+      "corrupted_ratio": 0.0,
+      "uni_sequences": 0
+    },
+    {
+      "arxiv_id": "2308.10792",
+      "pdf_path": "/scratch/Projects/SPEC-SF-AISG/source_files/paper-curator/storage/downloads/2308.10792v10.Instruction_Tuning_for_Large_Language_Models__A_Survey.pdf",
+      "corrupted_ratio": 0.0,
+      "uni_sequences": 0
+    },
+    {
+      "arxiv_id": "2401.01055",
+      "pdf_path": "/scratch/Projects/SPEC-SF-AISG/source_files/paper-curator/storage/downloads/2401.01055v2.LLaMA_Beyond_English__An_Empirical_Study_on_Language_Capability_Transfer.pdf",
+      "corrupted_ratio": 0.0,
+      "uni_sequences": 0
+    },
+    {
+      "arxiv_id": "2205.11822",
+      "pdf_path": "/scratch/Projects/SPEC-SF-AISG/source_files/paper-curator/storage/downloads/2205.11822v2.Maieutic_Prompting__Logically_Consistent_Reasoning_with_Recursive_Explanations.pdf",
+      "corrupted_ratio": 0.0,
+      "uni_sequences": 0
+    },
+    {
+      "arxiv_id": "2305.14825",
+      "pdf_path": "/scratch/Projects/SPEC-SF-AISG/source_files/paper-curator/storage/downloads/2305.14825v2.Large_Language_Models_are_In_Context_Semantic_Reasoners_rather_than_Symbolic_Reasoners.pdf",
+      "corrupted_ratio": 0.0,
+      "uni_sequences": 0
+    },
+    {
+      "arxiv_id": "2402.04624",
+      "pdf_path": "/scratch/Projects/SPEC-SF-AISG/source_files/paper-curator/storage/downloads/2402.04624v2.MEMORYLLM__Towards_Self_Updatable_Large_Language_Models.pdf",
+      "corrupted_ratio": 0.0,
+      "uni_sequences": 0
+    },
+    {
+      "arxiv_id": "2403.17297",
+      "pdf_path": "/scratch/Projects/SPEC-SF-AISG/source_files/paper-curator/storage/downloads/2403.17297v1.InternLM2_Technical_Report.pdf",
+      "corrupted_ratio": 0.0,
+      "uni_sequences": 0
+    },
+    {
+      "arxiv_id": "2311.03228",
+      "pdf_path": "/scratch/Projects/SPEC-SF-AISG/source_files/paper-curator/storage/downloads/2311.03228v1.An_Efficient_Self_Supervised_Cross_View_Training_For_Sentence_Embedding.pdf",
+      "corrupted_ratio": 0.0,
+      "uni_sequences": 0
+    },
+    {
+      "arxiv_id": "2405.21060",
+      "pdf_path": "/scratch/Projects/SPEC-SF-AISG/source_files/paper-curator/storage/downloads/2405.21060v1.Transformers_are_SSMs__Generalized_Models_and_Efficient_Algorithms_Through_Structured_State_Space_Duality.pdf",
+      "corrupted_ratio": 0.0,
+      "uni_sequences": 0
+    },
+    {
+      "arxiv_id": "2601.13599",
+      "pdf_path": "/scratch/Projects/SPEC-SF-AISG/source_files/paper-curator/storage/downloads/2601.13599v2.Diffusion_In_Diffusion__Reclaiming_Global_Coherence_in_Semi_Autoregressive_Diffusion.pdf",
+      "corrupted_ratio": 0.0,
+      "uni_sequences": 0
+    },
+    {
+      "arxiv_id": "2402.01035",
+      "pdf_path": "/scratch/Projects/SPEC-SF-AISG/source_files/paper-curator/storage/downloads/2402.01035v2.Getting_the_most_out_of_your_tokenizer_for_pre_training_and_domain_adaptation.pdf",
+      "corrupted_ratio": 0.0,
+      "uni_sequences": 0
+    },
+    {
+      "arxiv_id": "2601.05593",
+      "pdf_path": "/scratch/Projects/SPEC-SF-AISG/source_files/paper-curator/storage/downloads/2601.05593v1.PaCoRe__Learning_to_Scale_Test_Time_Compute_with_Parallel_Coordinated_Reasoning.pdf",
+      "corrupted_ratio": 0.0,
+      "uni_sequences": 0
+    },
+    {
+      "arxiv_id": "2601.06487",
+      "pdf_path": "/scratch/Projects/SPEC-SF-AISG/source_files/paper-curator/storage/downloads/2601.06487v2.ArenaRL__Scaling_RL_for_Open_Ended_Agents_via_Tournament_based_Relative_Ranking.pdf",
+      "corrupted_ratio": 0.0,
+      "uni_sequences": 0
+    },
+    {
+      "arxiv_id": "2403.03028",
+      "pdf_path": "/scratch/Projects/SPEC-SF-AISG/source_files/paper-curator/storage/downloads/2403.03028v1.Word_Importance_Explains_How_Prompts_Affect_Language_Model_Outputs.pdf",
+      "corrupted_ratio": 0.0,
+      "uni_sequences": 0
+    },
+    {
+      "arxiv_id": "2511.17599",
+      "pdf_path": "/scratch/Projects/SPEC-SF-AISG/source_files/paper-curator/storage/downloads/2511.17599v1.From_Projection_to_Prediction__Beyond_Logits_for_Scalable_Language_Models.pdf",
+      "corrupted_ratio": 0.0,
+      "uni_sequences": 0
+    },
+    {
+      "arxiv_id": "2402.12366",
+      "pdf_path": "/scratch/Projects/SPEC-SF-AISG/source_files/paper-curator/storage/downloads/2402.12366v1.A_Critical_Evaluation_of_AI_Feedback_for_Aligning_Large_Language_Models.pdf",
+      "corrupted_ratio": 0.0,
+      "uni_sequences": 0
+    },
+    {
+      "arxiv_id": "2601.05106",
+      "pdf_path": "/scratch/Projects/SPEC-SF-AISG/source_files/paper-curator/storage/downloads/2601.05106v1.Token_Level_LLM_Collaboration_via_FusionRoute.pdf",
+      "corrupted_ratio": 0.0,
+      "uni_sequences": 0
+    },
+    {
+      "arxiv_id": "2305.14201",
+      "pdf_path": "/scratch/Projects/SPEC-SF-AISG/source_files/paper-curator/storage/downloads/2305.14201v1.Goat__Fine_tuned_LLaMA_Outperforms_GPT_4_on_Arithmetic_Tasks.pdf",
+      "corrupted_ratio": 0.0,
+      "uni_sequences": 0
+    },
+    {
+      "arxiv_id": "2402.15059",
+      "pdf_path": "/scratch/Projects/SPEC-SF-AISG/source_files/paper-curator/storage/downloads/2402.15059v1.ColBERT_XM__A_Modular_Multi_Vector_Representation_Model_for_Zero_Shot_Multilingual_Information_Retrieval.pdf",
+      "corrupted_ratio": 0.0,
+      "uni_sequences": 0
+    },
+    {
+      "arxiv_id": "2304.11082",
+      "pdf_path": "/scratch/Projects/SPEC-SF-AISG/source_files/paper-curator/storage/downloads/2304.11082v6.Fundamental_Limitations_of_Alignment_in_Large_Language_Models.pdf",
+      "corrupted_ratio": 0.0,
+      "uni_sequences": 0
+    },
+    {
+      "arxiv_id": "2202.00275",
+      "pdf_path": "/scratch/Projects/SPEC-SF-AISG/source_files/paper-curator/storage/downloads/2202.00275v1.Architecture_Matters_in_Continual_Learning.pdf",
+      "corrupted_ratio": 0.0,
+      "uni_sequences": 0
+    },
+    {
+      "arxiv_id": "2406.09405",
+      "pdf_path": "/scratch/Projects/SPEC-SF-AISG/source_files/paper-curator/storage/downloads/2406.09405v2.Why_Warmup_the_Learning_Rate__Underlying_Mechanisms_and_Improvements.pdf",
+      "corrupted_ratio": 0.0,
+      "uni_sequences": 0
+    },
+    {
+      "arxiv_id": "2310.09259",
+      "pdf_path": "/scratch/Projects/SPEC-SF-AISG/source_files/paper-curator/storage/downloads/2310.09259v2.QUIK__Towards_End_to_End_4_Bit_Inference_on_Generative_Large_Language_Models.pdf",
+      "corrupted_ratio": 0.0,
+      "uni_sequences": 0
+    },
+    {
+      "arxiv_id": "2601.17858",
+      "pdf_path": "/scratch/Projects/SPEC-SF-AISG/source_files/paper-curator/storage/downloads/2601.17858v1.MergeMix__Optimizing_Mid_Training_Data_Mixtures_via_Learnable_Model_Merging.pdf",
+      "corrupted_ratio": 0.0,
+      "uni_sequences": 0
+    },
+    {
+      "arxiv_id": "2405.08553",
+      "pdf_path": "/scratch/Projects/SPEC-SF-AISG/source_files/paper-curator/storage/downloads/2405.08553v2.Improving_Transformers_with_Dynamically_Composable_Multi_Head_Attention.pdf",
+      "corrupted_ratio": 0.0,
+      "uni_sequences": 0
+    },
+    {
+      "arxiv_id": "2312.02406",
+      "pdf_path": "/scratch/Projects/SPEC-SF-AISG/source_files/paper-curator/storage/downloads/2312.02406v2.Efficient_Online_Data_Mixing_For_Language_Model_Pre_Training.pdf",
+      "corrupted_ratio": 0.0,
+      "uni_sequences": 0
+    },
+    {
+      "arxiv_id": "2404.05089",
+      "pdf_path": "/scratch/Projects/SPEC-SF-AISG/source_files/paper-curator/storage/downloads/2404.05089v1.SEER_MoE__Sparse_Expert_Efficiency_through_Regularization_for_Mixture_of_Experts.pdf",
+      "corrupted_ratio": 0.0,
+      "uni_sequences": 0
+    },
+    {
+      "arxiv_id": "2403.14651",
+      "pdf_path": "/scratch/Projects/SPEC-SF-AISG/source_files/paper-curator/storage/downloads/2403.14651v1.DOSA__A_Dataset_of_Social_Artifacts_from_Different_Indian_Geographical_Subcultures.pdf",
+      "corrupted_ratio": 0.0,
+      "uni_sequences": 0
+    },
+    {
+      "arxiv_id": "2401.13136",
+      "pdf_path": "/scratch/Projects/SPEC-SF-AISG/source_files/paper-curator/storage/downloads/2401.13136v1.The_Language_Barrier__Dissecting_Safety_Challenges_of_LLMs_in_Multilingual_Contexts.pdf",
+      "corrupted_ratio": 0.0,
+      "uni_sequences": 0
+    },
+    {
+      "arxiv_id": "2601.16979",
+      "pdf_path": "/scratch/Projects/SPEC-SF-AISG/source_files/paper-curator/storage/downloads/2601.16979v2.A_Scalable_Measure_of_Loss_Landscape_Curvature_for_Analyzing_the_Training_Dynamics_of_LLMs.pdf",
+      "corrupted_ratio": 0.0,
+      "uni_sequences": 0
+    },
+    {
+      "arxiv_id": "2401.07872",
+      "pdf_path": "/scratch/Projects/SPEC-SF-AISG/source_files/paper-curator/storage/downloads/2401.07872v1.The_What__Why__and_How_of_Context_Length_Extension_Techniques_in_Large_Language_Models____A_Detailed_Survey.pdf",
+      "corrupted_ratio": 0.0,
+      "uni_sequences": 0
+    },
+    {
+      "arxiv_id": "2405.18719",
+      "pdf_path": "/scratch/Projects/SPEC-SF-AISG/source_files/paper-curator/storage/downloads/2405.18719v2.Contextual_Position_Encoding__Learning_to_Count_What_s_Important.pdf",
+      "corrupted_ratio": 0.0,
+      "uni_sequences": 0
+    },
+    {
+      "arxiv_id": "2305.08322",
+      "pdf_path": "/scratch/Projects/SPEC-SF-AISG/source_files/paper-curator/storage/downloads/2305.08322v3.C_Eval__A_Multi_Level_Multi_Discipline_Chinese_Evaluation_Suite_for_Foundation_Models.pdf",
+      "corrupted_ratio": 0.0,
+      "uni_sequences": 0
+    },
+    {
+      "arxiv_id": "2601.08808",
+      "pdf_path": "/scratch/Projects/SPEC-SF-AISG/source_files/paper-curator/storage/downloads/2601.08808v1.Multiplex_Thinking__Reasoning_via_Token_wise_Branch_and_Merge.pdf",
+      "corrupted_ratio": 0.0,
+      "uni_sequences": 0
+    },
+    {
+      "arxiv_id": "2404.02431",
+      "pdf_path": "/scratch/Projects/SPEC-SF-AISG/source_files/paper-curator/storage/downloads/2404.02431v1.On_the_Multilingual_Ability_of_Decoder_based_Pre_trained_Language_Models__Finding_and_Controlling_Language_Specific_Neurons.pdf",
+      "corrupted_ratio": 0.0,
+      "uni_sequences": 0
+    },
+    {
+      "arxiv_id": "2310.10638",
+      "pdf_path": "/scratch/Projects/SPEC-SF-AISG/source_files/paper-curator/storage/downloads/2310.10638v6.In_context_Pretraining__Language_Modeling_Beyond_Document_Boundaries.pdf",
+      "corrupted_ratio": 0.0,
+      "uni_sequences": 0
+    }
+  ],
+  "extractors": [
+    "pypdf",
+    "pymupdf",
+    "pdfplumber",
+    "pdfminer",
+    "deepseek-ocr-2"
+  ],
+  "chunk_size": 5000,
+  "output_file": "storage/schemas/pdf_extraction_results.json"
+}
