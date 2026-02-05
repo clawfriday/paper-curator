@@ -26,7 +26,7 @@ slack:
 # NOTE: You can use localhost URLs - they auto-convert to host.docker.internal in Docker
 # =============================================================================
 endpoints:
-  llm_base_url: "https://transmissively-conidial-fredrick.ngrok-free.dev/v1"  # LLM requests go here (affects all LLM features)
+  llm_base_url: "http://localhost:8001/v1"  # LLM requests go here (affects all LLM features)
   embedding_base_url: "http://localhost:8004/v1"  # Embedding requests go here (affects clustering + similarity)
   api_key: "local-key"  # Shared key for the endpoints above
 
@@ -36,7 +36,7 @@ endpoints:
 paperqa:
   chunk_chars: 5000  # Larger chunks reduce index size but may blur details
   chunk_overlap: 250  # More overlap improves recall but increases compute
-  use_doc_details: true  # Adds metadata into prompts for better grounding
+  use_doc_details: false  # Adds metadata into prompts for better grounding
   evidence_k: 10  # More evidence increases accuracy but adds latency
   evidence_summary_length: "about 100 words"  # Longer summaries add detail but cost tokens
   evidence_skip_summary: false  # Skip evidence summaries for speed if true

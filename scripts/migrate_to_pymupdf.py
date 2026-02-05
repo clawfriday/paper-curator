@@ -2,23 +2,19 @@
 """
 Migration script to re-index all PDFs with pymupdf backend.
 
-This script:
-1. Deletes all existing PaperQA indices
-2. Clears topic Q&A history
-3. Re-indexes all papers with pymupdf-backed extraction
-4. Updates paper embeddings in database
-5. Regenerates summaries for corrupted papers
-6. Triggers full tree regeneration
+Uses async IO for efficient parallel processing with controlled concurrency.
+Tracks failed papers for later removal.
 
 Usage:
     python scripts/migrate_to_pymupdf.py [--dry-run] [--skip-summaries] [--skip-tree]
+    python scripts/migrate_to_pymupdf.py --concurrency 4  # 4 concurrent requests
 """
 from __future__ import annotations
 
 import argparse
+import asyncio
 import json
 import os
-import shutil
 import sys
 import time
 from datetime import datetime
@@ -31,7 +27,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent / "src" / "backend"))
 from pdf_patch import patch_pypdf, is_patched
 patch_pypdf()
 
-import requests
+import aiohttp
 import psycopg2
 from psycopg2.extras import RealDictCursor
 
@@ -40,6 +36,12 @@ from psycopg2.extras import RealDictCursor
 BACKEND_URL = "http://localhost:3100"
 INDEX_DIR = Path(__file__).parent.parent / "storage" / "paperqa_index"
 BAD_PAPERS_CONFIG = Path(__file__).parent / "pdf_extraction_test" / "test_pdf_config.json"
+FAILED_PAPERS_FILE = Path(__file__).parent.parent / "logs" / "migration_failed_papers.json"
+
+# Counters and tracking
+success_count = 0
+fail_count = 0
+failed_papers: list[dict] = []  # Track failed papers for later removal
 
 
 def get_db_connection():
@@ -122,119 +124,235 @@ def get_bad_paper_arxiv_ids() -> set[str]:
     return {p["arxiv_id"] for p in config.get("bad_papers", [])}
 
 
-def reindex_paper(arxiv_id: str, pdf_path: str, timeout: int = 120) -> bool:
-    """Re-index a single paper via API."""
+def save_failed_papers():
+    """Save failed papers to JSON file."""
+    global failed_papers
+    FAILED_PAPERS_FILE.parent.mkdir(parents=True, exist_ok=True)
+    with open(FAILED_PAPERS_FILE, "w") as f:
+        json.dump({
+            "timestamp": datetime.now().isoformat(),
+            "count": len(failed_papers),
+            "papers": failed_papers
+        }, f, indent=2)
+    print(f"Failed papers saved to: {FAILED_PAPERS_FILE}")
+
+
+async def reindex_paper_async(
+    session: aiohttp.ClientSession,
+    paper: dict,
+    index: int,
+    bad_arxiv_ids: set,
+    skip_summaries: bool,
+    timeout: int = 180
+) -> tuple[bool, str | None]:
+    """Re-index a single paper via API (async)."""
+    global success_count, fail_count, failed_papers
+    
+    arxiv_id = paper["arxiv_id"]
+    pdf_path = paper["pdf_path"]
+    
+    if not pdf_path or not Path(pdf_path).exists():
+        fail_count += 1
+        failed_papers.append({
+            "id": paper["id"],
+            "arxiv_id": arxiv_id,
+            "title": paper.get("title", ""),
+            "error": "PDF not found",
+            "index": index
+        })
+        return False, f"[{index}] Skipping {arxiv_id}: PDF not found"
+    
     try:
-        # Use the summarize endpoint which also indexes
-        response = requests.post(
+        async with session.post(
             f"{BACKEND_URL}/summarize",
             json={
                 "pdf_path": pdf_path,
                 "arxiv_id": arxiv_id,
-                "text": None,  # Force PDF extraction
+                "text": None,
             },
-            timeout=timeout,
-        )
-        return response.status_code == 200
-    except requests.exceptions.RequestException as e:
-        print(f"  Error re-indexing {arxiv_id}: {e}")
-        return False
+            timeout=aiohttp.ClientTimeout(total=timeout),
+        ) as response:
+            if response.status == 200:
+                success_count += 1
+                if not skip_summaries and arxiv_id in bad_arxiv_ids:
+                    return True, f"[{index}] ✓ {arxiv_id} (was corrupted)"
+                return True, None
+            else:
+                fail_count += 1
+                error_text = await response.text()
+                failed_papers.append({
+                    "id": paper["id"],
+                    "arxiv_id": arxiv_id,
+                    "title": paper.get("title", ""),
+                    "error": f"HTTP {response.status}",
+                    "index": index
+                })
+                return False, f"[{index}] ✗ {arxiv_id}: HTTP {response.status}"
+    except asyncio.TimeoutError:
+        fail_count += 1
+        failed_papers.append({
+            "id": paper["id"],
+            "arxiv_id": arxiv_id,
+            "title": paper.get("title", ""),
+            "error": "Timeout",
+            "index": index
+        })
+        return False, f"[{index}] ✗ {arxiv_id}: Timeout"
+    except aiohttp.ClientError as e:
+        fail_count += 1
+        failed_papers.append({
+            "id": paper["id"],
+            "arxiv_id": arxiv_id,
+            "title": paper.get("title", ""),
+            "error": str(type(e).__name__),
+            "index": index
+        })
+        return False, f"[{index}] ✗ {arxiv_id}: {type(e).__name__}"
+    except Exception as e:
+        fail_count += 1
+        failed_papers.append({
+            "id": paper["id"],
+            "arxiv_id": arxiv_id,
+            "title": paper.get("title", ""),
+            "error": str(e),
+            "index": index
+        })
+        return False, f"[{index}] ✗ {arxiv_id}: {e}"
 
 
-def regenerate_summary(arxiv_id: str, pdf_path: str, timeout: int = 180) -> bool:
-    """Regenerate summary for a paper."""
+async def process_papers_async(
+    papers: list[dict],
+    start_from: int,
+    bad_arxiv_ids: set,
+    skip_summaries: bool,
+    concurrency: int = 4,
+) -> None:
+    """Process papers with controlled concurrency using async IO."""
+    global success_count, fail_count
+    
+    papers_to_process = papers[start_from:]
+    total = len(papers_to_process)
+    
+    print(f"Total papers to process: {total}")
+    print(f"Papers with known extraction issues: {len(bad_arxiv_ids)}")
+    print(f"Concurrency: {concurrency}")
+    print()
+    
+    # Create a semaphore to limit concurrency
+    semaphore = asyncio.Semaphore(concurrency)
+    
+    # Create connector with connection pooling
+    connector = aiohttp.TCPConnector(
+        limit=concurrency * 2,
+        limit_per_host=concurrency * 2,
+        keepalive_timeout=30,
+    )
+    
+    start_time = time.time()
+    completed = 0
+    
+    async def process_with_semaphore(paper: dict, idx: int) -> tuple[bool, str | None]:
+        async with semaphore:
+            return await reindex_paper_async(
+                session,
+                paper,
+                start_from + idx,
+                bad_arxiv_ids,
+                skip_summaries,
+            )
+    
+    async with aiohttp.ClientSession(connector=connector) as session:
+        # Create all tasks
+        tasks = [
+            asyncio.create_task(process_with_semaphore(paper, i))
+            for i, paper in enumerate(papers_to_process)
+        ]
+        
+        # Process results as they complete
+        for coro in asyncio.as_completed(tasks):
+            success, message = await coro
+            completed += 1
+            
+            # Print messages for failures and corrupted papers
+            if message:
+                print(message, flush=True)
+            
+            # Print progress every 50 papers
+            if completed % 50 == 0:
+                elapsed = time.time() - start_time
+                rate = completed / elapsed if elapsed > 0 else 0
+                eta = (total - completed) / rate if rate > 0 else 0
+                print(f"\nProgress: {completed}/{total} papers "
+                      f"({rate:.2f}/sec, ETA: {eta/60:.1f} min) "
+                      f"[✓{success_count} ✗{fail_count}]", flush=True)
+    
+    elapsed = time.time() - start_time
+    print(f"\nRe-indexing complete in {elapsed/60:.1f} minutes")
+    print(f"  Success: {success_count}")
+    print(f"  Failed: {fail_count}")
+    print(f"  Rate: {total/elapsed:.2f} papers/sec")
+    
+    # Save failed papers
+    if failed_papers:
+        save_failed_papers()
+
+
+async def trigger_tree_regeneration_async(timeout: int = 1800) -> bool:
+    """Trigger full tree regeneration via classify endpoint (async)."""
     try:
-        response = requests.post(
-            f"{BACKEND_URL}/summarize",
-            json={
-                "pdf_path": pdf_path,
-                "arxiv_id": arxiv_id,
-            },
-            timeout=timeout,
-        )
-        if response.status_code == 200:
-            result = response.json()
-            # Update summary in database
-            conn = get_db_connection()
-            try:
-                with conn.cursor() as cur:
-                    cur.execute(
-                        "UPDATE papers SET summary = %s WHERE arxiv_id = %s",
-                        (result.get("summary", ""), arxiv_id),
-                    )
-                    conn.commit()
-            finally:
-                conn.close()
-            return True
-        return False
-    except requests.exceptions.RequestException as e:
-        print(f"  Error regenerating summary for {arxiv_id}: {e}")
-        return False
-
-
-def regenerate_structured_analysis(arxiv_id: str, pdf_path: str, timeout: int = 300) -> bool:
-    """Regenerate structured analysis for a paper."""
-    try:
-        response = requests.post(
-            f"{BACKEND_URL}/summarize/structured",
-            json={
-                "pdf_path": pdf_path,
-                "arxiv_id": arxiv_id,
-            },
-            timeout=timeout,
-        )
-        return response.status_code == 200
-    except requests.exceptions.RequestException as e:
-        print(f"  Error regenerating structured analysis for {arxiv_id}: {e}")
-        return False
-
-
-def trigger_tree_regeneration(timeout: int = 1800) -> bool:
-    """Trigger full tree regeneration via classify endpoint."""
-    try:
-        response = requests.post(
-            f"{BACKEND_URL}/papers/classify",
-            timeout=timeout,
-        )
-        return response.status_code == 200
-    except requests.exceptions.RequestException as e:
+        async with aiohttp.ClientSession() as session:
+            async with session.post(
+                f"{BACKEND_URL}/papers/classify",
+                timeout=aiohttp.ClientTimeout(total=timeout),
+            ) as response:
+                return response.status == 200
+    except Exception as e:
         print(f"Error triggering tree regeneration: {e}")
         return False
 
 
-def main():
+async def main_async():
+    global success_count, fail_count, failed_papers
+    
     parser = argparse.ArgumentParser(description="Migrate to pymupdf backend")
-    parser.add_argument("--dry-run", action="store_true", help="Show what would be done without making changes")
+    parser.add_argument("--dry-run", action="store_true", help="Show what would be done")
     parser.add_argument("--skip-summaries", action="store_true", help="Skip regenerating summaries")
     parser.add_argument("--skip-tree", action="store_true", help="Skip tree regeneration")
-    parser.add_argument("--start-from", type=int, default=0, help="Start from paper index (for resuming)")
+    parser.add_argument("--start-from", type=int, default=0, help="Start from paper index")
+    parser.add_argument("--concurrency", type=int, default=4, help="Concurrent requests (default: 4)")
+    parser.add_argument("--skip-delete", action="store_true", help="Skip deleting existing indices")
     args = parser.parse_args()
     
     print("=" * 60)
-    print("pymupdf Migration Script")
+    print("pymupdf Migration Script (Async IO)")
     print("=" * 60)
     print(f"Start time: {datetime.now().isoformat()}")
     print(f"Patch status: {'ACTIVE' if is_patched() else 'NOT ACTIVE'}")
+    print(f"Concurrency: {args.concurrency}")
     print(f"Dry run: {args.dry_run}")
     print()
     
     # Check backend is running
     try:
-        response = requests.get(f"{BACKEND_URL}/health", timeout=5)
-        if response.status_code != 200:
-            print(f"ERROR: Backend not healthy at {BACKEND_URL}")
-            sys.exit(1)
+        async with aiohttp.ClientSession() as session:
+            async with session.get(f"{BACKEND_URL}/health", timeout=aiohttp.ClientTimeout(total=5)) as resp:
+                if resp.status != 200:
+                    print(f"ERROR: Backend not healthy at {BACKEND_URL}")
+                    sys.exit(1)
         print(f"Backend healthy at {BACKEND_URL}")
-    except requests.exceptions.RequestException:
-        print(f"ERROR: Cannot connect to backend at {BACKEND_URL}")
-        print("Please ensure the backend is running before migration")
+    except Exception as e:
+        print(f"ERROR: Cannot connect to backend at {BACKEND_URL}: {e}")
         sys.exit(1)
     
     # Step 1: Delete all indices
-    print("\n" + "-" * 40)
-    print("Step 1: Delete existing PaperQA indices")
-    print("-" * 40)
-    deleted_indices = delete_all_indices(args.dry_run)
+    if not args.skip_delete:
+        print("\n" + "-" * 40)
+        print("Step 1: Delete existing PaperQA indices")
+        print("-" * 40)
+        deleted_indices = delete_all_indices(args.dry_run)
+    else:
+        print("\n[Skipping index deletion]")
+        deleted_indices = 0
     
     # Step 2: Clear topic Q&A history
     print("\n" + "-" * 40)
@@ -242,45 +360,23 @@ def main():
     print("-" * 40)
     cleared_qa = clear_topic_qa_history(args.dry_run)
     
-    # Step 3: Get all papers and re-index
+    # Step 3: Get all papers and re-index with async
     print("\n" + "-" * 40)
-    print("Step 3: Re-index all papers")
+    print("Step 3: Re-index all papers (Async IO)")
     print("-" * 40)
     papers = get_all_papers()
     bad_arxiv_ids = get_bad_paper_arxiv_ids()
-    print(f"Total papers to process: {len(papers)}")
-    print(f"Papers with known extraction issues: {len(bad_arxiv_ids)}")
     
     if args.dry_run:
-        print("[DRY RUN] Would re-index all papers")
+        print(f"[DRY RUN] Would re-index {len(papers) - args.start_from} papers")
     else:
-        success_count = 0
-        fail_count = 0
-        
-        for i, paper in enumerate(papers[args.start_from:], start=args.start_from):
-            if i % 50 == 0:
-                print(f"\nProgress: {i}/{len(papers)} papers")
-            
-            arxiv_id = paper["arxiv_id"]
-            pdf_path = paper["pdf_path"]
-            
-            if not pdf_path or not Path(pdf_path).exists():
-                print(f"  [{i}] Skipping {arxiv_id}: PDF not found")
-                fail_count += 1
-                continue
-            
-            success = reindex_paper(arxiv_id, pdf_path)
-            if success:
-                success_count += 1
-                # Regenerate summary for bad papers
-                if not args.skip_summaries and arxiv_id in bad_arxiv_ids:
-                    print(f"  [{i}] Regenerating summary for {arxiv_id} (was corrupted)")
-                    regenerate_summary(arxiv_id, pdf_path)
-            else:
-                fail_count += 1
-                print(f"  [{i}] Failed to re-index {arxiv_id}")
-        
-        print(f"\nRe-indexing complete: {success_count} success, {fail_count} failed")
+        await process_papers_async(
+            papers,
+            args.start_from,
+            bad_arxiv_ids,
+            args.skip_summaries,
+            args.concurrency,
+        )
     
     # Step 4: Regenerate tree
     if not args.skip_tree:
@@ -292,7 +388,7 @@ def main():
             print("[DRY RUN] Would regenerate tree structure")
         else:
             print("Triggering tree regeneration (this may take 10-15 minutes)...")
-            success = trigger_tree_regeneration()
+            success = await trigger_tree_regeneration_async()
             if success:
                 print("Tree regeneration triggered successfully")
             else:
@@ -306,9 +402,17 @@ def main():
     print(f"Indices deleted: {deleted_indices}")
     print(f"Q&A entries cleared: {cleared_qa}")
     print(f"Papers processed: {len(papers) - args.start_from}")
+    print(f"  Success: {success_count}")
+    print(f"  Failed: {fail_count}")
+    if failed_papers:
+        print(f"  Failed papers saved to: {FAILED_PAPERS_FILE}")
     if not args.skip_tree:
         print("Tree regeneration: Triggered")
     print("=" * 60)
+
+
+def main():
+    asyncio.run(main_async())
 
 
 if __name__ == "__main__":

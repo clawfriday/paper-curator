@@ -25,7 +25,7 @@ ssh -f -N -L 3000:localhost:3000 hopper
 ############################################################
 echo "--- LLM ---" && \
 # curl -s http://localhost:8001/v1/models
-# export OPENAI_API_BASE="http://localhost:8001"
+export OPENAI_API_BASE="http://localhost:8001"
 export OPENAI_API_BASE="https://transmissively-conidial-fredrick.ngrok-free.dev"
 curl -s ${OPENAI_API_BASE}/v1/models | \
 python3 -c "import sys, json; print('\n'.join(m['id'] for m in json.load(sys.stdin)['data']))"
