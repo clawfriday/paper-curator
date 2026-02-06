@@ -231,7 +231,13 @@ def extract_document_embedding_from_paperqa(docs: Docs) -> Optional[list[float]]
 
 
 async def ensure_paper_embedding(arxiv_id: str) -> bool:
-    """Ensure a paper has a document-level embedding."""
+    """Ensure a paper has a document-level embedding.
+    
+    Tries in order:
+    1. Return True if embedding already exists
+    2. Extract from cached PaperQA index
+    3. Generate proxy embedding using text similarity with existing papers
+    """
     paper = db.get_paper_by_arxiv_id(arxiv_id)
     if not paper:
         return False
@@ -239,12 +245,20 @@ async def ensure_paper_embedding(arxiv_id: str) -> bool:
     if paper.get("embedding") is not None:
         return True
 
+    # Try to extract from cached PaperQA index
     docs = load_paperqa_index(arxiv_id)
     if docs:
         doc_embedding = extract_document_embedding_from_paperqa(docs)
         if doc_embedding:
             db.update_paper_embedding(paper["id"], doc_embedding)
             return True
+    
+    # Fallback: generate proxy embedding using text similarity
+    proxy_embedding = generate_proxy_embedding(paper)
+    if proxy_embedding:
+        db.update_paper_embedding(paper["id"], proxy_embedding)
+        print(f"  Generated proxy embedding for {arxiv_id}")
+        return True
 
     return False
 
@@ -409,3 +423,76 @@ async def paperqa_extract_pdf_async(pdf_path: pathlib.Path) -> dict[str, Any]:
 def paperqa_extract_pdf(pdf_path: pathlib.Path) -> dict[str, Any]:
     """Extract text from PDF using PaperQA2's native parser (sync wrapper)."""
     return asyncio.run(paperqa_extract_pdf_async(pdf_path))
+
+
+def generate_proxy_embedding(paper: dict[str, Any]) -> Optional[list[float]]:
+    """Generate a proxy embedding for a paper using text similarity with existing papers.
+    
+    This is a fallback for when the embedding service is unavailable.
+    It computes TF-IDF similarity between the paper's text and existing papers,
+    then creates a weighted average of similar papers' embeddings.
+    """
+    import numpy as np
+    from sklearn.feature_extraction.text import TfidfVectorizer
+    from sklearn.metrics.pairwise import cosine_similarity
+    
+    # Get all papers with embeddings
+    papers_with_embeddings = [p for p in db.get_all_papers() if p.get("embedding") is not None and p["id"] != paper.get("id")]
+    
+    if len(papers_with_embeddings) < 5:
+        return None
+    
+    # Prepare text for TF-IDF (use title + abstract + summary)
+    def get_paper_text(p: dict) -> str:
+        parts = []
+        if p.get("title"):
+            parts.append(p["title"])
+        if p.get("abstract"):
+            parts.append(p["abstract"])
+        if p.get("summary"):
+            parts.append(p["summary"][:500])  # Truncate summary
+        return " ".join(parts)
+    
+    target_text = get_paper_text(paper)
+    if not target_text:
+        return None
+    
+    corpus_texts = [get_paper_text(p) for p in papers_with_embeddings]
+    
+    # Compute TF-IDF
+    vectorizer = TfidfVectorizer(max_features=5000, stop_words='english')
+    try:
+        tfidf_matrix = vectorizer.fit_transform([target_text] + corpus_texts)
+    except ValueError:
+        return None
+    
+    # Compute similarity between target (index 0) and all others
+    similarities = cosine_similarity(tfidf_matrix[0:1], tfidf_matrix[1:]).flatten()
+    
+    # Get top-10 most similar papers
+    top_k = min(10, len(similarities))
+    top_indices = np.argsort(similarities)[-top_k:][::-1]
+    top_similarities = similarities[top_indices]
+    
+    # Normalize similarities to weights
+    weights = top_similarities / (top_similarities.sum() + 1e-8)
+    
+    # Compute weighted average of embeddings
+    embeddings = []
+    for idx in top_indices:
+        emb = papers_with_embeddings[idx].get("embedding")
+        if emb:
+            embeddings.append(np.array(emb, dtype=np.float32))
+    
+    if not embeddings:
+        return None
+    
+    embeddings_array = np.stack(embeddings)
+    proxy_embedding = np.average(embeddings_array, axis=0, weights=weights[:len(embeddings)])
+    
+    # L2 normalize
+    norm = np.linalg.norm(proxy_embedding)
+    if norm > 0:
+        proxy_embedding = proxy_embedding / norm
+    
+    return proxy_embedding.tolist()
