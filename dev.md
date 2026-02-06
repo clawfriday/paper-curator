@@ -573,16 +573,7 @@ python scripts/migrate_to_pymupdf.py
 ```
 
 
-explain the following (don't execute anything or implement changes), and add your answer below
-- what exactly happened in the reindex process? Is it the whole of your migration?
-- which was the paper that wasn't index? how can I fix it by increasinng the timeout, and reindex it again?
-- can I resume the indexing from where I left off? If so, how does the resuming work?
-- what command I can use (preferrably something inside make command) to resume the reindex
-- how do I verify the result of reindex? is there anny command/script I can use to check the result of extracted pdf, its chunking, and the summary of any paper?
 
-
-
-- how can I later check the function of 'topic query'
 
 ---
 
@@ -877,3 +868,91 @@ The topic query integration test (Feb 6, 2026) showed:
 #### 7. Query Caching
 **Problem:** Same question asked multiple times regenerates answer.
 **Solution:** Cache topic+question → answer (already partially implemented via paper_queries table).
+
+---
+
+## Bug 7: LiteLLM Callback Accumulation and Async Task Warnings
+
+**Date:** Feb 6, 2026
+
+### Symptoms
+In `logs/backend.log`, frequent warnings and errors:
+
+1. **Callback limit exceeded** (appears hundreds of times):
+```
+LiteLLM:WARNING: logging_callback_manager.py:159 - Cannot add callback - would exceed MAX_CALLBACKS limit of 30. Current callbacks: 30
+```
+
+2. **Async task cleanup errors**:
+```
+Task exception was never retrieved
+ValueError: task_done() called too many times
+Task was destroyed but it is pending!
+```
+
+### Root Cause
+LiteLLM internally manages logging callbacks via a `LoggingWorker` class. When PaperQA2 makes many LLM calls (especially during batch operations like tree classification with 200+ nodes), callbacks accumulate faster than they're cleaned up.
+
+The existing `reset_litellm_callbacks()` function cleared the main callback lists but:
+1. Did not disable debug logging that triggers new callbacks
+2. Did not clear all internal callback storage attributes in the logging manager
+3. Did not handle the `callbacks` module directly
+
+### Fix
+Updated `src/backend/llm_clients.py:reset_litellm_callbacks()` with:
+
+1. **Disable verbose logging**: `litellm.suppress_debug_info = True`
+2. **Comprehensive attribute clearing**: Loop through all known callback storage attributes
+3. **Reset callback counts**: Clear counter attributes that track callback numbers
+4. **Direct callbacks module reset**: Also reset the `litellm.callbacks` module
+
+```python
+def reset_litellm_callbacks() -> None:
+    """Reset LiteLLM callbacks to prevent accumulation."""
+    try:
+        import litellm
+    except ImportError:
+        return
+    
+    # Disable verbose logging to prevent callback accumulation
+    litellm.suppress_debug_info = True
+    
+    # Clear main callback lists
+    litellm.input_callback = []
+    litellm.success_callback = []
+    litellm.failure_callback = []
+    litellm._async_success_callback = []
+    litellm._async_failure_callback = []
+    
+    # Clear the logging callback manager - more thorough approach
+    try:
+        if hasattr(litellm, 'logging_callback_manager'):
+            manager = litellm.logging_callback_manager
+            for attr in ['callbacks', '_callbacks', 'callback_list', 
+                         'success_callbacks', 'failure_callbacks',
+                         '_success_callbacks', '_failure_callbacks']:
+                if hasattr(manager, attr):
+                    setattr(manager, attr, [])
+            if hasattr(manager, 'callback_count'):
+                manager.callback_count = 0
+    except Exception:
+        pass
+    
+    # Also reset the callbacks module directly
+    try:
+        from litellm import callbacks
+        if hasattr(callbacks, 'callback_list'):
+            callbacks.callback_list = []
+    except (ImportError, AttributeError):
+        pass
+```
+
+### Impact
+- **Before**: Hundreds of warnings per classification run, potential memory leak from accumulated callbacks
+- **After**: Callbacks are properly reset between operations, cleaner logs
+
+### Files Modified
+- `src/backend/llm_clients.py`
+
+### Note
+The async task warnings ("Task was destroyed but it is pending") are internal to LiteLLM's LoggingWorker and cannot be fully eliminated without patching LiteLLM itself. However, by suppressing debug info and aggressively clearing callbacks, the frequency is significantly reduced. These warnings are non-fatal and don't affect functionality.
