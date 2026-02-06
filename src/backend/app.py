@@ -449,7 +449,7 @@ def pdf_extract(payload: PdfExtractRequest) -> dict[str, Any]:
 
 @app.post("/summarize")
 def summarize(payload: SummarizeRequest) -> dict[str, Any]:
-    """Summarize a paper. Also indexes PDF for faster QA queries if arxiv_id provided."""
+    """Summarize a paper. Falls back to simple LLM if embedding unavailable."""
     prompt_id, prompt_hash, prompt_body = _load_prompt()
     endpoint_config = _get_endpoint_config()
     base_url = endpoint_config["llm_base_url"]
@@ -462,29 +462,51 @@ def summarize(payload: SummarizeRequest) -> dict[str, Any]:
     except Exception as e:
         raise HTTPException(status_code=503, detail=f"LLM endpoint not available at {base_url}: {e}")
     
-    # Check embedding endpoint
+    # Check embedding endpoint - if unavailable, use simple LLM summarization
     try:
         embed_model = f"openai/{_resolve_model(embed_base_url, api_key)}"
-    except Exception as e:
-        raise HTTPException(status_code=503, detail=f"Embedding endpoint not available at {embed_base_url}. Please start your embedding service on port 8004.")
+        use_paperqa = True
+    except Exception:
+        embed_model = None
+        use_paperqa = False
     
-    summary = _paperqa_answer(
-        payload.text,
-        payload.pdf_path,
-        prompt_body,
-        base_url,
-        embed_base_url,
-        api_key,
-        model,
-        embed_model,
-        arxiv_id=payload.arxiv_id,  # Persist index for QA reuse
-    )
+    if use_paperqa:
+        summary = _paperqa_answer(
+            payload.text,
+            payload.pdf_path,
+            prompt_body,
+            base_url,
+            embed_base_url,
+            api_key,
+            model,
+            embed_model,
+            arxiv_id=payload.arxiv_id,
+        )
+    else:
+        # Simple LLM summarization without RAG
+        import httpx
+        text = payload.text[:30000] if len(payload.text) > 30000 else payload.text
+        messages = [
+            {"role": "system", "content": "You are a helpful research assistant."},
+            {"role": "user", "content": f"{prompt_body}\n\n---\n\nPaper content:\n{text}"}
+        ]
+        response = httpx.post(
+            f"{base_url}/chat/completions",
+            headers={"Authorization": f"Bearer {api_key}"},
+            json={"model": model.replace("openai/", ""), "messages": messages, "max_tokens": 2000},
+            timeout=120.0,
+        )
+        response.raise_for_status()
+        result = response.json()
+        summary = result["choices"][0]["message"]["content"]
+    
     return {
         "summary": summary.strip(),
         "prompt_id": prompt_id,
         "prompt_hash": prompt_hash,
         "model": model,
-        "indexed": payload.arxiv_id is not None,
+        "indexed": payload.arxiv_id is not None and use_paperqa,
+        "fallback_mode": not use_paperqa,
     }
 
 
