@@ -22,12 +22,26 @@ logger = logging.getLogger(__name__)
 class PyMuPDFPage:
     """Wrapper to make pymupdf page act like pypdf page."""
     
-    def __init__(self, page: fitz.Page):
+    def __init__(self, page: fitz.Page, doc: fitz.Document):
         self._page = page
+        self._doc = doc
     
     def extract_text(self, *args: Any, **kwargs: Any) -> str:
         """Extract text from page using pymupdf."""
         return self._page.get_text()
+    
+    @property
+    def images(self) -> list[Any]:
+        """Return images from page (pypdf compatibility).
+        
+        Returns an empty list since image extraction is not needed
+        for our text-focused use case. This prevents AttributeError
+        when paperqa tries to access page.images.
+        """
+        # For now, return empty list as we focus on text extraction
+        # Full implementation would use:
+        # return [self._doc.extract_image(xref) for xref, *_ in self._page.get_images()]
+        return []
 
 
 class PyMuPDFReader:
@@ -64,7 +78,7 @@ class PyMuPDFReader:
             if password and self._doc.is_encrypted:
                 self._doc.authenticate(password)
             
-            self._pages = [PyMuPDFPage(page) for page in self._doc]
+            self._pages = [PyMuPDFPage(page, self._doc) for page in self._doc]
             
         except Exception as e:
             logger.error(f"Failed to open PDF: {e}")
