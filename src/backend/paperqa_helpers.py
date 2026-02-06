@@ -481,7 +481,7 @@ def generate_proxy_embedding(paper: dict[str, Any]) -> Optional[list[float]]:
     embeddings = []
     for idx in top_indices:
         emb = papers_with_embeddings[idx].get("embedding")
-        if emb:
+        if emb is not None and len(emb) > 0:
             embeddings.append(np.array(emb, dtype=np.float32))
     
     if not embeddings:
