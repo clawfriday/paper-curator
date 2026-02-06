@@ -1191,8 +1191,10 @@ async def batch_ingest(payload: BatchIngestRequest) -> dict[str, Any]:
     
     def log_progress(message: str):
         """Log progress message (for debugging and user feedback)."""
+        import time as _time
+        ts = _time.strftime("%H:%M:%S")
         progress_log.append(message)
-        print(f"[Slack Ingest] {message}")  # Also print to Docker logs
+        print(f"[Slack Ingest {ts}] {message}")  # Also print to Docker logs
     
     # Determine source type
     if payload.slack_channel:
@@ -1320,130 +1322,148 @@ async def batch_ingest(payload: BatchIngestRequest) -> dict[str, Any]:
                     "progress_log": progress_log,
                 }
             
-            # Process each arXiv ID
+            # Phase 1: Batch DB check - filter existing papers in one query
             arxiv_ids_list = sorted(list(all_arxiv_ids))
-            log_progress(f"Starting ingestion of {len(arxiv_ids_list)} papers...")
-            for idx, arxiv_id in enumerate(arxiv_ids_list):
-                log_progress(f"Processing paper {idx+1}/{len(arxiv_ids_list)}: {arxiv_id}")
-                # Rate limiting: process in batches with delay
-                await asyncio.sleep(0.5)  # Small delay between papers
+            if skip_existing:
+                existing_ids = db.get_existing_arxiv_ids(arxiv_ids_list)
+                new_ids = [aid for aid in arxiv_ids_list if aid not in existing_ids]
+                for aid in arxiv_ids_list:
+                    if aid in existing_ids:
+                        results.append({"file": aid, "status": "skipped", "reason": "already exists"})
+                log_progress(f"✓ {len(existing_ids)} already exist, {len(new_ids)} new papers to ingest")
+            else:
+                new_ids = arxiv_ids_list
+                log_progress(f"Skipping disabled, will process all {len(new_ids)} papers")
+            
+            if not new_ids:
+                log_progress("No new papers to ingest")
+            else:
+                # Phase 2: Parallel ingestion
+                max_concurrent = ingestion_config.get("max_concurrent", 5)
+                semaphore = asyncio.Semaphore(max_concurrent)
+                log_progress(f"Starting parallel ingestion of {len(new_ids)} papers (concurrency={max_concurrent})...")
                 
-                # Reset LiteLLM callbacks
-                try:
-                    import litellm
-                    litellm.input_callback = []
-                    litellm.success_callback = []
-                    litellm.failure_callback = []
-                    litellm._async_success_callback = []
-                    litellm._async_failure_callback = []
-                except Exception:
-                    pass
+                # Counters for progress tracking (thread-safe via asyncio single-thread model)
+                completed_count = [0]
                 
-                try:
-                    # Check if already exists
-                    log_progress(f"  [{arxiv_id}] Checking if paper already exists...")
-                    if skip_existing and db.get_paper_by_arxiv_id(arxiv_id):
-                        log_progress(f"  [{arxiv_id}] ⏭ Skipped (already exists)")
-                        results.append({
-                            "file": arxiv_id,
-                            "status": "skipped",
-                            "reason": "already exists",
-                        })
-                        continue
-                    
-                    # Download and ingest arXiv paper (reuse existing single ingest logic)
-                    log_progress(f"  [{arxiv_id}] Fetching metadata from arXiv...")
-                    arxiv_client = arxiv.Client()
-                    search = arxiv.Search(id_list=[arxiv_id])
-                    arxiv_results = list(arxiv_client.results(search))
-                    
-                    if not arxiv_results:
-                        log_progress(f"  [{arxiv_id}] ✗ arXiv paper not found")
-                        results.append({
-                            "file": arxiv_id,
-                            "status": "error",
-                            "reason": f"arXiv paper not found: {arxiv_id}",
-                        })
-                        continue
-                    
-                    arxiv_result = arxiv_results[0]
-                    title = arxiv_result.title
-                    authors = [author.name for author in arxiv_result.authors]
-                    abstract = arxiv_result.summary
-                    pdf_url = arxiv_result.pdf_url
-                    log_progress(f"  [{arxiv_id}] ✓ Found: {title}")
-                    
-                    # Download PDF
-                    log_progress(f"  [{arxiv_id}] Downloading PDF...")
-                    pdf_path = await _download_arxiv_pdf(arxiv_id, pdf_url)
-                    log_progress(f"  [{arxiv_id}] ✓ PDF downloaded")
-                    
-                    # Abbreviate (classification happens via embedding-based clustering, not during ingestion)
-                    log_progress(f"  [{arxiv_id}] Generating abbreviation...")
-                    abbrev_prompt = get_prompt("abbreviate", title=title)
-                    abbrev_resp = await llm_client.chat.completions.create(
-                        model=model,
-                        messages=[{"role": "user", "content": abbrev_prompt}],
-                        max_tokens=20,
-                        temperature=0.1,
-                    )
-                    abbreviation = abbrev_resp.choices[0].message.content.strip().strip('"\'')
-                    log_progress(f"  [{arxiv_id}] ✓ Abbreviation: {abbreviation}")
-                    
-                    # Summarize
-                    log_progress(f"  [{arxiv_id}] Summarizing paper (this may take a while)...")
-                    prompt_id, prompt_hash, prompt_body = _load_prompt()
-                    summary = await _paperqa_answer_async(
-                        None,
-                        pdf_path,
-                        prompt_body,
-                        base_url,
-                        embed_base_url,
-                        api_key,
-                        f"openai/{model}",
-                        f"openai/{embed_model}",
-                        arxiv_id=arxiv_id,
-                    )
-                    log_progress(f"  [{arxiv_id}] ✓ Summary generated")
-                    
-                    # Save to database
-                    log_progress(f"  [{arxiv_id}] Saving to database...")
-                    db_paper_id = db.create_paper(
-                        arxiv_id=arxiv_id,
-                        title=title,
-                        authors=authors,
-                        abstract=abstract[:1000],
-                        summary=summary,
-                        pdf_path=pdf_path,
-                    )
-                    _attach_embedding_from_index(arxiv_id, db_paper_id)
-                    
-                    # Note: Paper is saved but not added to tree yet.
-                    # Tree will be rebuilt using embedding-based clustering when user clicks "Re-classify"
-                    # or automatically if rebuild_on_ingest is enabled.
-                    
-                    log_progress(f"  [{arxiv_id}] ✓ Successfully ingested!")
-                    results.append({
-                        "file": arxiv_id,
-                        "status": "success",
-                        "paper_id": arxiv_id,
-                        "title": title,
-                        "abbreviation": abbreviation,
-                    })
-                    
-                except Exception as e:
-                    import traceback
-                    error_msg = str(e)
-                    log_progress(f"  [{arxiv_id}] ✗ Error: {error_msg}")
-                    # Include traceback for debugging, but truncate if too long
-                    tb = traceback.format_exc()
-                    if len(tb) > 500:
-                        tb = tb[:500] + "... (truncated)"
-                    results.append({
-                        "file": arxiv_id,
-                        "status": "error",
-                        "reason": f"{error_msg}\n{tb}",
-                    })
+                async def ingest_single_paper(arxiv_id: str) -> dict[str, Any]:
+                    """Ingest a single arXiv paper. Runs within semaphore."""
+                    import time as _time
+                    t_wait_start = _time.monotonic()
+                    async with semaphore:
+                        t_start = _time.monotonic()
+                        wait_s = t_start - t_wait_start
+                        # Reset LiteLLM callbacks per task
+                        try:
+                            import litellm
+                            litellm.input_callback = []
+                            litellm.success_callback = []
+                            litellm.failure_callback = []
+                            litellm._async_success_callback = []
+                            litellm._async_failure_callback = []
+                        except Exception:
+                            pass
+                        
+                        try:
+                            # 1. Fetch arXiv metadata
+                            log_progress(f"  [{arxiv_id}] Fetching metadata from arXiv...")
+                            arxiv_client = arxiv.Client()
+                            search = arxiv.Search(id_list=[arxiv_id])
+                            arxiv_results_list = await asyncio.to_thread(
+                                lambda: list(arxiv_client.results(search))
+                            )
+                            
+                            if not arxiv_results_list:
+                                log_progress(f"  [{arxiv_id}] ✗ arXiv paper not found")
+                                return {"file": arxiv_id, "status": "error", "reason": f"arXiv paper not found: {arxiv_id}"}
+                            
+                            arxiv_result = arxiv_results_list[0]
+                            title = arxiv_result.title
+                            authors = [author.name for author in arxiv_result.authors]
+                            abstract = arxiv_result.summary
+                            pdf_url = arxiv_result.pdf_url
+                            t_arxiv = _time.monotonic() - t_start
+                            log_progress(f"  [{arxiv_id}] ✓ Found: {title} (arxiv={t_arxiv:.1f}s, wait={wait_s:.1f}s)")
+                            
+                            # 2. Download PDF
+                            log_progress(f"  [{arxiv_id}] Downloading PDF...")
+                            pdf_path = await _download_arxiv_pdf(arxiv_id, pdf_url)
+                            t_pdf = _time.monotonic() - t_start
+                            log_progress(f"  [{arxiv_id}] ✓ PDF downloaded ({t_pdf:.1f}s)")
+                            
+                            # 3. Abbreviate
+                            log_progress(f"  [{arxiv_id}] Generating abbreviation...")
+                            abbrev_prompt = get_prompt("abbreviate", title=title)
+                            abbrev_resp = await llm_client.chat.completions.create(
+                                model=model,
+                                messages=[{"role": "user", "content": abbrev_prompt}],
+                                max_tokens=20,
+                                temperature=0.1,
+                            )
+                            abbreviation = abbrev_resp.choices[0].message.content.strip().strip('"\'')
+                            log_progress(f"  [{arxiv_id}] ✓ Abbreviation: {abbreviation}")
+                            
+                            # 4. Summarize (PaperQA RAG: chunk, embed, retrieve, LLM)
+                            log_progress(f"  [{arxiv_id}] Summarizing paper...")
+                            prompt_id, prompt_hash, prompt_body = _load_prompt()
+                            summary = await _paperqa_answer_async(
+                                None,
+                                pdf_path,
+                                prompt_body,
+                                base_url,
+                                embed_base_url,
+                                api_key,
+                                f"openai/{model}",
+                                f"openai/{embed_model}",
+                                arxiv_id=arxiv_id,
+                            )
+                            t_summary = _time.monotonic() - t_start
+                            log_progress(f"  [{arxiv_id}] ✓ Summary generated ({t_summary:.1f}s)")
+                            
+                            # 5. Save to database
+                            log_progress(f"  [{arxiv_id}] Saving to database...")
+                            db_paper_id = db.create_paper(
+                                arxiv_id=arxiv_id,
+                                title=title,
+                                authors=authors,
+                                abstract=abstract[:1000],
+                                summary=summary,
+                                pdf_path=pdf_path,
+                            )
+                            _attach_embedding_from_index(arxiv_id, db_paper_id)
+                            
+                            t_total = _time.monotonic() - t_start
+                            completed_count[0] += 1
+                            log_progress(f"  [{arxiv_id}] ✓ Ingested ({completed_count[0]}/{len(new_ids)}) total={t_total:.1f}s")
+                            return {
+                                "file": arxiv_id,
+                                "status": "success",
+                                "paper_id": arxiv_id,
+                                "title": title,
+                                "abbreviation": abbreviation,
+                            }
+                        except Exception as e:
+                            import traceback
+                            error_msg = str(e)
+                            log_progress(f"  [{arxiv_id}] ✗ Error: {error_msg}")
+                            tb = traceback.format_exc()
+                            if len(tb) > 500:
+                                tb = tb[:500] + "... (truncated)"
+                            completed_count[0] += 1
+                            return {"file": arxiv_id, "status": "error", "reason": f"{error_msg}\n{tb}"}
+                
+                # Run all tasks in parallel (bounded by semaphore)
+                parallel_results = await asyncio.gather(
+                    *[ingest_single_paper(aid) for aid in new_ids],
+                    return_exceptions=False,
+                )
+                results.extend(parallel_results)
+                
+                # Phase 3: Queue successfully ingested IDs for background Semantic Scholar metadata fetch
+                successful_ids = [r["file"] for r in parallel_results if r.get("status") == "success"]
+                if successful_ids:
+                    _append_pending_metadata(successful_ids)
+                    log_progress(f"✓ Added {len(successful_ids)} papers to pending metadata queue")
         except HTTPException as e:
             # Include progress_log in HTTPException response
             import json
@@ -1498,126 +1518,108 @@ async def batch_ingest(payload: BatchIngestRequest) -> dict[str, Any]:
         if not pdf_files:
             raise HTTPException(status_code=400, detail=f"No PDF files found in: {payload.directory}")
         
+        # Batch check for existing papers
+        paper_ids_map = {}  # paper_id -> pdf_file
         for pdf_file in pdf_files:
-            # Reset LiteLLM callbacks to prevent MAX_CALLBACKS limit (30) accumulation
-            try:
-                import litellm
-                litellm.input_callback = []
-                litellm.success_callback = []
-                litellm.failure_callback = []
-                litellm._async_success_callback = []
-                litellm._async_failure_callback = []
-            except Exception:
-                pass  # Ignore if litellm not available or attributes don't exist
+            filename = pdf_file.stem
+            paper_id = f"local_{hashlib.md5(filename.encode()).hexdigest()[:12]}"
+            paper_ids_map[paper_id] = pdf_file
+        
+        if skip_existing:
+            existing_ids = db.get_existing_arxiv_ids(list(paper_ids_map.keys()))
+            for pid, pf in paper_ids_map.items():
+                if pid in existing_ids:
+                    results.append({"file": pf.name, "status": "skipped", "reason": "already exists"})
+            new_files = {pid: pf for pid, pf in paper_ids_map.items() if pid not in existing_ids}
+        else:
+            new_files = paper_ids_map
+        
+        if new_files:
+            max_concurrent = ingestion_config.get("max_concurrent", 5)
+            semaphore = asyncio.Semaphore(max_concurrent)
             
-            try:
-                # Generate a unique ID based on filename
-                filename = pdf_file.stem  # filename without extension
-                paper_id = f"local_{hashlib.md5(filename.encode()).hexdigest()[:12]}"
-                
-                # Check if already exists
-                if skip_existing and db.get_paper_by_arxiv_id(paper_id):
-                    results.append({
-                        "file": pdf_file.name,
-                        "status": "skipped",
-                        "reason": "already exists",
-                    })
-                    continue
-                
-                # Copy PDF to storage
-                storage_dir = pathlib.Path("storage/downloads")
-                storage_dir.mkdir(parents=True, exist_ok=True)
-                dest_path = storage_dir / f"{paper_id}.pdf"
-                shutil.copy2(pdf_file, dest_path)
-                pdf_path = str(dest_path)
-                
-                # Extract text from PDF using the async version
-                try:
-                    extract_result = await _paperqa_extract_pdf_async(pdf_file)
-                    first_chunk = extract_result.get("text", "")[:2000]
-                except Exception as ex:
-                    results.append({
-                        "file": pdf_file.name,
-                        "status": "error",
-                        "reason": f"Could not extract text from PDF: {ex}",
-                    })
-                    continue
-                
-                if not first_chunk:
-                    results.append({
-                        "file": pdf_file.name,
-                        "status": "error",
-                        "reason": "PDF extraction returned empty text",
-                    })
-                    continue
-                
-                # Use filename as title (clean it up)
-                title = filename.replace("_", " ").replace("-", " ").strip()
-                
-                # Get existing categories for classification
-                tree = db.get_tree()
-                existing_categories = []
-                def collect_categories(node: dict[str, Any]):
-                    if node.get("node_type") == "category":
-                        existing_categories.append(node["name"])
-                    if node.get("children"):
-                        for child in node["children"]:
-                            collect_categories(child)
-                collect_categories(tree)
-                
-                # Abbreviate (classification happens via embedding-based clustering, not during ingestion)
-                abbrev_prompt = get_prompt("abbreviate", title=title)
-                abbrev_resp = await llm_client.chat.completions.create(
-                    model=model,
-                    messages=[{"role": "user", "content": abbrev_prompt}],
-                    max_tokens=20,
-                    temperature=0.1,
-                )
-                abbreviation = abbrev_resp.choices[0].message.content.strip().strip('"\'')
-                
-                # Summarize (this also indexes the PDF) - use async version
-                prompt_id, prompt_hash, prompt_body = _load_prompt()
-                summary = await _paperqa_answer_async(
-                    None,
-                    pdf_path,
-                    prompt_body,
-                    base_url,
-                    embed_base_url,
-                    api_key,
-                    f"openai/{model}",
-                    f"openai/{embed_model}",
-                    arxiv_id=paper_id,
-                )
-                
-                # Save to database
-                db_paper_id = db.create_paper(
-                    arxiv_id=paper_id,
-                    title=title,
-                    authors=[],  # No author info from local PDFs
-                    abstract=first_chunk[:1000],
-                    summary=summary,
-                    pdf_path=pdf_path,
-                )
-                _attach_embedding_from_index(paper_id, db_paper_id)
-                
-                # Note: Paper is saved but not added to tree yet.
-                # Tree will be rebuilt using embedding-based clustering when user clicks "Re-classify"
-                # or automatically if rebuild_on_ingest is enabled.
-                
-                results.append({
-                    "file": pdf_file.name,
-                    "status": "success",
-                    "paper_id": paper_id,
-                    "title": title,
-                    "abbreviation": abbreviation,
-                })
-                
-            except Exception as e:
-                results.append({
-                    "file": pdf_file.name,
-                    "status": "error",
-                    "reason": str(e),
-                })
+            async def ingest_local_pdf(paper_id: str, pdf_file: pathlib.Path) -> dict[str, Any]:
+                async with semaphore:
+                    try:
+                        import litellm
+                        litellm.input_callback = []
+                        litellm.success_callback = []
+                        litellm.failure_callback = []
+                        litellm._async_success_callback = []
+                        litellm._async_failure_callback = []
+                    except Exception:
+                        pass
+                    
+                    try:
+                        # Copy PDF to storage
+                        storage_dir = pathlib.Path("storage/downloads")
+                        storage_dir.mkdir(parents=True, exist_ok=True)
+                        dest_path = storage_dir / f"{paper_id}.pdf"
+                        shutil.copy2(pdf_file, dest_path)
+                        pdf_path = str(dest_path)
+                        
+                        # Extract text
+                        try:
+                            extract_result = await _paperqa_extract_pdf_async(pdf_file)
+                            first_chunk = extract_result.get("text", "")[:2000]
+                        except Exception as ex:
+                            return {"file": pdf_file.name, "status": "error", "reason": f"PDF extract failed: {ex}"}
+                        
+                        if not first_chunk:
+                            return {"file": pdf_file.name, "status": "error", "reason": "PDF extraction returned empty text"}
+                        
+                        title = pdf_file.stem.replace("_", " ").replace("-", " ").strip()
+                        
+                        # Abbreviate
+                        abbrev_prompt = get_prompt("abbreviate", title=title)
+                        abbrev_resp = await llm_client.chat.completions.create(
+                            model=model,
+                            messages=[{"role": "user", "content": abbrev_prompt}],
+                            max_tokens=20,
+                            temperature=0.1,
+                        )
+                        abbreviation = abbrev_resp.choices[0].message.content.strip().strip('"\'')
+                        
+                        # Summarize
+                        prompt_id, prompt_hash, prompt_body = _load_prompt()
+                        summary = await _paperqa_answer_async(
+                            None,
+                            pdf_path,
+                            prompt_body,
+                            base_url,
+                            embed_base_url,
+                            api_key,
+                            f"openai/{model}",
+                            f"openai/{embed_model}",
+                            arxiv_id=paper_id,
+                        )
+                        
+                        # Save to database
+                        db_paper_id = db.create_paper(
+                            arxiv_id=paper_id,
+                            title=title,
+                            authors=[],
+                            abstract=first_chunk[:1000],
+                            summary=summary,
+                            pdf_path=pdf_path,
+                        )
+                        _attach_embedding_from_index(paper_id, db_paper_id)
+                        
+                        return {
+                            "file": pdf_file.name,
+                            "status": "success",
+                            "paper_id": paper_id,
+                            "title": title,
+                            "abbreviation": abbreviation,
+                        }
+                    except Exception as e:
+                        return {"file": pdf_file.name, "status": "error", "reason": str(e)}
+            
+            dir_results = await asyncio.gather(
+                *[ingest_local_pdf(pid, pf) for pid, pf in new_files.items()],
+                return_exceptions=False,
+            )
+            results.extend(dir_results)
     else:
         # Neither slack_channel nor directory provided
         raise HTTPException(status_code=400, detail="Either 'directory' or 'slack_channel' must be provided")
@@ -1630,7 +1632,7 @@ async def batch_ingest(payload: BatchIngestRequest) -> dict[str, Any]:
     # Determine total count based on source
     if payload.slack_channel:
         # For Slack, total is the number of unique arXiv IDs found
-        total = len(set(r.get("file", "") for r in results if r["status"] != "skipped"))
+        total = len(results)  # All unique arXiv IDs (success + skipped + errors)
     elif payload.directory:
         total = len(pdf_files)
     else:
@@ -1649,6 +1651,12 @@ async def batch_ingest(payload: BatchIngestRequest) -> dict[str, Any]:
         asyncio.create_task(_rebuild_tree_async())
         rebuild_triggered = True
         log_progress("Tree rebuild triggered (running in background)")
+    
+    # Trigger background Semantic Scholar metadata fetch
+    if success_count > 0:
+        asyncio.create_task(_run_background_metadata_fetch())
+        if payload.slack_channel:
+            log_progress("Background Semantic Scholar metadata fetch started")
     
     return {
         "total": total,
@@ -2704,6 +2712,162 @@ Please synthesize these responses into a coherent, comprehensive answer.
         result["paper_responses"] = paper_responses
     
     return result
+
+
+# =============================================================================
+# Background Semantic Scholar Metadata Fetch
+# =============================================================================
+
+PENDING_METADATA_PATH = pathlib.Path("storage/pending_metadata.json")
+
+
+def _append_pending_metadata(arxiv_ids: list[str]) -> None:
+    """Append arXiv IDs to pending_metadata.json for background Semantic Scholar fetch.
+    Uses file locking for concurrency safety.
+    """
+    import fcntl
+    import json
+    
+    PENDING_METADATA_PATH.parent.mkdir(parents=True, exist_ok=True)
+    
+    # Use a lock file alongside the json file
+    lock_path = PENDING_METADATA_PATH.with_suffix(".lock")
+    with open(lock_path, "w") as lock_file:
+        fcntl.flock(lock_file, fcntl.LOCK_EX)
+        try:
+            if PENDING_METADATA_PATH.exists():
+                existing = json.loads(PENDING_METADATA_PATH.read_text())
+            else:
+                existing = []
+            # Add new IDs, avoiding duplicates
+            existing_set = set(existing)
+            for aid in arxiv_ids:
+                if aid not in existing_set:
+                    existing.append(aid)
+                    existing_set.add(aid)
+            PENDING_METADATA_PATH.write_text(json.dumps(existing, indent=2))
+        finally:
+            fcntl.flock(lock_file, fcntl.LOCK_UN)
+
+
+def _pop_pending_metadata() -> list[str]:
+    """Atomically read and clear pending_metadata.json. Returns list of arXiv IDs."""
+    import fcntl
+    import json
+    
+    if not PENDING_METADATA_PATH.exists():
+        return []
+    
+    lock_path = PENDING_METADATA_PATH.with_suffix(".lock")
+    with open(lock_path, "w") as lock_file:
+        fcntl.flock(lock_file, fcntl.LOCK_EX)
+        try:
+            if PENDING_METADATA_PATH.exists():
+                ids = json.loads(PENDING_METADATA_PATH.read_text())
+                PENDING_METADATA_PATH.write_text("[]")
+                return ids
+            return []
+        finally:
+            fcntl.flock(lock_file, fcntl.LOCK_UN)
+
+
+async def _fetch_metadata_for_paper(arxiv_id: str) -> dict[str, str]:
+    """Fetch and cache Semantic Scholar references + similar papers for a single paper.
+    Returns a status dict.
+    """
+    paper = db.get_paper_by_arxiv_id(arxiv_id)
+    if not paper:
+        return {"arxiv_id": arxiv_id, "status": "skipped", "reason": "not in DB"}
+    
+    apis_config = _get_external_apis_config()
+    api_key = apis_config.get("semantic_scholar_api_key")
+    status_parts = []
+    
+    # References
+    if not db.get_references(paper["id"]):
+        try:
+            refs = await _get_semantic_scholar_references(arxiv_id, api_key)
+            if refs:
+                for ref in refs:
+                    db.add_reference(
+                        source_paper_id=paper["id"],
+                        cited_title=ref["cited_title"],
+                        cited_arxiv_id=ref.get("cited_arxiv_id"),
+                        cited_authors=ref.get("cited_authors"),
+                        cited_year=ref.get("cited_year"),
+                    )
+                status_parts.append(f"refs={len(refs)}")
+            else:
+                status_parts.append("refs=0")
+        except Exception as e:
+            status_parts.append(f"refs_err={e}")
+    else:
+        status_parts.append("refs=cached")
+    
+    # Similar papers
+    if not db.get_cached_similar_papers(paper["id"]):
+        try:
+            similar = await _get_semantic_scholar_recommendations(arxiv_id, 10, api_key)
+            if similar:
+                for s in similar:
+                    db.cache_similar_paper(
+                        paper_id=paper["id"],
+                        similar_arxiv_id=s.get("arxiv_id"),
+                        similar_title=s["title"],
+                        similarity_score=None,
+                    )
+                status_parts.append(f"similar={len(similar)}")
+            else:
+                status_parts.append("similar=0")
+        except Exception as e:
+            status_parts.append(f"similar_err={e}")
+    else:
+        status_parts.append("similar=cached")
+    
+    return {"arxiv_id": arxiv_id, "status": "ok", "detail": ", ".join(status_parts)}
+
+
+async def _run_background_metadata_fetch() -> None:
+    """Background task: fetch Semantic Scholar metadata for all pending papers.
+    Logs to logs/backend_auxiliary.log. Respects rate limits with 1s delay between papers.
+    """
+    import logging
+    
+    # Set up auxiliary logger
+    aux_logger = logging.getLogger("background_metadata")
+    aux_logger.setLevel(logging.INFO)
+    if not aux_logger.handlers:
+        log_dir = pathlib.Path("logs")
+        if not log_dir.exists():
+            log_dir = pathlib.Path("storage")  # fallback inside container
+        log_dir.mkdir(parents=True, exist_ok=True)
+        handler = logging.FileHandler(str(log_dir / "backend_auxiliary.log"))
+        handler.setFormatter(logging.Formatter("%(asctime)s [%(levelname)s] %(message)s"))
+        aux_logger.addHandler(handler)
+    
+    pending = _pop_pending_metadata()
+    if not pending:
+        return
+    
+    apis_config = _get_external_apis_config()
+    if not apis_config.get("semantic_scholar_enabled", True):
+        aux_logger.info(f"Semantic Scholar disabled, skipping {len(pending)} pending papers")
+        return
+    
+    aux_logger.info(f"Starting background metadata fetch for {len(pending)} papers")
+    
+    for i, arxiv_id in enumerate(pending):
+        try:
+            result = await _fetch_metadata_for_paper(arxiv_id)
+            aux_logger.info(f"  [{i+1}/{len(pending)}] {arxiv_id}: {result.get('detail', result.get('status'))}")
+        except Exception as e:
+            aux_logger.error(f"  [{i+1}/{len(pending)}] {arxiv_id}: error - {e}")
+        
+        # Rate limit: 1 request per second to avoid Semantic Scholar rate limits
+        # (each paper makes 2 API calls: references + recommendations)
+        await asyncio.sleep(1.0)
+    
+    aux_logger.info(f"Background metadata fetch complete for {len(pending)} papers")
 
 
 # =============================================================================

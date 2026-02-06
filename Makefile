@@ -70,6 +70,13 @@ singularity-build:
 	singularity build --force --fakeroot $(SIF_FRONTEND) $(CONTAINER_DIR)/frontend.def
 	@echo "All Singularity containers built successfully"
 
+# Build only the backend Singularity container
+singularity-build-backend:
+	@echo "Building backend container..."
+	@mkdir -p $(CONTAINER_DIR)
+	singularity build --force --fakeroot $(SIF_BACKEND) $(CONTAINER_DIR)/backend.def
+	@echo "Backend container built successfully"
+
 # Start all services using Singularity (reads ports from config/config.yaml)
 singularity-run:
 	@echo "Starting Paper Curator services with Singularity..."

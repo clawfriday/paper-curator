@@ -94,6 +94,19 @@ def get_paper_by_arxiv_id(arxiv_id: str) -> Optional[dict[str, Any]]:
             return dict(row) if row else None
 
 
+def get_existing_arxiv_ids(arxiv_ids: list[str]) -> set[str]:
+    """Check which arXiv IDs already exist in the database. Returns set of existing IDs."""
+    if not arxiv_ids:
+        return set()
+    with get_db() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT arxiv_id FROM papers WHERE arxiv_id = ANY(%s)",
+                (arxiv_ids,)
+            )
+            return {row[0] for row in cur.fetchall()}
+
+
 def get_paper_by_id(paper_id: int) -> Optional[dict[str, Any]]:
     """Get paper by ID."""
     with get_db() as conn:

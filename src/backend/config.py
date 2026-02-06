@@ -199,8 +199,11 @@ def _get_ingestion_config() -> dict[str, Any]:
     
     skip_existing_default = bool(ingestion.get("skip_existing", True))
     
+    max_concurrent_default = int(ingestion.get("max_concurrent", 5))
+    
     return {
         "skip_existing": _get_db_setting("skip_existing", skip_existing_default, "boolean"),
+        "max_concurrent": max(1, _get_db_setting("max_concurrent", max_concurrent_default, "integer")),
     }
 
 

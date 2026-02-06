@@ -1044,3 +1044,235 @@ make singularity-run
 
 ### Note on Unclosed aiohttp Sessions
 The logs also showed "Unclosed client session" warnings. These are from aiohttp HTTP connections created by LiteLLM that aren't properly closed. The patch reduces these by reducing LiteLLM activity, but they may still appear. They are warnings, not errors, and don't affect functionality.
+
+There are too many code that are hardbaked into the container, which makes it tedious for development
+Please mount the whole repo directory onto the container, so the container will have access to the latest codes and data
+
+
+---
+
+## [PLANNED] Batch Ingestion Parallelization
+
+### Problem
+Batch ingestion from Slack processes papers sequentially (~51 sec per paper). For 17 new papers, total time was ~16 minutes. Additionally, there's a 0.5s delay between even skipped papers (wasting ~97 sec for 194 skipped papers).
+
+### Root Cause Analysis
+- The real bottleneck is **sequential paper processing**, where each paper's full pipeline takes ~51 seconds
+- The LLM/embedding endpoints handle async requests well
+- Semantic Scholar metadata (references, similar papers) is useful but not needed during ingestion
+
+### What Happens During Each Paper's Ingestion (the "Summarize" step)
+The `_paperqa_answer_async()` call during summarization actually does **much more** than just summarization:
+
+| Sub-step | What happens | Time |
+|----------|-------------|------|
+| `docs.aadd()` - parse | Parse PDF into text chunks (5000 chars, 250 overlap) | ~1s |
+| `docs.aadd()` - embed | Embed each chunk via embedding API (5-20 chunks) | ~5-10s |
+| `docs.aadd()` - index | Build in-memory vector index over chunks | ~0.1s |
+| `docs.aquery()` - retrieve | Retrieve top-k relevant chunks | ~0.1s |
+| `docs.aquery()` - summarize | LLM summarizes each retrieved chunk (RCS) | ~10-20s |
+| `docs.aquery()` - answer | LLM generates final answer from summaries | ~5-10s |
+| `pickle.dump(docs)` | Persist full PaperQA index to disk | ~0.1s |
+| `extract_document_embedding()` | Average chunk embeddings into doc embedding | ~0.01s |
+| `db.update_paper_embedding()` | Save doc embedding to PostgreSQL (pgvector) | ~0.01s |
+
+### Implementation Plan
+
+**Config change:**
+```yaml
+ingestion:
+  skip_existing: true
+  max_concurrent: 5  # Papers processed in parallel during batch ingest (1-10)
+```
+
+**Architecture:**
+```
+Phase 1: Collection (Sequential - Slack API requires cursor-based pagination)
+  - Fetch Slack messages (paginated)
+  - Extract arXiv IDs (in-memory, fast)
+  - Batch DB lookup: filter out existing papers in one query (remove 0.5s per-skip delay)
+  -> Output: list of new arxiv_ids to ingest
+
+Phase 2: Parallel Ingestion (asyncio.Semaphore(max_concurrent))
+  Each concurrent task does the full pipeline:
+  1. arXiv API call (title, authors, abstract, pdf_url)   (~0.5s)
+  2. Download PDF                                          (~2-5s)
+  3. Abbreviate (LLM)                                      (~1-2s)
+  4. Summarize (PaperQA RAG: chunk, embed, retrieve, LLM)  (~30-50s)
+  5. Save to database (title, authors, abstract, summary, embedding)
+  6. Append arxiv_id to pending_metadata list (file lock)
+  -> Output: ingestion results + pending_metadata list on disk
+
+Phase 3: Tree Rebuild (existing, unchanged)
+
+Phase 4: Background Semantic Scholar Metadata (Serial, auto-triggered after Phase 3)
+  Runs as a fire-and-forget asyncio.create_task() so the endpoint returns immediately.
+  - Read pending_metadata list from storage/pending_metadata.json
+  - For each paper (serial, respecting Semantic Scholar rate limits):
+    - Fetch references via Semantic Scholar API
+    - Fetch similar papers via Semantic Scholar Recommendations API
+    - Cache both into database (paper_references, similar_papers_cache tables)
+    - Remove paper from pending list (batch removal with file lock)
+  - Logs to logs/backend_auxiliary.log
+  - If rate-limited (HTTP 429), backs off and retries
+  -> Output: pre-cached references + similar papers in DB
+```
+
+**Pending metadata file (`storage/pending_metadata.json`):**
+```json
+["2601.22950", "2601.22975", "2602.02366", ...]
+```
+- Written in batches of `max_concurrent` after each batch completes
+- Protected by `fcntl.flock()` to prevent simultaneous writes
+- Background process removes entries in batches after successful API calls
+
+**File changes required:**
+1. `src/backend/app.py` — Refactor `batch_ingest()`:
+   - Phase 1: batch DB check instead of per-paper check
+   - Phase 2: `asyncio.gather()` with `Semaphore(max_concurrent)` for parallel ingestion
+   - Remove 0.5s `asyncio.sleep()` delay
+   - Phase 4: `asyncio.create_task()` to trigger background metadata fetch
+2. `src/backend/app.py` — New function `_background_fetch_semantic_scholar()`:
+   - Reads pending_metadata.json
+   - Serial loop with rate-limit awareness
+   - Reuses existing `_get_semantic_scholar_references()` and `_get_semantic_scholar_recommendations()`
+   - Logs to `logs/backend_auxiliary.log`
+3. `src/backend/config.py` — Add `max_concurrent` to ingestion config
+4. `config/config.yaml` — Add `max_concurrent: 5` under `ingestion:`
+
+**Expected improvement:**
+
+| Scenario | Current (Sequential) | Parallel (N=5) | Speedup |
+|----------|---------------------|----------------|---------|
+| 17 new papers | ~16 min | ~3-4 min | ~4-5x |
+| 50 new papers | ~45 min | ~10 min | ~4-5x |
+| 100 new papers | ~90 min | ~18-20 min | ~4-5x |
+
+---
+
+## [PLANNED] Remove PaperQA Dependency (Replace with Custom RAG)
+
+### Motivation
+PaperQA is currently used as a monolithic dependency that handles chunking, embedding, retrieval, and LLM summarization. However:
+1. It brings in **LiteLLM** as a transitive dependency, which causes callback accumulation bugs requiring a custom patch (`litellm_patch.py`)
+2. The **pickle-based index persistence** is fragile (not human-readable, breaks across Python/library versions)
+3. We already have **pgvector** in PostgreSQL for embeddings, duplicating PaperQA's in-memory vector store
+4. Our `topic_query()` already wraps PaperQA and could use a simpler direct implementation
+
+### Current PaperQA Usage (6 touchpoints)
+
+| Function | PaperQA API | Used By |
+|----------|-------------|---------|
+| `paperqa_extract_pdf` | `read_doc()`, `ParsingSettings` | `/pdf/extract` |
+| `paperqa_answer_async` | `Docs.aadd()`, `Docs.aquery()` | `/summarize`, `/qa`, `/qa-stream`, `/decomposed-qa`, `/decomposed-qa-parallel`, `topic_query`, `batch-ingest` |
+| `index_pdf_for_paperqa` | `Docs.aadd()` | `/index` endpoint |
+| `load_paperqa_index` | `pickle.load(Docs)` | `/qa`, `/qa-stream`, `topic_query` |
+| `extract_document_embedding_from_paperqa` | reads `docs.texts[].embedding` | After indexing |
+| `build_paperqa_settings` | `Settings`, `ParsingSettings`, etc. | All above |
+
+### What PaperQA's Index Contains (Concrete Example)
+
+A PaperQA **index** for one paper (e.g., `2601_22950.pkl`, 408 KB) is a serialized Python object containing:
+- **Text chunks**: ~10 chunks of ~5000 chars each (the parsed PDF, split with 250-char overlap)
+- **Chunk embeddings**: one 4096-dim float vector per chunk (from the embedding API)
+- **Document metadata**: docname, citation info
+- **Vector index**: in-memory structure for cosine similarity search over chunk embeddings
+
+This is different from the **document-level embedding** stored in PostgreSQL (a single 4096-dim vector = the mean of all chunk embeddings).
+
+**Why pickle instead of JSON?**
+PaperQA's `Docs` object contains numpy arrays (embeddings) and complex nested Python objects (pydantic models, custom classes) that JSON can't serialize natively. Pickle preserves Python object types exactly, including numpy dtypes. However, pickle is fragile: it breaks if the PaperQA library version changes the class structure, it's not human-readable, and it's a known security risk for untrusted data.
+
+### What pgvector Is (Concrete Example)
+
+pgvector is a PostgreSQL extension that adds a `vector` column type and efficient similarity search operators. In our database:
+
+```sql
+-- Our papers table stores doc-level embeddings:
+UPDATE papers SET embedding = '[0.0123, -0.0456, 0.0789, ...]'::vector WHERE id = 42;
+
+-- Cosine similarity search (the <=> operator):
+SELECT title, 1 - (embedding <=> query_vector::vector) AS similarity
+FROM papers
+WHERE embedding IS NOT NULL
+ORDER BY embedding <=> query_vector::vector
+LIMIT 5;
+```
+
+We already use pgvector for:
+- `find_similar_papers()` — cosine similarity between doc embeddings
+- `search_papers_by_embedding()` — topic query paper selection
+- Tree clustering — fetches all embeddings for k-means
+
+### Replacement Plan
+
+| PaperQA Capability | Replacement | Complexity |
+|--------------------|-------------|------------|
+| PDF to text chunks | Custom chunker (split text by char count with overlap) | Simple |
+| Chunk embedding | Direct OpenAI embedding API call (`AsyncOpenAI.embeddings.create`) | Simple |
+| In-memory vector index | Store chunks + embeddings in new `paper_chunks` pgvector table | Medium |
+| Chunk retrieval (top-k) | pgvector cosine similarity query on `paper_chunks` table | Simple |
+| Evidence summarization (RCS) | Direct LLM call per retrieved chunk | Medium |
+| Final answer generation | Direct LLM call (already done in topic_query aggregation) | Simple |
+| Index persistence (pickle) | PostgreSQL rows (human-readable, version-safe) | Medium |
+| `read_doc()` for PDF parsing | Already replaced by pymupdf monkey-patch | Done |
+
+### New Database Schema
+
+```sql
+CREATE TABLE paper_chunks (
+    id SERIAL PRIMARY KEY,
+    paper_id INTEGER REFERENCES papers(id) ON DELETE CASCADE,
+    chunk_index INTEGER NOT NULL,       -- ordering within the paper
+    text TEXT NOT NULL,                  -- the chunk text
+    embedding vector(4096),             -- chunk-level embedding
+    char_start INTEGER,                 -- position in original text
+    char_end INTEGER,
+    created_at TIMESTAMP DEFAULT NOW(),
+    UNIQUE(paper_id, chunk_index)
+);
+
+-- Enable fast similarity search
+CREATE INDEX ON paper_chunks USING ivfflat (embedding vector_cosine_ops);
+```
+
+### Storage Consolidation
+Currently, persistent data is split across two locations:
+```
+paper-curator/
+├── pgdata/              <- 135 MB (PostgreSQL data, at project root)
+├── storage/
+│   ├── downloads/       <- PDFs
+│   ├── paperqa_index/   <- 11 MB (312 pickle files, to be removed)
+│   └── schemas/         <- debug JSON
+```
+
+After migration, consolidate into:
+```
+paper-curator/
+├── storage/
+│   ├── pgdata/          <- all persistent data (PostgreSQL, moved here)
+│   ├── downloads/       <- PDFs
+│   └── schemas/         <- debug JSON
+```
+
+This requires updating `hpc-services.sh` line 43 (`PGDATA="${PROJECT_ROOT}/pgdata"` -> `PGDATA="${PROJECT_ROOT}/storage/pgdata"`).
+
+### Benefits
+- **Remove LiteLLM** entirely (and `litellm_patch.py`, `pdf_patch.py`)
+- **Remove pickle files** — all data in PostgreSQL (human-readable, migratable)
+- **Single source of truth** — chunks and embeddings in DB, not scattered across pickle files
+- **Simpler debugging** — can query chunks directly with SQL
+- **Version-safe** — no more pickle deserialization errors across library upgrades
+- **Faster startup** — no PaperQA + LiteLLM import overhead
+
+### Migration Path
+1. Create `paper_chunks` table
+2. Implement custom chunker + embedder (reuse existing embedding API client)
+3. Implement custom RAG query (retrieve chunks, summarize evidence, generate answer)
+4. Migrate existing pickle indexes to `paper_chunks` table
+5. Update all 6 PaperQA touchpoints to use new implementation
+6. Remove `paperqa`, `litellm`, `litellm_patch.py`, `pdf_patch.py` from dependencies
+7. Move `pgdata/` to `storage/pgdata/`, update `hpc-services.sh`
+8. Delete `storage/paperqa_index/` directory
+9. Test all endpoints: `/summarize`, `/qa`, `/qa-stream`, `/decomposed-qa`, `topic_query`, `batch-ingest`
