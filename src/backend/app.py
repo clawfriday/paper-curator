@@ -503,21 +503,33 @@ def summarize(payload: SummarizeRequest) -> dict[str, Any]:
         if not text:
             raise HTTPException(status_code=400, detail="No text provided and could not extract from PDF")
         
-        # Truncate to fit in context
-        text = text[:30000] if len(text) > 30000 else text
+        # Truncate to fit in context (8k chars ~ 2k tokens, safe for most models)
+        # Also clean up text to avoid JSON encoding issues
+        import re
+        text = re.sub(r'[\x00-\x08\x0b\x0c\x0e-\x1f]', '', text)  # Remove control chars
+        text = text[:8000] if len(text) > 8000 else text
+        
         messages = [
-            {"role": "system", "content": "You are a helpful research assistant."},
-            {"role": "user", "content": f"{prompt_body}\n\n---\n\nPaper content:\n{text}"}
+            {"role": "system", "content": "You are a helpful research assistant that summarizes academic papers."},
+            {"role": "user", "content": f"{prompt_body}\n\n---\n\nPaper content (truncated):\n{text}"}
         ]
-        response = httpx.post(
-            f"{base_url}/chat/completions",
-            headers={"Authorization": f"Bearer {api_key}"},
-            json={"model": model.replace("openai/", ""), "messages": messages, "max_tokens": 2000},
-            timeout=120.0,
-        )
-        response.raise_for_status()
-        result = response.json()
-        summary = result["choices"][0]["message"]["content"]
+        
+        try:
+            response = httpx.post(
+                f"{base_url}/chat/completions",
+                headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
+                json={"model": model.replace("openai/", ""), "messages": messages, "max_tokens": 2000},
+                timeout=120.0,
+            )
+            if response.status_code != 200:
+                error_detail = response.text[:500]
+                raise HTTPException(status_code=response.status_code, detail=f"LLM error: {error_detail}")
+            result = response.json()
+            summary = result["choices"][0]["message"]["content"]
+        except httpx.HTTPStatusError as e:
+            raise HTTPException(status_code=e.response.status_code, detail=f"LLM request failed: {str(e)[:200]}")
+        except Exception as e:
+            raise HTTPException(status_code=500, detail=f"Summarization failed: {str(e)[:200]}")
     
     return {
         "summary": summary.strip(),
