@@ -485,7 +485,26 @@ def summarize(payload: SummarizeRequest) -> dict[str, Any]:
     else:
         # Simple LLM summarization without RAG
         import httpx
-        text = payload.text[:30000] if len(payload.text) > 30000 else payload.text
+        from pathlib import Path
+        
+        # Get text - either from payload or extract from PDF
+        text = payload.text
+        if not text and payload.pdf_path:
+            pdf_path = Path(payload.pdf_path)
+            if not pdf_path.is_absolute():
+                pdf_path = Path("/app") / pdf_path
+            if pdf_path.exists():
+                try:
+                    extracted = _paperqa_extract_pdf(pdf_path)
+                    text = extracted.get("text", "")
+                except Exception:
+                    text = ""
+        
+        if not text:
+            raise HTTPException(status_code=400, detail="No text provided and could not extract from PDF")
+        
+        # Truncate to fit in context
+        text = text[:30000] if len(text) > 30000 else text
         messages = [
             {"role": "system", "content": "You are a helpful research assistant."},
             {"role": "user", "content": f"{prompt_body}\n\n---\n\nPaper content:\n{text}"}
