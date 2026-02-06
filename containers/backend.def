@@ -31,6 +31,7 @@ From: python:3.11-slim
     src/backend/naming.py /app/naming.py
     src/backend/paperqa_helpers.py /app/paperqa_helpers.py
     src/backend/slack_helpers.py /app/slack_helpers.py
+    src/backend/litellm_patch.py /app/litellm_patch.py
     src/backend/prompts /app/prompts
 
 %post
