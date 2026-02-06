@@ -449,7 +449,7 @@ def pdf_extract(payload: PdfExtractRequest) -> dict[str, Any]:
 
 @app.post("/summarize")
 def summarize(payload: SummarizeRequest) -> dict[str, Any]:
-    """Summarize a paper. Falls back to simple LLM if embedding unavailable."""
+    """Summarize a paper. Also indexes PDF for faster QA queries if arxiv_id provided."""
     prompt_id, prompt_hash, prompt_body = _load_prompt()
     endpoint_config = _get_endpoint_config()
     base_url = endpoint_config["llm_base_url"]
@@ -462,82 +462,29 @@ def summarize(payload: SummarizeRequest) -> dict[str, Any]:
     except Exception as e:
         raise HTTPException(status_code=503, detail=f"LLM endpoint not available at {base_url}: {e}")
     
-    # Check embedding endpoint - if unavailable, use simple LLM summarization
+    # Check embedding endpoint
     try:
         embed_model = f"openai/{_resolve_model(embed_base_url, api_key)}"
-        use_paperqa = True
-    except Exception:
-        embed_model = None
-        use_paperqa = False
+    except Exception as e:
+        raise HTTPException(status_code=503, detail=f"Embedding endpoint not available at {embed_base_url}. Please start your embedding service on port 8004.")
     
-    if use_paperqa:
-        summary = _paperqa_answer(
-            payload.text,
-            payload.pdf_path,
-            prompt_body,
-            base_url,
-            embed_base_url,
-            api_key,
-            model,
-            embed_model,
-            arxiv_id=payload.arxiv_id,
-        )
-    else:
-        # Simple LLM summarization without RAG
-        import httpx
-        from pathlib import Path
-        
-        # Get text - either from payload or extract from PDF
-        text = payload.text
-        if not text and payload.pdf_path:
-            pdf_path = Path(payload.pdf_path)
-            if not pdf_path.is_absolute():
-                pdf_path = Path("/app") / pdf_path
-            if pdf_path.exists():
-                try:
-                    extracted = _paperqa_extract_pdf(pdf_path)
-                    text = extracted.get("text", "")
-                except Exception:
-                    text = ""
-        
-        if not text:
-            raise HTTPException(status_code=400, detail="No text provided and could not extract from PDF")
-        
-        # Truncate to fit in context (8k chars ~ 2k tokens, safe for most models)
-        # Also clean up text to avoid JSON encoding issues
-        import re
-        text = re.sub(r'[\x00-\x08\x0b\x0c\x0e-\x1f]', '', text)  # Remove control chars
-        text = text[:8000] if len(text) > 8000 else text
-        
-        messages = [
-            {"role": "system", "content": "You are a helpful research assistant that summarizes academic papers."},
-            {"role": "user", "content": f"{prompt_body}\n\n---\n\nPaper content (truncated):\n{text}"}
-        ]
-        
-        try:
-            response = httpx.post(
-                f"{base_url}/chat/completions",
-                headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
-                json={"model": model.replace("openai/", ""), "messages": messages, "max_tokens": 2000},
-                timeout=120.0,
-            )
-            if response.status_code != 200:
-                error_detail = response.text[:500]
-                raise HTTPException(status_code=response.status_code, detail=f"LLM error: {error_detail}")
-            result = response.json()
-            summary = result["choices"][0]["message"]["content"]
-        except httpx.HTTPStatusError as e:
-            raise HTTPException(status_code=e.response.status_code, detail=f"LLM request failed: {str(e)[:200]}")
-        except Exception as e:
-            raise HTTPException(status_code=500, detail=f"Summarization failed: {str(e)[:200]}")
-    
+    summary = _paperqa_answer(
+        payload.text,
+        payload.pdf_path,
+        prompt_body,
+        base_url,
+        embed_base_url,
+        api_key,
+        model,
+        embed_model,
+        arxiv_id=payload.arxiv_id,  # Persist index for QA reuse
+    )
     return {
         "summary": summary.strip(),
         "prompt_id": prompt_id,
         "prompt_hash": prompt_hash,
         "model": model,
-        "indexed": payload.arxiv_id is not None and use_paperqa,
-        "fallback_mode": not use_paperqa,
+        "indexed": payload.arxiv_id is not None,
     }
 
 
