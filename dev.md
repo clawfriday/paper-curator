@@ -956,3 +956,91 @@ def reset_litellm_callbacks() -> None:
 
 ### Note
 The async task warnings ("Task was destroyed but it is pending") are internal to LiteLLM's LoggingWorker and cannot be fully eliminated without patching LiteLLM itself. However, by suppressing debug info and aggressively clearing callbacks, the frequency is significantly reduced. These warnings are non-fatal and don't affect functionality.
+
+---
+
+## Bug 8: LiteLLM Callback Accumulation - Comprehensive Fix
+
+**Date:** Feb 6, 2026
+
+### Problem Recurrence
+The initial fix (Bug 7) was insufficient. The callback limit warnings and async task warnings continued because:
+1. PaperQA2 adds callbacks on every LLM call, immediately after we clear them
+2. The `logging_callback_manager` had internal methods that add callbacks
+3. The fix wasn't applied until container restart
+
+### Root Cause Analysis
+LiteLLM is used **internally by PaperQA2**, not directly by our code:
+```
+app.py → paperqa_helpers.py → PaperQA2 → LiteLLM
+```
+
+Every PaperQA2 query triggers LiteLLM calls which add callbacks. Locations where LiteLLM is used:
+- `paperqa_helpers.py`: `make_default_litellm_model_list_settings()` for configuring PaperQA2
+- `app.py`: Multiple endpoints use PaperQA2 which internally uses LiteLLM
+- `llm_clients.py`: Contains callback reset function (now deprecated)
+
+### Comprehensive Fix
+
+**New file: `src/backend/litellm_patch.py`**
+
+A dedicated patch module that:
+1. Sets environment variables to minimize LiteLLM logging before import
+2. Disables LiteLLM debug info and verbosity
+3. Clears all callback lists
+4. **Monkey-patches `add_callback` methods to be no-ops** - This is the key fix
+
+```python
+# In litellm_patch.py
+def patch_litellm() -> None:
+    os.environ["LITELLM_LOG"] = "ERROR"
+    
+    import litellm
+    litellm.suppress_debug_info = True
+    litellm.set_verbose = False
+    
+    # Monkey-patch to prevent callback additions
+    if hasattr(litellm, 'logging_callback_manager'):
+        manager = litellm.logging_callback_manager
+        manager.add_callback = lambda *args, **kwargs: None
+        manager.add_callbacks = lambda *args, **kwargs: None
+```
+
+**Updated `src/backend/app.py`**
+
+Added patch import at the very top, before any PaperQA2 imports:
+```python
+from __future__ import annotations
+
+# Apply patches before any other imports
+from pdf_patch import patch_pypdf
+patch_pypdf()
+
+# CRITICAL: Patch LiteLLM before any paperqa imports
+from litellm_patch import patch_litellm
+patch_litellm()
+
+# Now safe to import paperqa
+from paperqa import Docs
+```
+
+### Files Modified
+- `src/backend/litellm_patch.py` (NEW)
+- `src/backend/app.py` (added patch import)
+- `src/backend/llm_clients.py` (simplified, imports from litellm_patch)
+
+### Deployment
+After applying this fix, rebuild and restart the container:
+```bash
+make singularity-stop
+make singularity-build
+make singularity-run
+```
+
+### Expected Outcome
+- No more "Cannot add callback - would exceed MAX_CALLBACKS limit of 30" warnings
+- Significantly reduced "Task was destroyed but it is pending" warnings
+- Log message at startup: `[litellm_patch] LiteLLM patched: logging and callbacks disabled`
+
+### Note on Unclosed aiohttp Sessions
+The logs also showed "Unclosed client session" warnings. These are from aiohttp HTTP connections created by LiteLLM that aren't properly closed. The patch reduces these by reducing LiteLLM activity, but they may still appear. They are warnings, not errors, and don't affect functionality.

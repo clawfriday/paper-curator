@@ -5,6 +5,9 @@ from functools import lru_cache
 
 from openai import AsyncOpenAI, OpenAI
 
+# Re-export reset_litellm_callbacks from the patch module
+from litellm_patch import reset_litellm_callbacks
+
 
 def get_openai_client(base_url: str, api_key: str) -> OpenAI:
     """Create OpenAI client with ngrok header support if needed."""
@@ -81,58 +84,6 @@ def resolve_model(base_url: str, api_key: str) -> str:
             )
             raise Exception(help_msg)
         raise
-
-
-def reset_litellm_callbacks() -> None:
-    """Reset LiteLLM callbacks to prevent accumulation.
-    
-    LiteLLM has a MAX_CALLBACKS limit of 30. PaperQA2 adds callbacks for each
-    query, which can accumulate and hit this limit during batch operations.
-    This function clears all callback lists to prevent the warning.
-    
-    Also addresses async task cleanup issues from LoggingWorker by disabling
-    verbose logging that triggers these callbacks.
-    """
-    try:
-        import litellm
-    except ImportError:
-        return
-    
-    # Disable verbose logging to prevent callback accumulation
-    litellm.suppress_debug_info = True
-    
-    # Clear main callback lists
-    litellm.input_callback = []
-    litellm.success_callback = []
-    litellm.failure_callback = []
-    litellm._async_success_callback = []
-    litellm._async_failure_callback = []
-    
-    # Clear the logging callback manager - more thorough approach
-    try:
-        if hasattr(litellm, 'logging_callback_manager'):
-            manager = litellm.logging_callback_manager
-            # Clear various internal callback storage attributes
-            for attr in ['callbacks', '_callbacks', 'callback_list', 
-                         'success_callbacks', 'failure_callbacks',
-                         '_success_callbacks', '_failure_callbacks']:
-                if hasattr(manager, attr):
-                    setattr(manager, attr, [])
-            # Reset callback count if tracked
-            if hasattr(manager, 'callback_count'):
-                manager.callback_count = 0
-            if hasattr(manager, '_callback_count'):
-                manager._callback_count = 0
-    except Exception:
-        pass  # Ignore if attribute structure is different
-    
-    # Also try to reset the callbacks module directly
-    try:
-        from litellm import callbacks
-        if hasattr(callbacks, 'callback_list'):
-            callbacks.callback_list = []
-    except (ImportError, AttributeError):
-        pass
 
 
 def get_llm_config() -> dict[str, str]:

@@ -1,8 +1,15 @@
 from __future__ import annotations
 
-# Apply pymupdf patch before any paperqa imports
+# Apply patches before any other imports that may trigger litellm/paperqa
 from pdf_patch import patch_pypdf
 patch_pypdf()
+
+# CRITICAL: Patch LiteLLM before any paperqa imports to prevent:
+# - MAX_CALLBACKS limit (30) warnings
+# - Async task cleanup warnings from LoggingWorker
+# - Memory leaks from callback accumulation
+from litellm_patch import patch_litellm
+patch_litellm()
 
 import asyncio
 import hashlib
