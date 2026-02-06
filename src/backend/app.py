@@ -396,12 +396,16 @@ def get_ui_config() -> dict[str, Any]:
 
 
 @app.post("/arxiv/resolve")
-def arxiv_resolve(payload: ArxivResolveRequest) -> dict[str, Any]:
+async def arxiv_resolve(payload: ArxivResolveRequest) -> dict[str, Any]:
     identifier = _require_identifier(payload.arxiv_id, payload.url)
-    client = arxiv.Client()
-    search = arxiv.Search(id_list=[identifier])
-    results = list(client.results(search))
-    assert results, f"No arXiv result found for: {identifier}"
+    try:
+        client = arxiv.Client()
+        search = arxiv.Search(id_list=[identifier])
+        results = await asyncio.to_thread(lambda: list(client.results(search)))
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=f"arXiv API error: {e}")
+    if not results:
+        raise HTTPException(status_code=404, detail=f"No arXiv result found for: {identifier}")
     result = results[0]
     return {
         "arxiv_id": result.get_short_id(),
@@ -416,20 +420,25 @@ def arxiv_resolve(payload: ArxivResolveRequest) -> dict[str, Any]:
 
 
 @app.post("/arxiv/download")
-def arxiv_download(payload: ArxivDownloadRequest) -> dict[str, Any]:
+async def arxiv_download(payload: ArxivDownloadRequest) -> dict[str, Any]:
     identifier = _require_identifier(payload.arxiv_id, payload.url)
     output_dir = payload.output_dir or os.getenv("ARXIV_DOWNLOAD_DIR", "storage/downloads")
     pathlib.Path(output_dir).mkdir(parents=True, exist_ok=True)
 
-    client = arxiv.Client()
-    search = arxiv.Search(id_list=[identifier])
-    results = list(client.results(search))
+    try:
+        client = arxiv.Client()
+        search = arxiv.Search(id_list=[identifier])
+        results = await asyncio.to_thread(lambda: list(client.results(search)))
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=f"arXiv API error: {e}")
     if not results:
         raise HTTPException(status_code=404, detail="No arXiv result found.")
     result = results[0]
 
-    pdf_path = result.download_pdf(dirpath=output_dir)
-    latex_path = result.download_source(dirpath=output_dir) if result.source_url() else None
+    pdf_path = await asyncio.to_thread(result.download_pdf, dirpath=output_dir)
+    latex_path = None
+    if result.source_url():
+        latex_path = await asyncio.to_thread(result.download_source, dirpath=output_dir)
 
     return {
         "arxiv_id": result.get_short_id(),
@@ -439,16 +448,16 @@ def arxiv_download(payload: ArxivDownloadRequest) -> dict[str, Any]:
 
 
 @app.post("/pdf/extract")
-def pdf_extract(payload: PdfExtractRequest) -> dict[str, Any]:
+async def pdf_extract(payload: PdfExtractRequest) -> dict[str, Any]:
     """Extract text from PDF using PaperQA2's native parser."""
     pdf_path = pathlib.Path(payload.pdf_path)
     if not pdf_path.exists():
         raise HTTPException(status_code=404, detail="PDF not found.")
-    return _paperqa_extract_pdf(pdf_path)
+    return await _paperqa_extract_pdf_async(pdf_path)
 
 
 @app.post("/summarize")
-def summarize(payload: SummarizeRequest) -> dict[str, Any]:
+async def summarize(payload: SummarizeRequest) -> dict[str, Any]:
     """Summarize a paper. Also indexes PDF for faster QA queries if arxiv_id provided."""
     prompt_id, prompt_hash, prompt_body = _load_prompt()
     endpoint_config = _get_endpoint_config()
@@ -468,7 +477,7 @@ def summarize(payload: SummarizeRequest) -> dict[str, Any]:
     except Exception as e:
         raise HTTPException(status_code=503, detail=f"Embedding endpoint not available at {embed_base_url}. Please start your embedding service on port 8004.")
     
-    summary = _paperqa_answer(
+    summary = await _paperqa_answer_async(
         payload.text,
         payload.pdf_path,
         prompt_body,
