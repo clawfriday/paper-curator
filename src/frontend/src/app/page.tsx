@@ -72,6 +72,8 @@ interface UIConfig {
   hover_debounce_ms: number;
   max_similar_papers: number;
   tree_auto_save_interval_ms: number;
+  tree_category_font_size: number;
+  tree_paper_font_size: number;
 }
 
 interface TreeLayout {
@@ -334,7 +336,7 @@ export default function Home() {
   const [pendingSlackChannel, setPendingSlackChannel] = useState("");
   const [slackToken, setSlackToken] = useState("");
   
-  // Re-classify state (replaces old rebalance)
+  // Re-categorize state (replaces old rebalance)
   const [isReclassifying, setIsReclassifying] = useState(false);
   const [reclassifyResult, setReclassifyResult] = useState<{
     message: string;
@@ -503,36 +505,48 @@ export default function Home() {
     return ancestors;
   }, [parentMap]);
   
-  // Center tree view on a specific node with optional pulse animation
+  // Center tree view on a specific node with zoom to absolute 85% and pulse animation
   const centerOnNode = useCallback((nodeId: string) => {
     if (!treeContainerRef.current) return;
     
-    // Find the node in treeLayout (need to access via closure since it's computed later)
-    // This will be called when treeLayout is available
     const container = treeContainerRef.current;
-    
-    // Find node element by data attribute or node ID
     const nodeElement = container.querySelector(`[data-node-id="${nodeId}"]`) as HTMLElement | null;
     
     if (nodeElement) {
-      // Get node position relative to container
       const containerRect = container.getBoundingClientRect();
       const nodeRect = nodeElement.getBoundingClientRect();
       
-      // Calculate scroll position to center the node
-      const scrollLeft = container.scrollLeft + (nodeRect.left - containerRect.left) - (containerRect.width / 2) + (nodeRect.width / 2);
-      const scrollTop = container.scrollTop + (nodeRect.top - containerRect.top) - (containerRect.height / 2) + (nodeRect.height / 2);
+      // Calculate node center in current viewport
+      const nodeCenterX = nodeRect.left - containerRect.left + nodeRect.width / 2;
+      const nodeCenterY = nodeRect.top - containerRect.top + nodeRect.height / 2;
       
-      // Smooth scroll to center
-      container.scrollTo({
-        left: Math.max(0, scrollLeft),
-        top: Math.max(0, scrollTop),
-        behavior: 'smooth'
+      // Set zoom to absolute 85% (0.85) and center on node
+      setZoomLevel((currentZoom) => {
+        const newZoom = 0.85; // Absolute 85% zoom
+        
+        // Calculate node position in SVG coordinates
+        const svgNodeX = (container.scrollLeft + nodeCenterX) / currentZoom;
+        const svgNodeY = (container.scrollTop + nodeCenterY) / currentZoom;
+        
+        // Calculate scroll position to center the node at new zoom
+        const newScrollLeft = svgNodeX * newZoom - container.clientWidth / 2;
+        const newScrollTop = svgNodeY * newZoom - container.clientHeight / 2;
+        
+        // Apply scroll after DOM update
+        setTimeout(() => {
+          container.scrollTo({
+            left: Math.max(0, newScrollLeft),
+            top: Math.max(0, newScrollTop),
+            behavior: 'smooth'
+          });
+        }, 50);
+        
+        return newZoom;
       });
       
       // Trigger pulse animation
       setPulsingNodeId(nodeId);
-      setTimeout(() => setPulsingNodeId(null), 1500); // Remove pulse after 1.5s
+      setTimeout(() => setPulsingNodeId(null), 1500);
     }
   }, []);
 
@@ -541,6 +555,27 @@ export default function Home() {
     const handleClick = () => setContextMenu((prev) => ({ ...prev, visible: false }));
     document.addEventListener("click", handleClick);
     return () => document.removeEventListener("click", handleClick);
+  }, []);
+
+  // Prevent browser zoom when mouse is inside tree container
+  // Uses native event listener with passive:false to fully capture wheel events
+  useEffect(() => {
+    const container = treeContainerRef.current;
+    if (!container) return;
+    
+    const handleWheel = (e: WheelEvent) => {
+      // Prevent browser zoom when Ctrl/Cmd + scroll
+      if (e.ctrlKey || e.metaKey) {
+        e.preventDefault();
+      }
+    };
+    
+    // passive: false is required to allow preventDefault
+    container.addEventListener('wheel', handleWheel, { passive: false });
+    
+    return () => {
+      container.removeEventListener('wheel', handleWheel);
+    };
   }, []);
 
   const updateStep = (index: number, update: Partial<IngestionStep>) => {
@@ -595,7 +630,7 @@ export default function Home() {
     setIsReclassifying(true);
     setReclassifyResult(null);
     clearIngestLog();
-    logIngest("Re-classifying papers using embedding-based clustering...");
+    logIngest("Re-categorizeing papers using embedding-based clustering...");
     
     try {
       const res = await fetch("/api/papers/classify", {
@@ -2403,7 +2438,7 @@ export default function Home() {
               disabled={isReclassifying}
               className="px-4 py-2 bg-purple-600 text-white rounded font-medium disabled:bg-gray-400 hover:bg-purple-700 whitespace-nowrap"
             >
-              {isReclassifying ? "Re-classifying..." : "Re-classify"}
+              {isReclassifying ? "Re-categorizing..." : "Re-categorize"}
             </button>
             {/* Search with mode dropdown */}
             <div className="relative flex-1 flex">
@@ -2516,7 +2551,32 @@ export default function Home() {
               }}
             >
               <button
-                onClick={() => setZoomLevel((z) => Math.min(3, z + 0.1))}
+                onClick={() => {
+                  if (!treeContainerRef.current) {
+                    setZoomLevel((z) => Math.min(3, z + 0.1));
+                    return;
+                  }
+                  const container = treeContainerRef.current;
+                  const centerX = container.clientWidth / 2;
+                  const centerY = container.clientHeight / 2;
+                  const scrollLeft = container.scrollLeft;
+                  const scrollTop = container.scrollTop;
+                  
+                  setZoomLevel((prevZoom) => {
+                    const newZoom = Math.min(3, prevZoom + 0.1);
+                    const scale = newZoom / prevZoom;
+                    
+                    // Point at center in content coordinates
+                    const pointX = scrollLeft + centerX;
+                    const pointY = scrollTop + centerY;
+                    
+                    // Keep center stationary
+                    container.scrollLeft = Math.max(0, pointX * scale - centerX);
+                    container.scrollTop = Math.max(0, pointY * scale - centerY);
+                    
+                    return newZoom;
+                  });
+                }}
                 style={{
                   width: "32px",
                   height: "32px",
@@ -2547,7 +2607,32 @@ export default function Home() {
                 {Math.round(zoomLevel * 100)}%
               </button>
               <button
-                onClick={() => setZoomLevel((z) => Math.max(0.25, z - 0.1))}
+                onClick={() => {
+                  if (!treeContainerRef.current) {
+                    setZoomLevel((z) => Math.max(0.25, z - 0.1));
+                    return;
+                  }
+                  const container = treeContainerRef.current;
+                  const centerX = container.clientWidth / 2;
+                  const centerY = container.clientHeight / 2;
+                  const scrollLeft = container.scrollLeft;
+                  const scrollTop = container.scrollTop;
+                  
+                  setZoomLevel((prevZoom) => {
+                    const newZoom = Math.max(0.25, prevZoom - 0.1);
+                    const scale = newZoom / prevZoom;
+                    
+                    // Point at center in content coordinates
+                    const pointX = scrollLeft + centerX;
+                    const pointY = scrollTop + centerY;
+                    
+                    // Keep center stationary
+                    container.scrollLeft = Math.max(0, pointX * scale - centerX);
+                    container.scrollTop = Math.max(0, pointY * scale - centerY);
+                    
+                    return newZoom;
+                  });
+                }}
                 style={{
                   width: "32px",
                   height: "32px",
@@ -2643,12 +2728,42 @@ export default function Home() {
               setViewportPos({ x: target.scrollLeft, y: target.scrollTop });
             }}
             onWheel={(e) => {
-              // Ctrl+scroll or pinch gesture for zoom (reduced sensitivity)
+              // Prevent browser zoom when Ctrl/Cmd is pressed - capture the event fully
               if (e.ctrlKey || e.metaKey) {
                 e.preventDefault();
-                // Use smaller delta (0.03) for smoother zoom, scale by deltaY magnitude
-                const delta = -e.deltaY * 0.003;
-                setZoomLevel((z) => Math.max(0.25, Math.min(3, z + delta)));
+                e.stopPropagation();
+                
+                const container = e.currentTarget;
+                const rect = container.getBoundingClientRect();
+                
+                // Cursor position relative to container viewport
+                const mouseX = e.clientX - rect.left;
+                const mouseY = e.clientY - rect.top;
+                
+                // Current scroll position
+                const scrollLeft = container.scrollLeft;
+                const scrollTop = container.scrollTop;
+                
+                setZoomLevel((prevZoom) => {
+                  // Smaller delta for smoother zoom
+                  const zoomDelta = -e.deltaY * 0.0008;
+                  const newZoom = Math.max(0.25, Math.min(3, prevZoom + zoomDelta));
+                  const scale = newZoom / prevZoom;
+                  
+                  // Point under cursor in content coordinates (before zoom)
+                  const pointX = scrollLeft + mouseX;
+                  const pointY = scrollTop + mouseY;
+                  
+                  // Where that point should be after zoom to keep cursor stationary
+                  const newScrollLeft = pointX * scale - mouseX;
+                  const newScrollTop = pointY * scale - mouseY;
+                  
+                  // Apply immediately for smoothness
+                  container.scrollLeft = Math.max(0, newScrollLeft);
+                  container.scrollTop = Math.max(0, newScrollTop);
+                  
+                  return newZoom;
+                });
               }
             }}
           >
@@ -2736,7 +2851,7 @@ export default function Home() {
                         y={dims.paddingY}
                         textAnchor="middle"
                         dominantBaseline="hanging"
-                        fontSize={isPaper ? panelFontSize - 2 : panelFontSize - 1}
+                        fontSize={isPaper ? (uiConfig?.tree_paper_font_size || 20) : (uiConfig?.tree_category_font_size || 20)}
                         fontWeight={isPaper ? 500 : 600}
                         fill={isPaper ? "#334155" : "#ffffff"}
                       >
@@ -2959,7 +3074,7 @@ export default function Home() {
       {/* Right panel: Details and ingest */}
       <div style={{ ...panelStyles.right, padding: isMobile ? "1rem" : "1.5rem", display: "flex", flexDirection: "column", backgroundColor: "#f9fafb", overflowY: "auto", position: "relative", fontSize: `${panelFontSize}px` }}>
         {/* Static "Details" header at the top */}
-        <h1 className="text-xl font-bold mb-4 text-gray-800">Details</h1>
+        <h1 className="text-xl font-bold mb-4 text-gray-800 text-center">Details</h1>
         
         {/* Paper Details Section - Accordion */}
         <Card className="flex-1 flex flex-col">
@@ -3078,31 +3193,41 @@ export default function Home() {
                           </div>
                           <h3 className="font-semibold mb-2">{selectedNode.name}</h3>
                           
-                          {/* Ancestry chain */}
+                          {/* Ancestry chain (including current node) */}
                           {(() => {
                             const ancestors = getAncestorChain(selectedNode);
-                            return ancestors.length > 0 && (
+                            const fullChain = [...ancestors, selectedNode];
+                            return (
                               <div className="mb-3 text-sm">
                                 <strong className="text-gray-600">Ancestry:</strong>
                                 <div className="mt-1">
-                                  {ancestors.map((ancestor, idx) => (
-                                    <div
-                                      key={ancestor.node_id || idx}
-                                      style={{ marginLeft: `${idx * 16}px` }}
-                                      className="py-0.5"
-                                    >
-                                      <button
-                                        onClick={() => {
-                                          setSelectedNode(ancestor);
-                                          const ancestorId = ancestor.node_id || ancestor.name;
-                                          setTimeout(() => centerOnNode(ancestorId), 100);
-                                        }}
-                                        className="text-blue-600 hover:underline text-left"
+                                  {fullChain.map((node, idx) => {
+                                    const isCurrentNode = idx === fullChain.length - 1;
+                                    return (
+                                      <div
+                                        key={node.node_id || idx}
+                                        style={{ marginLeft: `${idx * 16}px` }}
+                                        className="py-0.5"
                                       >
-                                        {idx === 0 ? "📂" : "└─"} {ancestor.name}
-                                      </button>
-                                    </div>
-                                  ))}
+                                        {isCurrentNode ? (
+                                          <span className="text-gray-800 font-semibold">
+                                            {idx === 0 ? "📂" : "└─"} {node.name}
+                                          </span>
+                                        ) : (
+                                          <button
+                                            onClick={() => {
+                                              setSelectedNode(node);
+                                              const nodeId = node.node_id || node.name;
+                                              setTimeout(() => centerOnNode(nodeId), 100);
+                                            }}
+                                            className="text-blue-600 hover:underline text-left"
+                                          >
+                                            {idx === 0 ? "📂" : "└─"} {node.name}
+                                          </button>
+                                        )}
+                                      </div>
+                                    );
+                                  })}
                                 </div>
                               </div>
                             );
@@ -3120,7 +3245,7 @@ export default function Home() {
                                   {childCats.map((cat, idx) => (
                                     <span key={cat.node_id || idx}>
                                       <button
-                                        onClick={() => setSelectedNode(cat)}
+                                        onClick={() => { setSelectedNode(cat); const catId = cat.node_id || cat.name; setTimeout(() => centerOnNode(catId), 100); }}
                                         className="text-blue-600 hover:underline"
                                       >
                                         {cat.name}
@@ -3155,31 +3280,41 @@ export default function Home() {
                           </div>
                           <h3 className="font-semibold mb-2">{selectedNode.attributes.title || selectedNode.name}</h3>
                           
-                          {/* Ancestry chain */}
+                          {/* Ancestry chain (including current node) */}
                           {(() => {
                             const ancestors = getAncestorChain(selectedNode);
-                            return ancestors.length > 0 && (
+                            const fullChain = [...ancestors, selectedNode];
+                            return (
                               <div className="mb-3 text-sm">
                                 <strong className="text-gray-600">Ancestry:</strong>
                                 <div className="mt-1">
-                                  {ancestors.map((ancestor, idx) => (
-                                    <div
-                                      key={ancestor.node_id || idx}
-                                      style={{ marginLeft: `${idx * 16}px` }}
-                                      className="py-0.5"
-                                    >
-                                      <button
-                                        onClick={() => {
-                                          setSelectedNode(ancestor);
-                                          const ancestorId = ancestor.node_id || ancestor.name;
-                                          setTimeout(() => centerOnNode(ancestorId), 100);
-                                        }}
-                                        className="text-blue-600 hover:underline text-left"
+                                  {fullChain.map((node, idx) => {
+                                    const isCurrentNode = idx === fullChain.length - 1;
+                                    return (
+                                      <div
+                                        key={node.node_id || idx}
+                                        style={{ marginLeft: `${idx * 16}px` }}
+                                        className="py-0.5"
                                       >
-                                        {idx === 0 ? "📂" : "└─"} {ancestor.name}
-                                      </button>
-                                    </div>
-                                  ))}
+                                        {isCurrentNode ? (
+                                          <span className="text-gray-800 font-semibold">
+                                            {idx === 0 ? "📂" : "└─"} {node.name}
+                                          </span>
+                                        ) : (
+                                          <button
+                                            onClick={() => {
+                                              setSelectedNode(node);
+                                              const nodeId = node.node_id || node.name;
+                                              setTimeout(() => centerOnNode(nodeId), 100);
+                                            }}
+                                            className="text-blue-600 hover:underline text-left"
+                                          >
+                                            {idx === 0 ? "📂" : "└─"} {node.name}
+                                          </button>
+                                        )}
+                                      </div>
+                                    );
+                                  })}
                                 </div>
                               </div>
                             );

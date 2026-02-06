@@ -49,6 +49,8 @@ ui:
   hover_debounce_ms: 500  # Higher = fewer hover LLM calls, lower = more responsive
   max_similar_papers: 5  # Higher = more results, more API usage
   tree_auto_save_interval_ms: 30000  # Higher = fewer writes, lower = less data loss
+  tree_category_font_size: 20  # Font size for category nodes in tree diagram
+  tree_paper_font_size: 20  # Font size for paper nodes in tree diagram
 
 # =============================================================================
 # Classification settings

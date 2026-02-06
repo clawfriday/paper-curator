@@ -165,11 +165,15 @@ def _get_ui_config() -> dict[str, Any]:
     # Get defaults from config.yaml
     max_similar_default = int(ui.get("max_similar_papers", 5))
     auto_save_default = int(ui.get("tree_auto_save_interval_ms", 30000))
+    tree_category_font_default = int(ui.get("tree_category_font_size", 20))
+    tree_paper_font_default = int(ui.get("tree_paper_font_size", 20))
     
     return {
         "hover_debounce_ms": int(ui.get("hover_debounce_ms", 500)),
         "max_similar_papers": _get_db_setting("max_similar_papers", max_similar_default, "integer"),
         "tree_auto_save_interval_ms": _get_db_setting("tree_auto_save_interval_ms", auto_save_default, "integer"),
+        "tree_category_font_size": _get_db_setting("tree_category_font_size", tree_category_font_default, "integer"),
+        "tree_paper_font_size": _get_db_setting("tree_paper_font_size", tree_paper_font_default, "integer"),
     }
 
 
