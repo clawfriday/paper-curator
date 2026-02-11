@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import pathlib
 from contextlib import contextmanager
 from typing import Any, Generator, Optional
 
@@ -10,13 +11,84 @@ import psycopg2
 from psycopg2.extras import RealDictCursor
 from pgvector.psycopg2 import register_vector
 
+# ---------------------------------------------------------------------------
+# Switchable database connection
+# ---------------------------------------------------------------------------
 
-def get_connection_string() -> str:
-    """Get database connection string from environment."""
-    return os.environ.get(
-        "DATABASE_URL",
-        "postgresql://curator:curator@localhost:5432/paper_curator"
-    )
+# Module-level mutable state: the active database name.
+# Defaults come from DATABASE_URL env var fallback, but can be overridden at
+# runtime via switch_database().
+_db_config: dict[str, str] = {
+    "host": os.environ.get("PGHOST", "localhost"),
+    "port": os.environ.get("PGPORT", "5432"),
+    "user": os.environ.get("PGUSER", "curator"),
+    "password": os.environ.get("PGPASSWORD", "curator"),
+    "dbname": os.environ.get("PGDATABASE", "paper_curator"),
+}
+
+
+def _load_db_config_from_yaml() -> None:
+    """Seed _db_config from config/config.yaml (called once at import time)."""
+    import yaml
+
+    for p in [
+        pathlib.Path("config/config.yaml"),
+        pathlib.Path("../config/config.yaml"),
+        pathlib.Path("../../config/config.yaml"),
+    ]:
+        if p.exists():
+            cfg = yaml.safe_load(p.read_text()) or {}
+            db_section = cfg.get("database", {})
+            if db_section:
+                # Only override keys not already set via env vars
+                if not os.environ.get("PGHOST"):
+                    _db_config["host"] = str(db_section.get("host", _db_config["host"]))
+                if not os.environ.get("PGPORT"):
+                    _db_config["port"] = str(db_section.get("port", _db_config["port"]))
+                if not os.environ.get("PGUSER"):
+                    _db_config["user"] = str(db_section.get("user", _db_config["user"]))
+                if not os.environ.get("PGPASSWORD"):
+                    _db_config["password"] = str(db_section.get("password", _db_config["password"]))
+                if not os.environ.get("PGDATABASE"):
+                    _db_config["dbname"] = str(db_section.get("name", _db_config["dbname"]))
+            return
+
+
+# Auto-load from config.yaml at import time
+_load_db_config_from_yaml()
+
+
+def get_connection_string(dbname: str | None = None) -> str:
+    """Get database connection string, optionally overriding the database name."""
+    # If DATABASE_URL is explicitly set, honour it (legacy compat)
+    env_url = os.environ.get("DATABASE_URL")
+    if env_url and dbname is None:
+        return env_url
+
+    cfg = _db_config.copy()
+    if dbname:
+        cfg["dbname"] = dbname
+    user = cfg["user"]
+    password = cfg["password"]
+    host = cfg["host"]
+    port = cfg["port"]
+    dbname = cfg["dbname"]
+    return f"postgresql://{user}:{password}@{host}:{port}/{dbname}"
+
+
+def get_active_database() -> str:
+    """Return the name of the currently active database."""
+    return _db_config["dbname"]
+
+
+def switch_database(dbname: str) -> str:
+    """Switch the active database. All subsequent connections will use *dbname*.
+
+    Returns the previous database name so callers can restore it.
+    """
+    previous = _db_config["dbname"]
+    _db_config["dbname"] = dbname
+    return previous
 
 
 @contextmanager
@@ -28,6 +100,13 @@ def get_db() -> Generator[psycopg2.extensions.connection, None, None]:
         yield conn
     finally:
         conn.close()
+
+
+def get_admin_connection(dbname: str = "postgres"):
+    """Get a connection to the admin (postgres) database for DDL operations."""
+    conn = psycopg2.connect(get_connection_string(dbname=dbname))
+    conn.autocommit = True  # Required for CREATE/DROP DATABASE
+    return conn
 
 
 # =============================================================================

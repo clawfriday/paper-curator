@@ -46,8 +46,12 @@ local_model_server
 # Test storage (dynamic files)
 tests/storage/pgdata/
 tests/storage/paperqa_index/
-# Allow tracked sample PDFs in tests/storage/downloads/
+# Allow tracked sample PDFs in tests/storage/downloads/local/
 !tests/storage/
 !tests/storage/downloads/
-!tests/storage/downloads/*.pdf
 !tests/storage/downloads/.gitkeep
+!tests/storage/downloads/local/
+!tests/storage/downloads/local/*.pdf
+!tests/storage/downloads/local/.gitkeep
+# Ignore scratch dir (created/cleaned by tests)
+tests/storage/downloads/scratch/

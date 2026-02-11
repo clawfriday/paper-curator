@@ -6,6 +6,17 @@ server:
   backend_port: 3100
 
 # =============================================================================
+# Database settings
+# =============================================================================
+database:
+  host: localhost
+  port: 5432
+  user: curator
+  password: curator
+  name: paper_curator            # Production database
+  test_name: paper_curator_test  # Test database (used by make test integration)
+
+# =============================================================================
 # Ingestion settings
 # =============================================================================
 ingestion:

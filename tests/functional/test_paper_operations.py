@@ -29,8 +29,8 @@ class TestPaperDownload:
         assert "Attention" in data["title"]
 
     def test_arxiv_download(self, backend_available, test_storage_dir):
-        """Download paper PDF to test storage."""
-        download_dir = f"{test_storage_dir}/downloads"
+        """Download paper PDF to test storage (scratch dir)."""
+        download_dir = f"{test_storage_dir}/downloads/scratch"
         os.makedirs(download_dir, exist_ok=True)
         
         resp = requests.post(
@@ -51,7 +51,7 @@ class TestPdfExtraction:
 
     def test_pdf_extract(self, backend_available, test_storage_dir):
         """Extract text from PDF and verify quality."""
-        pdf_path = f"{test_storage_dir}/downloads/1706.03762.pdf"
+        pdf_path = f"{test_storage_dir}/downloads/local/1706.03762.pdf"
         assert Path(pdf_path).exists(), f"PDF not found at {pdf_path} - ensure test_arxiv_download runs first"
         
         resp = requests.post(
@@ -137,7 +137,7 @@ class TestEmbedding:
 
     def test_embed_fulltext(self, backend_available, test_storage_dir):
         """Index full PDF text for PaperQA queries."""
-        pdf_path = f"{test_storage_dir}/downloads/1706.03762.pdf"
+        pdf_path = f"{test_storage_dir}/downloads/local/1706.03762.pdf"
         assert Path(pdf_path).exists(), f"PDF not found at {pdf_path}"
         
         resp = requests.post(
@@ -157,7 +157,7 @@ class TestSummarize:
 
     def test_summarize_with_pdf(self, backend_available, test_storage_dir):
         """Generate summary from PDF."""
-        pdf_path = f"{test_storage_dir}/downloads/1706.03762.pdf"
+        pdf_path = f"{test_storage_dir}/downloads/local/1706.03762.pdf"
         assert Path(pdf_path).exists(), f"PDF not found at {pdf_path}"
         
         resp = requests.post(
@@ -213,7 +213,7 @@ class TestQA:
 
     def test_qa_with_paper(self, backend_available, test_storage_dir):
         """Ask question about a paper."""
-        pdf_path = f"{test_storage_dir}/downloads/1706.03762.pdf"
+        pdf_path = f"{test_storage_dir}/downloads/local/1706.03762.pdf"
         assert Path(pdf_path).exists(), f"PDF not found at {pdf_path}"
         
         resp = requests.post(
@@ -238,7 +238,7 @@ class TestReabbreviate:
     def test_reabbreviate(self, backend_available, test_storage_dir):
         """Reabbreviate a paper - saves it first if needed."""
         arxiv_id = "1706.03762"
-        pdf_path = f"{test_storage_dir}/downloads/{arxiv_id}.pdf"
+        pdf_path = f"{test_storage_dir}/downloads/local/{arxiv_id}.pdf"
         assert Path(pdf_path).exists(), f"PDF not found at {pdf_path}"
         
         # First get paper metadata

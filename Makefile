@@ -5,7 +5,7 @@ ACTIVATE := source $(VENV_DIR)/bin/activate
 
 .PHONY: install install-frontend test run clean docker-build docker-run \
         singularity-build singularity-run singularity-stop pull-slack \
-        test-db-start test-db-stop test-db-init test-download-samples \
+        test-db-init test-db-reset \
         validation functional integration
 
 # Create virtual environment and install all dependencies
@@ -30,10 +30,16 @@ install-frontend:
 #   make test                 - Run all tests (except integration)
 #   make test validation      - Run validation tests only
 #   make test functional      - Run functional tests only
-#   make test integration     - Run integration tests (requires test DB)
+#   make test integration     - Run integration tests (auto-switches to test DB)
+#
+# The integration tests automatically:
+#   1. Create paper_curator_test DB if it doesn't exist (via /db/init)
+#   2. Switch the backend to paper_curator_test (via /db/switch)
+#   3. Run tests against the clean test database
+#   4. Switch the backend back to paper_curator (production)
 
-TEST_DB_PORT := 5433
 BACKEND_URL ?= http://localhost:3100
+TEST_DB_NAME := paper_curator_test
 TEST_TYPE := $(word 2,$(MAKECMDGOALS))
 
 test:
@@ -44,8 +50,8 @@ else ifeq ($(TEST_TYPE),functional)
 	@echo "=== Running functional tests ==="
 	BACKEND_URL=$(BACKEND_URL) pytest tests/functional -v -s
 else ifeq ($(TEST_TYPE),integration)
-	@echo "=== Running integration tests ==="
-	PGPORT=$(TEST_DB_PORT) PGDATABASE=paper_curator_test BACKEND_URL=$(BACKEND_URL) pytest tests/integration -v -s
+	@echo "=== Running integration tests (using test DB: $(TEST_DB_NAME)) ==="
+	BACKEND_URL=$(BACKEND_URL) TEST_DB_NAME=$(TEST_DB_NAME) pytest tests/integration -v -s
 else
 	@echo "=== Running all tests (except integration and deprecated) ==="
 	BACKEND_URL=$(BACKEND_URL) pytest tests -v --ignore=tests/integration --ignore=tests/deprecated
@@ -54,44 +60,19 @@ endif
 validation functional integration:
 	@:
 
-test-db-start:
-	@echo "Starting test database on port $(TEST_DB_PORT)..."
-	@mkdir -p tests/storage/pgdata
-	@if command -v singularity >/dev/null 2>&1; then \
-		singularity instance start \
-			--bind $$(pwd)/tests/storage/pgdata:/var/lib/postgresql/data \
-			--env POSTGRES_USER=curator \
-			--env POSTGRES_PASSWORD=curator123 \
-			--env POSTGRES_DB=paper_curator_test \
-			containers/pgvector.sif pgtest 2>/dev/null || echo "Test DB may already be running"; \
-	elif command -v docker >/dev/null 2>&1; then \
-		docker run -d --name paper-curator-test-db \
-			-p $(TEST_DB_PORT):5432 \
-			-v $$(pwd)/tests/storage/pgdata:/var/lib/postgresql/data \
-			-e POSTGRES_USER=curator \
-			-e POSTGRES_PASSWORD=curator123 \
-			-e POSTGRES_DB=paper_curator_test \
-			pgvector/pgvector:pg16 2>/dev/null || echo "Test DB may already be running"; \
-	else \
-		echo "Error: Neither singularity nor docker found"; exit 1; \
-	fi
-	@sleep 3
-	@echo "Test database ready on port $(TEST_DB_PORT)"
-
-test-db-stop:
-	@singularity instance stop pgtest 2>/dev/null || true
-	@docker stop paper-curator-test-db 2>/dev/null || true
-	@docker rm paper-curator-test-db 2>/dev/null || true
-
 test-db-init:
-	PGPORT=$(TEST_DB_PORT) PGDATABASE=paper_curator_test python scripts/init_db.py
+	@echo "=== Initializing test database via backend API ==="
+	@curl -sf -X POST $(BACKEND_URL)/db/init \
+		-H "Content-Type: application/json" \
+		-d '{"database": "$(TEST_DB_NAME)", "drop_existing": false}' \
+		| python3 -c "import sys,json; d=json.load(sys.stdin); print(f'DB: {d[\"database\"]} - {d[\"status\"]}')"
 
-test-download-samples:
-	@mkdir -p tests/storage/downloads
-	@python -c 'import arxiv, os; \
-		papers = ["1706.03762","1810.04805","2005.14165","1512.03385","1406.2661","1706.03741","2010.11929","2103.00020","2302.13971","2303.08774"]; \
-		[print(f"Downloading {p}...") or next(arxiv.Search(id_list=[p]).results()).download_pdf(dirpath="tests/storage/downloads", filename=f"{p}.pdf") \
-		 for p in papers if not os.path.exists(f"tests/storage/downloads/{p}.pdf")]'
+test-db-reset:
+	@echo "=== Resetting test database (drop + recreate) ==="
+	@curl -sf -X POST $(BACKEND_URL)/db/init \
+		-H "Content-Type: application/json" \
+		-d '{"database": "$(TEST_DB_NAME)", "drop_existing": true}' \
+		| python3 -c "import sys,json; d=json.load(sys.stdin); print(f'DB: {d[\"database\"]} - {d[\"status\"]}')"
 
 # =============================================================================
 # Development

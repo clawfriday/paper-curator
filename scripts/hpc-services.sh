@@ -178,12 +178,13 @@ start_backend() {
     
     # Start the backend as a background process (not as instance)
     # because Singularity instances don't reliably run startscripts
+    # Bind src/backend -> /app first, then overlay config + storage
     singularity run \
-        --bind "${PROJECT_ROOT}/storage:/app/storage" \
+        --bind "${PROJECT_ROOT}/src/backend:/app" \
         --bind "${PROJECT_ROOT}/config:/app/config" \
+        --bind "${PROJECT_ROOT}/storage:/app/storage" \
         --bind "${HOME}:/host_home:ro" \
         --env "BACKEND_PORT=$BACKEND_PORT" \
-        --env "DATABASE_URL=postgresql://${DB_USER}:${DB_PASS}@localhost:${DB_PORT}/${DB_NAME}" \
         --env "PYTHONUNBUFFERED=1" \
         "$BACKEND_SIF" > "${LOG_DIR}/backend.log" 2>&1 &
     

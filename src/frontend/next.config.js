@@ -55,6 +55,11 @@ const nextConfig = {
         source: "/api/ui-config",
         destination: `${backendUrl}/ui-config`,
       },
+      // Database management endpoints
+      {
+        source: "/api/db/:path*",
+        destination: `${backendUrl}/db/:path*`,
+      },
       // Database & Tree endpoints
       {
         source: "/api/papers/:path*",

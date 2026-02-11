@@ -36,7 +36,7 @@ class TestStructuredAnalysis:
 
     def test_structured_summary(self, backend_available, test_storage_dir):
         """Generate structured summary."""
-        pdf_path = f"{test_storage_dir}/downloads/1706.03762.pdf"
+        pdf_path = f"{test_storage_dir}/downloads/local/1706.03762.pdf"
         assert Path(pdf_path).exists(), f"PDF not found at {pdf_path} - ensure download runs first"
         
         # Long timeout but let it fail if it times out
@@ -72,7 +72,7 @@ class TestStructuredAnalysis:
 
     def test_qa_structured(self, backend_available, test_storage_dir):
         """Test structured Q&A with LLM validation."""
-        pdf_path = f"{test_storage_dir}/downloads/1706.03762.pdf"
+        pdf_path = f"{test_storage_dir}/downloads/local/1706.03762.pdf"
         assert Path(pdf_path).exists(), f"PDF not found at {pdf_path}"
         
         resp = requests.post(

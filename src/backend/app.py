@@ -157,6 +157,7 @@ class BatchIngestRequest(BaseModel):
     slack_channel: Optional[str] = Field(default=None, description="Slack channel identifier (#channel-name, channel ID, or URL)")
     slack_token: Optional[str] = Field(default=None, description="Slack User OAuth Token (xoxp-...) - not persisted")
     skip_existing: bool = Field(default=True, description="Skip PDFs already in database")
+    limit: Optional[int] = Field(default=None, description="Maximum number of papers to ingest (applied after dedup/skip-existing filtering)")
 
 
 class TreeNodeRequest(BaseModel):
@@ -1063,6 +1064,138 @@ async def rename_category(payload: RenameCategoryRequest) -> dict[str, Any]:
 
 
 # =============================================================================
+# Database Switching Endpoints
+# =============================================================================
+
+class DbSwitchRequest(BaseModel):
+    database: str = Field(..., description="Database name to switch to (e.g., 'paper_curator_test')")
+
+class DbInitRequest(BaseModel):
+    database: str = Field(..., description="Database name to create and initialize")
+    drop_existing: bool = Field(default=False, description="Drop existing database before creating")
+
+
+@app.get("/db/status")
+def db_status() -> dict[str, Any]:
+    """Return the currently active database name and connection info."""
+    active = db.get_active_database()
+    # Quick connectivity check
+    try:
+        with db.get_db() as conn:
+            with conn.cursor() as cur:
+                cur.execute("SELECT current_database(), COUNT(*) FROM papers")
+                row = cur.fetchone()
+                return {
+                    "database": active,
+                    "connected_to": row[0],
+                    "paper_count": row[1],
+                    "status": "ok",
+                }
+    except Exception as e:
+        return {
+            "database": active,
+            "connected_to": None,
+            "paper_count": None,
+            "status": f"error: {e}",
+        }
+
+
+@app.post("/db/switch")
+def db_switch(payload: DbSwitchRequest) -> dict[str, Any]:
+    """Switch the active database at runtime.
+
+    All subsequent DB operations will use the new database.
+    The previous database name is returned so callers can switch back.
+    """
+    previous = db.switch_database(payload.database)
+    # Verify connectivity
+    try:
+        with db.get_db() as conn:
+            with conn.cursor() as cur:
+                cur.execute("SELECT current_database(), COUNT(*) FROM papers")
+                row = cur.fetchone()
+                return {
+                    "previous_database": previous,
+                    "current_database": row[0],
+                    "paper_count": row[1],
+                    "status": "ok",
+                }
+    except Exception as e:
+        # Roll back to previous database on failure
+        db.switch_database(previous)
+        raise HTTPException(
+            status_code=400,
+            detail=f"Cannot connect to database '{payload.database}': {e}. Reverted to '{previous}'.",
+        )
+
+
+@app.post("/db/init")
+def db_init(payload: DbInitRequest) -> dict[str, Any]:
+    """Create and initialize a database with the paper-curator schema.
+
+    This is used to set up a fresh test database. The backend stays connected
+    to whatever database was active before this call.
+    """
+    target = payload.database
+    # Safety: never allow dropping the production database
+    if payload.drop_existing and target == "paper_curator":
+        raise HTTPException(status_code=400, detail="Refusing to drop the production database")
+
+    try:
+        admin_conn = db.get_admin_connection("postgres")
+        cur = admin_conn.cursor()
+
+        if payload.drop_existing:
+            # Terminate existing connections first
+            cur.execute(
+                "SELECT pg_terminate_backend(pid) FROM pg_stat_activity "
+                "WHERE datname = %s AND pid <> pg_backend_pid()",
+                (target,),
+            )
+            cur.execute(f'DROP DATABASE IF EXISTS "{target}"')
+
+        # Create database
+        cur.execute(f'CREATE DATABASE "{target}" OWNER curator')
+        cur.close()
+        admin_conn.close()
+
+        # Run init.sql on the new database
+        init_sql_paths = [
+            pathlib.Path("src/backend/init.sql"),
+            pathlib.Path("init.sql"),
+            pathlib.Path("../backend/init.sql"),
+        ]
+        init_sql = None
+        for p in init_sql_paths:
+            if p.exists():
+                init_sql = p.read_text()
+                break
+
+        if init_sql:
+            conn = db.get_admin_connection(dbname=target)
+            with conn.cursor() as c:
+                c.execute(init_sql)
+            conn.close()
+
+        return {
+            "database": target,
+            "status": "created",
+            "schema_initialized": init_sql is not None,
+        }
+
+    except Exception as dup_err:
+        if "already exists" in str(dup_err):
+            return {
+                "database": target,
+                "status": "already_exists",
+                "schema_initialized": False,
+            }
+        raise HTTPException(status_code=500, detail=f"Failed to init database '{target}': {dup_err}")
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to init database '{target}': {e}")
+
+
+# =============================================================================
 # Database & Tree Endpoints
 # =============================================================================
 
@@ -1344,6 +1477,11 @@ async def batch_ingest(payload: BatchIngestRequest) -> dict[str, Any]:
                 new_ids = arxiv_ids_list
                 log_progress(f"Skipping disabled, will process all {len(new_ids)} papers")
             
+            # Apply limit if specified
+            if payload.limit and len(new_ids) > payload.limit:
+                log_progress(f"Limiting ingestion from {len(new_ids)} to {payload.limit} papers")
+                new_ids = new_ids[:payload.limit]
+            
             if not new_ids:
                 log_progress("No new papers to ingest")
             else:
@@ -1543,6 +1681,12 @@ async def batch_ingest(payload: BatchIngestRequest) -> dict[str, Any]:
         else:
             new_files = paper_ids_map
         
+        # Apply limit if specified
+        if payload.limit and len(new_files) > payload.limit:
+            # Keep only the first N files
+            limited_keys = list(new_files.keys())[:payload.limit]
+            new_files = {k: new_files[k] for k in limited_keys}
+        
         if new_files:
             max_concurrent = ingestion_config.get("max_concurrent", 5)
             semaphore = asyncio.Semaphore(max_concurrent)
@@ -1707,8 +1851,8 @@ async def classify_papers() -> dict[str, Any]:
         for arxiv_id in papers_without_embeddings:
             await _ensure_paper_embedding(arxiv_id)
     
-    # Step 2: Build tree structure using clustering
-    cluster_result = clustering.build_tree_from_clusters()
+    # Step 2: Build tree structure using clustering (run in thread to avoid blocking event loop)
+    cluster_result = await asyncio.to_thread(clustering.build_tree_from_clusters)
     
     if cluster_result["total_papers"] < 2:
         return {
@@ -1724,8 +1868,8 @@ async def classify_papers() -> dict[str, Any]:
         "children": cluster_result.get("children", []),
     }
     
-    # Step 3: Save tree to database
-    clustering.write_tree_to_database(tree_structure)
+    # Step 3: Save tree to database (run in thread to avoid blocking event loop)
+    await asyncio.to_thread(clustering.write_tree_to_database, tree_structure)
     
     # Step 4: Name all nodes using contrastive naming
     naming_result = await naming.name_tree_nodes()
@@ -2913,6 +3057,9 @@ SETTINGS_SCHEMA = {
     "chunks_per_paper": {"category": "topic_query", "type": "integer", "label": "Chunks Per Paper", "readonly": False},
     "topic_debug_mode": {"category": "topic_query", "type": "boolean", "label": "Debug Mode", "readonly": False},
     
+    # Database Settings
+    "database_name": {"category": "database", "type": "string", "label": "Active Database", "readonly": False},
+
     # Port Settings (read-only, require restart)
     "frontend_port": {"category": "ports", "type": "integer", "label": "Frontend Port", "readonly": True},
     "backend_port": {"category": "ports", "type": "integer", "label": "Backend Port", "readonly": True},
@@ -2957,6 +3104,7 @@ def _get_effective_config() -> dict[str, Any]:
         "similarity_threshold": yaml_config.get("topic_query", {}).get("similarity_threshold", 0.5),
         "chunks_per_paper": yaml_config.get("topic_query", {}).get("chunks_per_paper", 5),
         "topic_debug_mode": yaml_config.get("topic_query", {}).get("debug_mode", False),
+        "database_name": db.get_active_database(),
         "frontend_port": yaml_config.get("frontend_port", 3000),
         "backend_port": yaml_config.get("backend_port", 3100),
         "database_port": yaml_config.get("database_port", 5432),
@@ -3034,6 +3182,7 @@ def get_config() -> dict[str, Any]:
             "paperqa": {"label": "PaperQA", "description": "Document chunking and retrieval settings"},
             "ui": {"label": "UI", "description": "User interface behavior settings"},
             "topic_query": {"label": "Topic Query", "description": "Multi-paper RAG query settings"},
+            "database": {"label": "Database", "description": "Active database (switch between production and test)"},
             "ports": {"label": "Ports", "description": "Service ports (read-only, change in server config)"},
         }
     }
@@ -3061,6 +3210,21 @@ def update_config(payload: ConfigUpdateRequest) -> dict[str, Any]:
     updated = []
     
     for key, value in payload.settings.items():
+        # Special handling: database_name switches the active DB
+        if key == "database_name":
+            try:
+                prev = db.switch_database(str(value))
+                updated.append(key)
+                # Verify connectivity
+                with db.get_db() as conn:
+                    with conn.cursor() as cur:
+                        cur.execute("SELECT current_database()")
+                continue
+            except Exception as e:
+                db.switch_database(prev)
+                errors.append(f"Cannot switch to database '{value}': {e}")
+                continue
+
         is_valid, message = _validate_setting(key, value)
         
         if not is_valid:
