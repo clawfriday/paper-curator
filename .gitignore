@@ -41,3 +41,9 @@ containers/*.sif
 pgdata/
 logs/
 run/
+
+local_model_server
+# Test storage (dynamic files)
+tests/storage/pgdata/
+tests/storage/paperqa_index/
+# Keep the 10 tracked sample PDFs in tests/storage/downloads/

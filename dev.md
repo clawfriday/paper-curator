@@ -1276,3 +1276,63 @@ This requires updating `hpc-services.sh` line 43 (`PGDATA="${PROJECT_ROOT}/pgdat
 7. Move `pgdata/` to `storage/pgdata/`, update `hpc-services.sh`
 8. Delete `storage/paperqa_index/` directory
 9. Test all endpoints: `/summarize`, `/qa`, `/qa-stream`, `/decomposed-qa`, `topic_query`, `batch-ingest`
+
+
+# Revised Test Plan
+can we split the test into 3 subfolders, and revise the plan by splitting it into 3 README.md according, one for each subfolder
+
+- 'unit"
+- 'validation'
+- 'integration'
+
+I have listed the tests I want to do as following, for the details of test I left as blank, help me fill in. Don't use code blocks, only concise plain text description following my example.
+
+the unit-test will includes the following:
+- test_paper_download: download the "attention is all you need" into a test location "tests/storage/downloads"
+- test_pdf_extraction: check the pdf is successfully extracted, no bad quality chunks
+- test_embedding: 
+   - obtain the chunk_wise embedding, assert each is non-empty
+   - obtain the full text embedding, assert it's the meanpoolinng of paper embedding
+- test_paper_abbreviate: 
+- test_paper_reabbreviate:
+- test_structured_analysis: obtain any paper, use LLM to check if the response make sense
+- test_query_paper: ask a reasonable question about any paper, use LLM to check if the response make sense
+- test_fetch_github_repo: test a paper with known github repo, if the repo can be retrieved
+- test_fetch_reference: test a paper's reference list can be retrieved
+- test_fetch_similar: test a paper's similar papers can be retrieved
+
+I assume the 'validation' will include the test of following:
+- llm model endpoint is accessible 
+- embedding model endpoint is accessible 
+- the backend endpoint is accessible
+- the frontend endpoint is accessible
+- all configs are obtainable
+
+the 'integration' will include the following:
+
+use a separate test database, initialized to empty, and run the following
+- test_ingest_single_paper: ingest a single paper "attention is all you need", verify that
+   - the paper pdf is extracted correctly
+   - the paper arxiv and semantic scholar metadata are both extracted and non-empty
+   - chunk_wise embedding, paper embedding are both generated and non empty, 
+   - the paper summary is generated
+   - a node in the tree is created for the paper
+   - all paper related data are correctly added into the database
+
+- test_paper_remove
+   - remove the "attention is all you need" paper from the temporary database and the tree
+   - check if the removal is successful
+
+- test_category_rename:
+
+- test_ingest_local_folder: 
+   - ingest a group of papers from a local folder `tests/storage/downloads` (to include "attention is all you need"). 
+   - check the number of papers matches with the number of paper nodes in the database and in the tree
+   - check the details of "attention is all you need", using similar approach as in test_ingest_single_paper
+
+- test_ingest_channel: 
+   - ingest a group of papers (limit to 10 paper) from the specified slack channel. 
+   - Only check the number of papers matches with the number of paper nodes in the database and in the tree
+- test_clustering: verify the tree is successfully built
+- test_rename_all: verify all category nodes in the test tree are correctly renamed 
+- test_topic_query_integration
