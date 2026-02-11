@@ -46,4 +46,8 @@ local_model_server
 # Test storage (dynamic files)
 tests/storage/pgdata/
 tests/storage/paperqa_index/
-# Keep the 10 tracked sample PDFs in tests/storage/downloads/
+# Allow tracked sample PDFs in tests/storage/downloads/
+!tests/storage/
+!tests/storage/downloads/
+!tests/storage/downloads/*.pdf
+!tests/storage/downloads/.gitkeep
