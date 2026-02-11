@@ -599,7 +599,7 @@ async def embed_abstract(payload: EmbedAbstractRequest) -> dict[str, Any]:
 
 
 @app.post("/embed/fulltext")
-def embed_fulltext(payload: EmbedFulltextRequest) -> dict[str, Any]:
+async def embed_fulltext(payload: EmbedFulltextRequest) -> dict[str, Any]:
     """Index full PDF for PaperQA2 queries. Persists index for reuse."""
     endpoint_config = _get_endpoint_config()
     llm_base_url = endpoint_config["llm_base_url"]
@@ -621,7 +621,7 @@ def embed_fulltext(payload: EmbedFulltextRequest) -> dict[str, Any]:
     except Exception as e:
         raise HTTPException(status_code=503, detail=f"Embedding endpoint not available: {e}")
     
-    _index_pdf_for_paperqa(
+    await _index_pdf_for_paperqa_async(
         payload.pdf_path,
         payload.arxiv_id,
         llm_base_url,
@@ -641,7 +641,7 @@ async def embed(payload: EmbedAbstractRequest) -> dict[str, Any]:
 
 
 @app.post("/qa")
-def qa(payload: QaRequest) -> dict[str, Any]:
+async def qa(payload: QaRequest) -> dict[str, Any]:
     """Answer a question about a paper. Uses cached index if arxiv_id provided.
     
     Persists the query and answer to the database for later retrieval.
@@ -656,7 +656,7 @@ def qa(payload: QaRequest) -> dict[str, Any]:
     # Check if we have a cached index
     has_cache = payload.arxiv_id and _get_paperqa_index_path(payload.arxiv_id).exists()
     
-    answer = _paperqa_answer(
+    answer = await _paperqa_answer_async(
         payload.context,
         payload.pdf_path,
         payload.question,
