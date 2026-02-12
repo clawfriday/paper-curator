@@ -43,9 +43,9 @@ endpoints:
   api_key: "local-key"  # Shared key for the endpoints above
 
 # =============================================================================
-# PaperQA2 settings
+# RAG settings (chunking, retrieval, evidence)
 # =============================================================================
-paperqa:
+rag:
   chunk_chars: 5000  # Larger chunks reduce index size but may blur details
   chunk_overlap: 250  # More overlap improves recall but increases compute
   use_doc_details: false  # Adds metadata into prompts for better grounding
@@ -72,7 +72,7 @@ classification:
   # Higher = more children per node, wider tree
   branching_factor: 5  # Higher = wider tree, fewer levels, more children per node
   # Auto-rebuild tree after ingesting new papers
-  rebuild_on_ingest: true  # If false, tree updates only on manual re-classify
+  rebuild_on_ingest: false  # If false, tree updates only on manual re-classify
 
 # =============================================================================
 # Topic Query settings (multi-paper RAG)

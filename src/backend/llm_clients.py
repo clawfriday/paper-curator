@@ -5,9 +5,6 @@ from functools import lru_cache
 
 from openai import AsyncOpenAI, OpenAI
 
-# Re-export reset_litellm_callbacks from the patch module
-from litellm_patch import reset_litellm_callbacks
-
 
 def get_openai_client(base_url: str, api_key: str) -> OpenAI:
     """Create OpenAI client with ngrok header support if needed."""

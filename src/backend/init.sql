@@ -190,3 +190,21 @@ CREATE TRIGGER update_settings_updated_at
     BEFORE UPDATE ON settings
     FOR EACH ROW
     EXECUTE FUNCTION update_updated_at_column();
+
+-- =============================================================================
+-- Paper Chunks Table: chunk-level text + embeddings for RAG
+-- =============================================================================
+
+CREATE TABLE IF NOT EXISTS paper_chunks (
+    id SERIAL PRIMARY KEY,
+    paper_id INTEGER REFERENCES papers(id) ON DELETE CASCADE,
+    chunk_index INTEGER NOT NULL,       -- ordering within the paper
+    text TEXT NOT NULL,                  -- the chunk text
+    embedding vector(4096),             -- chunk-level embedding
+    char_start INTEGER,                 -- position in original text
+    char_end INTEGER,
+    created_at TIMESTAMPTZ DEFAULT NOW(),
+    UNIQUE(paper_id, chunk_index)
+);
+
+CREATE INDEX IF NOT EXISTS idx_paper_chunks_paper ON paper_chunks(paper_id);

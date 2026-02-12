@@ -17,11 +17,7 @@ const nextConfig = {
   },
   async rewrites() {
     return [
-      // Core endpoints
-      {
-        source: "/api/arxiv/:path*",
-        destination: `${backendUrl}/arxiv/:path*`,
-      },
+      // Note: /api/arxiv/* is handled by custom API routes with extended timeout
       {
         source: "/api/pdf/:path*",
         destination: `${backendUrl}/pdf/:path*`,

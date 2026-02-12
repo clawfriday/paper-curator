@@ -1,16 +1,5 @@
 from __future__ import annotations
 
-# Apply patches before any other imports that may trigger litellm/paperqa
-from pdf_patch import patch_pypdf
-patch_pypdf()
-
-# CRITICAL: Patch LiteLLM before any paperqa imports to prevent:
-# - MAX_CALLBACKS limit (30) warnings
-# - Async task cleanup warnings from LoggingWorker
-# - Memory leaks from callback accumulation
-from litellm_patch import patch_litellm
-patch_litellm()
-
 import asyncio
 import hashlib
 import json
@@ -24,11 +13,10 @@ from typing import Any, Optional
 import arxiv
 from fastapi import FastAPI, HTTPException
 from openai import AsyncOpenAI, OpenAI
-from paperqa import Docs
-from paperqa.settings import Settings
 from pydantic import BaseModel, Field
 
 import db
+import rag
 from arxiv_helpers import (
     download_arxiv_pdf_async,
     extract_arxiv_ids_from_text,
@@ -39,6 +27,7 @@ from config import (
     _get_endpoint_config,
     _get_external_apis_config,
     _get_ingestion_config,
+    _get_rag_config,
     _get_topic_query_config,
     _get_ui_config,
     _load_prompt,
@@ -49,22 +38,7 @@ from external_clients import shutdown_http_clients
 from llm_clients import (
     get_async_openai_client,
     get_openai_client,
-    reset_litellm_callbacks,
     resolve_model,
-)
-from paperqa_helpers import (
-    build_paperqa_settings,
-    clean_paperqa_citations,
-    ensure_paper_embedding,
-    extract_document_embedding_from_paperqa,
-    get_paperqa_index_path,
-    index_pdf_for_paperqa,
-    index_pdf_for_paperqa_async,
-    load_paperqa_index,
-    paperqa_answer,
-    paperqa_answer_async,
-    paperqa_extract_pdf,
-    paperqa_extract_pdf_async,
 )
 from slack_helpers import (
     fetch_slack_messages,
@@ -249,136 +223,9 @@ def _resolve_model(base_url: str, api_key: str) -> str:
     return resolve_model(base_url, api_key)
 
 
-def _get_paperqa_index_path(arxiv_id: str) -> pathlib.Path:
-    """Get path to stored PaperQA2 index for a paper."""
-    return get_paperqa_index_path(arxiv_id)
-
-
-def _reset_litellm_callbacks() -> None:
-    """Reset LiteLLM callbacks to prevent accumulation."""
-    reset_litellm_callbacks()
-
-
-def _build_paperqa_settings(
-    llm_model: str,
-    embed_model: str,
-    llm_base_url: str,
-    embed_base_url: str,
-    api_key: str,
-) -> Settings:
-    """Build PaperQA2 Settings with given models and endpoints."""
-    return build_paperqa_settings(llm_model, embed_model, llm_base_url, embed_base_url, api_key)
-
-
-async def _index_pdf_for_paperqa_async(
-    pdf_path: str,
-    arxiv_id: str,
-    llm_base_url: str,
-    embed_base_url: str,
-    api_key: str,
-    llm_model: str,
-    embed_model: str,
-) -> Docs:
-    """Index a PDF and persist the Docs object for later QA queries (async)."""
-    return await index_pdf_for_paperqa_async(
-        pdf_path, arxiv_id, llm_base_url, embed_base_url, api_key, llm_model, embed_model
-    )
-
-
-def _index_pdf_for_paperqa(
-    pdf_path: str,
-    arxiv_id: str,
-    llm_base_url: str,
-    embed_base_url: str,
-    api_key: str,
-    llm_model: str,
-    embed_model: str,
-) -> Docs:
-    """Index a PDF and persist the Docs object for later QA queries (sync wrapper)."""
-    return index_pdf_for_paperqa(
-        pdf_path, arxiv_id, llm_base_url, embed_base_url, api_key, llm_model, embed_model
-    )
-
-
-def _load_paperqa_index(arxiv_id: str) -> Optional[Docs]:
-    """Load persisted PaperQA2 Docs if exists."""
-    return load_paperqa_index(arxiv_id)
-
-
-def _extract_document_embedding_from_paperqa(docs: Docs) -> Optional[list[float]]:
-    """Extract document-level embedding by mean pooling of PaperQA2 chunk embeddings."""
-    return extract_document_embedding_from_paperqa(docs)
-
-
-async def _ensure_paper_embedding(arxiv_id: str) -> bool:
-    """Ensure a paper has a document-level embedding."""
-    return await ensure_paper_embedding(arxiv_id)
-
-
-def _attach_embedding_from_index(arxiv_id: str, paper_id: int) -> bool:
-    """Attach a document embedding from cached PaperQA index if available."""
-    docs = _load_paperqa_index(arxiv_id)
-    if not docs:
-        return False
-    doc_embedding = _extract_document_embedding_from_paperqa(docs)
-    if not doc_embedding:
-        return False
-    db.update_paper_embedding(paper_id, doc_embedding)
-    return True
-
-
-async def _paperqa_answer_async(
-    text: Optional[str],
-    pdf_path: Optional[str],
-    question: str,
-    llm_base_url: str,
-    embed_base_url: str,
-    api_key: str,
-    llm_model: str,
-    embed_model: str,
-    arxiv_id: Optional[str] = None,
-) -> str:
-    """Query PaperQA2 for an answer (async)."""
-    return await paperqa_answer_async(
-        text, pdf_path, question, llm_base_url, embed_base_url, api_key, llm_model, embed_model, arxiv_id
-    )
-
-
-def _paperqa_answer(
-    text: Optional[str],
-    pdf_path: Optional[str],
-    question: str,
-    llm_base_url: str,
-    embed_base_url: str,
-    api_key: str,
-    llm_model: str,
-    embed_model: str,
-    arxiv_id: Optional[str] = None,
-) -> str:
-    """Query PaperQA2 for an answer (sync wrapper)."""
-    return paperqa_answer(
-        text, pdf_path, question, llm_base_url, embed_base_url, api_key, llm_model, embed_model, arxiv_id
-    )
-
-
-def _clean_paperqa_citations(text: str) -> str:
-    """Remove PaperQA2 citation markers from text."""
-    return clean_paperqa_citations(text)
-
-
 async def _download_arxiv_pdf(arxiv_id: str, pdf_url: str) -> str:
     """Download arXiv PDF and return local path with retry logic."""
     return await download_arxiv_pdf_async(arxiv_id)
-
-
-async def _paperqa_extract_pdf_async(pdf_path: pathlib.Path) -> dict[str, Any]:
-    """Extract text from PDF using PaperQA2's native parser (async version)."""
-    return await paperqa_extract_pdf_async(pdf_path)
-
-
-def _paperqa_extract_pdf(pdf_path: pathlib.Path) -> dict[str, Any]:
-    """Extract text from PDF using PaperQA2's native parser (sync wrapper)."""
-    return paperqa_extract_pdf(pdf_path)
 
 
 # =============================================================================
@@ -450,16 +297,17 @@ async def arxiv_download(payload: ArxivDownloadRequest) -> dict[str, Any]:
 
 @app.post("/pdf/extract")
 async def pdf_extract(payload: PdfExtractRequest) -> dict[str, Any]:
-    """Extract text from PDF using PaperQA2's native parser."""
+    """Extract text from PDF using pymupdf."""
     pdf_path = pathlib.Path(payload.pdf_path)
     if not pdf_path.exists():
         raise HTTPException(status_code=404, detail="PDF not found.")
-    return await _paperqa_extract_pdf_async(pdf_path)
+    text = rag.extract_pdf_text(pdf_path)
+    return {"text": text, "parser": "pymupdf"}
 
 
 @app.post("/summarize")
 async def summarize(payload: SummarizeRequest) -> dict[str, Any]:
-    """Summarize a paper. Also indexes PDF for faster QA queries if arxiv_id provided."""
+    """Summarize a paper using custom RAG."""
     prompt_id, prompt_hash, prompt_body = _load_prompt()
     endpoint_config = _get_endpoint_config()
     base_url = endpoint_config["llm_base_url"]
@@ -468,32 +316,34 @@ async def summarize(payload: SummarizeRequest) -> dict[str, Any]:
     
     # Check LLM endpoint
     try:
-        model = f"openai/{_resolve_model(base_url, api_key)}"
+        model = _resolve_model(base_url, api_key)
     except Exception as e:
         raise HTTPException(status_code=503, detail=f"LLM endpoint not available at {base_url}: {e}")
     
     # Check embedding endpoint
     try:
-        embed_model = f"openai/{_resolve_model(embed_base_url, api_key)}"
+        embed_model = _resolve_model(embed_base_url, api_key)
     except Exception as e:
         raise HTTPException(status_code=503, detail=f"Embedding endpoint not available at {embed_base_url}. Please start your embedding service on port 8004.")
     
-    summary = await _paperqa_answer_async(
-        payload.text,
-        payload.pdf_path,
-        prompt_body,
-        base_url,
-        embed_base_url,
-        api_key,
-        model,
-        embed_model,
-        arxiv_id=payload.arxiv_id,  # Persist index for QA reuse
+    llm_client = _get_async_openai_client(base_url, api_key)
+    embed_client = _get_async_openai_client(embed_base_url, api_key)
+    
+    summary = await rag.rag_answer_async(
+        question=prompt_body,
+        text=payload.text,
+        pdf_path=payload.pdf_path,
+        arxiv_id=payload.arxiv_id,
+        llm_client=llm_client,
+        llm_model=model,
+        embed_client=embed_client,
+        embed_model=embed_model,
     )
     return {
         "summary": summary.strip(),
         "prompt_id": prompt_id,
         "prompt_hash": prompt_hash,
-        "model": model,
+        "model": f"openai/{model}",
         "indexed": payload.arxiv_id is not None,
     }
 
@@ -504,37 +354,39 @@ async def summarize_structured(payload: StructuredSummarizeRequest) -> dict[str,
     
     Flow:
     1. Extract key components/concepts from the paper
-    2. For each component, query 4 aspects in parallel:
-       - Logical steps / pseudo-code
-       - Main benefit area
-       - Rationale behind benefit
-       - Quantifiable results
+    2. For each component, query 4 aspects in parallel
     3. Return structured sections
-    
-    Uses: PaperQA2 for document indexing and LLM queries
     """
     endpoint_config = _get_endpoint_config()
     base_url = endpoint_config["llm_base_url"]
     embed_base_url = endpoint_config["embedding_base_url"]
     api_key = endpoint_config["api_key"]
     
-    model = f"openai/{_resolve_model(base_url, api_key)}"
-    embed_model = f"openai/{_resolve_model(embed_base_url, api_key)}"
+    model = _resolve_model(base_url, api_key)
+    embed_model = _resolve_model(embed_base_url, api_key)
     
-    _reset_litellm_callbacks()
+    llm_client = _get_async_openai_client(base_url, api_key)
+    embed_client = _get_async_openai_client(embed_base_url, api_key)
     
-    # Step 1: Extract components using PaperQA2
+    # Pre-index: ensure chunks are stored so all queries use fast DB-backed retrieval
+    if payload.pdf_path and payload.arxiv_id:
+        _paper = db.get_paper_by_arxiv_id(payload.arxiv_id)
+        if _paper and not db.has_paper_chunks(_paper["id"]):
+            await rag.index_paper_async(_paper["id"], payload.pdf_path, embed_client, embed_model)
+        elif not _paper:
+            _pid = db.create_paper(arxiv_id=payload.arxiv_id, title=f"Paper {payload.arxiv_id}", authors=[], pdf_path=payload.pdf_path)
+            await rag.index_paper_async(_pid, payload.pdf_path, embed_client, embed_model)
+    
+    # Step 1: Extract components using RAG
     extract_prompt = get_prompt("extract_components")
-    components_raw = await _paperqa_answer_async(
-        None,
-        payload.pdf_path,
-        extract_prompt,
-        base_url,
-        embed_base_url,
-        api_key,
-        model,
-        embed_model,
+    components_raw = await rag.rag_answer_async(
+        question=extract_prompt,
+        pdf_path=payload.pdf_path,
         arxiv_id=payload.arxiv_id,
+        llm_client=llm_client,
+        llm_model=model,
+        embed_client=embed_client,
+        embed_model=embed_model,
     )
     
     # Parse components JSON - extract array from response
@@ -555,33 +407,28 @@ async def summarize_structured(payload: StructuredSummarizeRequest) -> dict[str,
         ]
         
         for aspect, prompt in aspects:
-            _reset_litellm_callbacks()
-            answer = await _paperqa_answer_async(
-                None,
-                payload.pdf_path,
-                prompt,
-                base_url,
-                embed_base_url,
-                api_key,
-                model,
-                embed_model,
+            answer = await rag.rag_answer_async(
+                question=prompt,
+                pdf_path=payload.pdf_path,
                 arxiv_id=payload.arxiv_id,
+                llm_client=llm_client,
+                llm_model=model,
+                embed_client=embed_client,
+                embed_model=embed_model,
             )
             result[aspect] = answer.strip()
         
         return result
     
-    # Analyze components sequentially to avoid callback accumulation
     sections = []
     for component in components:
-        _reset_litellm_callbacks()
         section = await analyze_component(component)
         sections.append(section)
     
     return {
         "components": list(components),
         "sections": list(sections),
-        "model": model,
+        "model": f"openai/{model}",
         "indexed": payload.arxiv_id is not None,
     }
 
@@ -601,37 +448,32 @@ async def embed_abstract(payload: EmbedAbstractRequest) -> dict[str, Any]:
 
 @app.post("/embed/fulltext")
 async def embed_fulltext(payload: EmbedFulltextRequest) -> dict[str, Any]:
-    """Index full PDF for PaperQA2 queries. Persists index for reuse."""
+    """Index full PDF: chunk, embed, store in paper_chunks table."""
     endpoint_config = _get_endpoint_config()
-    llm_base_url = endpoint_config["llm_base_url"]
     embed_base_url = endpoint_config["embedding_base_url"]
     api_key = endpoint_config["api_key"]
     
-    # Check if already indexed
-    index_path = _get_paperqa_index_path(payload.arxiv_id)
-    if index_path.exists():
-        return {"indexed": True, "cached": True, "arxiv_id": payload.arxiv_id}
-    
     try:
-        llm_model = f"openai/{_resolve_model(llm_base_url, api_key)}"
-    except Exception as e:
-        raise HTTPException(status_code=503, detail=f"LLM endpoint not available: {e}")
-    
-    try:
-        embed_model = f"openai/{_resolve_model(embed_base_url, api_key)}"
+        embed_model = _resolve_model(embed_base_url, api_key)
     except Exception as e:
         raise HTTPException(status_code=503, detail=f"Embedding endpoint not available: {e}")
     
-    await _index_pdf_for_paperqa_async(
-        payload.pdf_path,
-        payload.arxiv_id,
-        llm_base_url,
-        embed_base_url,
-        api_key,
-        llm_model,
-        embed_model,
-    )
-    return {"indexed": True, "cached": False, "arxiv_id": payload.arxiv_id}
+    embed_client = _get_async_openai_client(embed_base_url, api_key)
+    
+    # Ensure paper exists in DB (create minimal entry if not)
+    paper = db.get_paper_by_arxiv_id(payload.arxiv_id)
+    if not paper:
+        paper_id = db.create_paper(
+            arxiv_id=payload.arxiv_id,
+            title=f"Paper {payload.arxiv_id}",
+            authors=[],
+            pdf_path=payload.pdf_path,
+        )
+    else:
+        paper_id = paper["id"]
+    
+    result = await rag.index_paper_async(paper_id, payload.pdf_path, embed_client, embed_model)
+    return {"indexed": result["indexed"], "cached": result["cached"], "arxiv_id": payload.arxiv_id}
 
 
 # Keep old endpoint for backwards compatibility
@@ -643,7 +485,7 @@ async def embed(payload: EmbedAbstractRequest) -> dict[str, Any]:
 
 @app.post("/qa")
 async def qa(payload: QaRequest) -> dict[str, Any]:
-    """Answer a question about a paper. Uses cached index if arxiv_id provided.
+    """Answer a question about a paper using custom RAG.
     
     Persists the query and answer to the database for later retrieval.
     """
@@ -651,80 +493,94 @@ async def qa(payload: QaRequest) -> dict[str, Any]:
     base_url = endpoint_config["llm_base_url"]
     embed_base_url = endpoint_config["embedding_base_url"]
     api_key = endpoint_config["api_key"]
-    model = f"openai/{_resolve_model(base_url, api_key)}"
-    embed_model = f"openai/{_resolve_model(embed_base_url, api_key)}"
+    model = _resolve_model(base_url, api_key)
+    embed_model = _resolve_model(embed_base_url, api_key)
     
-    # Check if we have a cached index
-    has_cache = payload.arxiv_id and _get_paperqa_index_path(payload.arxiv_id).exists()
+    llm_client = _get_async_openai_client(base_url, api_key)
+    embed_client = _get_async_openai_client(embed_base_url, api_key)
     
-    answer = await _paperqa_answer_async(
-        payload.context,
-        payload.pdf_path,
-        payload.question,
-        base_url,
-        embed_base_url,
-        api_key,
-        model,
-        embed_model,
+    # Check if we have indexed chunks
+    has_cache = False
+    if payload.arxiv_id:
+        paper = db.get_paper_by_arxiv_id(payload.arxiv_id)
+        if paper:
+            has_cache = db.has_paper_chunks(paper["id"])
+    
+    answer = await rag.rag_answer_async(
+        question=payload.question,
+        text=payload.context,
+        pdf_path=payload.pdf_path,
         arxiv_id=payload.arxiv_id,
+        llm_client=llm_client,
+        llm_model=model,
+        embed_client=embed_client,
+        embed_model=embed_model,
     )
     
     # Persist query to database if arxiv_id provided
     if payload.arxiv_id:
         paper = db.get_paper_by_arxiv_id(payload.arxiv_id)
         if paper:
-            db.add_query(paper["id"], payload.question, answer, model)
+            db.add_query(paper["id"], payload.question, answer, f"openai/{model}")
     
     return {"answer": answer, "used_cache": has_cache}
 
 
 @app.post("/qa/structured")
 async def qa_structured(payload: StructuredQaRequest) -> dict[str, Any]:
-    """Run structured analysis on an already-indexed paper.
-    
-    Uses cached PaperQA index for efficient querying. Runs ALL aspect queries
-    in parallel using asyncio.gather for maximum throughput.
+    """Run structured analysis on a paper using custom RAG.
     
     Flow:
     1. Extract key components from paper (sequential - need results first)
     2. For ALL components, query ALL 4 aspects in parallel
     3. Return structured sections
     """
-    # Check for cached index
-    index_path = _get_paperqa_index_path(payload.arxiv_id)
-    if not index_path.exists() and not payload.pdf_path:
+    # Check for indexed chunks or PDF
+    paper = db.get_paper_by_arxiv_id(payload.arxiv_id) if payload.arxiv_id else None
+    has_chunks = paper and db.has_paper_chunks(paper["id"]) if paper else False
+    if not has_chunks and not payload.pdf_path:
         raise HTTPException(
             status_code=404, 
-            detail=f"No cached index for {payload.arxiv_id}. Ingest the paper first."
+            detail=f"No indexed chunks for {payload.arxiv_id}. Ingest the paper first."
         )
     
     endpoint_config = _get_endpoint_config()
     base_url = endpoint_config["llm_base_url"]
     embed_base_url = endpoint_config["embedding_base_url"]
     api_key = endpoint_config["api_key"]
-    model = f"openai/{_resolve_model(base_url, api_key)}"
-    embed_model = f"openai/{_resolve_model(embed_base_url, api_key)}"
+    model = _resolve_model(base_url, api_key)
+    embed_model = _resolve_model(embed_base_url, api_key)
     
-    def reset_callbacks():
-        _reset_litellm_callbacks()
+    llm_client = _get_async_openai_client(base_url, api_key)
+    embed_client = _get_async_openai_client(embed_base_url, api_key)
+    
+    # Pre-index: ensure chunks are stored so all queries use fast DB-backed retrieval
+    if payload.pdf_path and payload.arxiv_id and not has_chunks:
+        paper_obj = paper
+        if not paper_obj:
+            paper_id_new = db.create_paper(
+                arxiv_id=payload.arxiv_id,
+                title=f"Paper {payload.arxiv_id}",
+                authors=[],
+                pdf_path=payload.pdf_path,
+            )
+        else:
+            paper_id_new = paper_obj["id"]
+        await rag.index_paper_async(paper_id_new, payload.pdf_path, embed_client, embed_model)
     
     async def run_query_async(question: str) -> str:
-        """Run a single PaperQA query asynchronously."""
-        reset_callbacks()
-        return await _paperqa_answer_async(
-            None,
-            payload.pdf_path,
-            question,
-            base_url,
-            embed_base_url,
-            api_key,
-            model,
-            embed_model,
+        """Run a single RAG query asynchronously."""
+        return await rag.rag_answer_async(
+            question=question,
+            pdf_path=payload.pdf_path,
             arxiv_id=payload.arxiv_id,
+            llm_client=llm_client,
+            llm_model=model,
+            embed_client=embed_client,
+            embed_model=embed_model,
         )
     
     # Step 1: Extract components (sequential - need results before step 2)
-    reset_callbacks()
     extract_prompt = get_prompt("extract_components")
     components_raw = await run_query_async(extract_prompt)
     
@@ -745,9 +601,8 @@ async def qa_structured(payload: StructuredQaRequest) -> dict[str, Any]:
     components = components[:5]
     
     # Step 2: Build all queries and run them in parallel
-    # Create list of (component_index, aspect_name, question) tuples
     query_tasks = []
-    query_metadata = []  # Track which component and aspect each query belongs to
+    query_metadata = []
     
     for idx, component in enumerate(components):
         for aspect, prompt_name in [
@@ -775,13 +630,13 @@ async def qa_structured(payload: StructuredQaRequest) -> dict[str, Any]:
     structured_result = {
         "components": components,
         "sections": sections,
-        "model": model,
+        "model": f"openai/{model}",
     }
     
     if payload.arxiv_id:
-        paper = db.get_paper_by_arxiv_id(payload.arxiv_id)
-        if paper:
-            db.update_paper_structured_summary(paper["id"], structured_result)
+        paper_obj = db.get_paper_by_arxiv_id(payload.arxiv_id)
+        if paper_obj:
+            db.update_paper_structured_summary(paper_obj["id"], structured_result)
     
     return structured_result
 
@@ -1221,26 +1076,38 @@ async def save_paper(payload: SavePaperRequest) -> dict[str, Any]:
         published_at=payload.published_at,
     )
 
-    # If the PaperQA index already exists, attach embedding now.
-    _attach_embedding_from_index(payload.arxiv_id, paper_id)
-    
+    # Index the paper (chunk + embed) so it has an embedding for classification.
+    # The summarize step runs *before* /papers/save, so rag_answer_async can't
+    # persist chunks (paper doesn't exist in DB yet).  We fix that here.
+    indexed = False
+    if payload.pdf_path:
+        try:
+            endpoint_config = _get_endpoint_config()
+            embed_base_url = endpoint_config["embedding_base_url"]
+            api_key = endpoint_config["api_key"]
+            embed_model = _resolve_model(embed_base_url, api_key)
+            embed_client = _get_async_openai_client(embed_base_url, api_key)
+            result = await rag.index_paper_async(
+                paper_id, payload.pdf_path, embed_client, embed_model
+            )
+            indexed = result.get("indexed", False)
+        except Exception as e:
+            # Non-fatal: paper is saved, embedding can be computed later
+            print(f"[save_paper] Warning: failed to index paper {paper_id}: {e}")
+
     # Optionally trigger tree rebuild if embedding-based classification is enabled
-    # Note: This will only work if the paper has an embedding. Embeddings are extracted
-    # during PaperQA2 indexing (which happens during summarization), so this will typically
-    # be triggered after the paper is fully ingested.
     classification_config = _get_classification_config()
     rebuild_triggered = False
     
     if classification_config.get("rebuild_on_ingest", False):
-        # Check if paper has embedding (required for new classification)
         paper = db.get_paper_by_id(paper_id)
         if paper and paper.get("embedding") is not None:
-            # Trigger tree rebuild in background (don't wait for it)
             asyncio.create_task(_rebuild_tree_async())
             rebuild_triggered = True
     
     return {
         "paper_id": paper_id,
+        "indexed": indexed,
         "rebuild_triggered": rebuild_triggered,
         "message": "Paper saved. Use 'Re-classify' to add it to the tree.",
     }
@@ -1327,6 +1194,7 @@ async def batch_ingest(payload: BatchIngestRequest) -> dict[str, Any]:
         raise HTTPException(status_code=503, detail=f"Embedding endpoint not available: {e}")
     
     llm_client = _get_async_openai_client(base_url, api_key)
+    embed_client = _get_async_openai_client(embed_base_url, api_key)
     
     # Progress logging for Slack ingestion
     progress_log = []
@@ -1500,17 +1368,6 @@ async def batch_ingest(payload: BatchIngestRequest) -> dict[str, Any]:
                     async with semaphore:
                         t_start = _time.monotonic()
                         wait_s = t_start - t_wait_start
-                        # Reset LiteLLM callbacks per task
-                        try:
-                            import litellm
-                            litellm.input_callback = []
-                            litellm.success_callback = []
-                            litellm.failure_callback = []
-                            litellm._async_success_callback = []
-                            litellm._async_failure_callback = []
-                        except Exception:
-                            pass
-                        
                         try:
                             # 1. Fetch arXiv metadata
                             log_progress(f"  [{arxiv_id}] Fetching metadata from arXiv...")
@@ -1550,34 +1407,31 @@ async def batch_ingest(payload: BatchIngestRequest) -> dict[str, Any]:
                             abbreviation = abbrev_resp.choices[0].message.content.strip().strip('"\'')
                             log_progress(f"  [{arxiv_id}] ✓ Abbreviation: {abbreviation}")
                             
-                            # 4. Summarize (PaperQA RAG: chunk, embed, retrieve, LLM)
-                            log_progress(f"  [{arxiv_id}] Summarizing paper...")
-                            prompt_id, prompt_hash, prompt_body = _load_prompt()
-                            summary = await _paperqa_answer_async(
-                                None,
-                                pdf_path,
-                                prompt_body,
-                                base_url,
-                                embed_base_url,
-                                api_key,
-                                f"openai/{model}",
-                                f"openai/{embed_model}",
-                                arxiv_id=arxiv_id,
-                            )
-                            t_summary = _time.monotonic() - t_start
-                            log_progress(f"  [{arxiv_id}] ✓ Summary generated ({t_summary:.1f}s)")
-                            
-                            # 5. Save to database
+                            # 4. Save to database first (without summary)
                             log_progress(f"  [{arxiv_id}] Saving to database...")
                             db_paper_id = db.create_paper(
                                 arxiv_id=arxiv_id,
                                 title=title,
                                 authors=authors,
                                 abstract=abstract[:1000],
-                                summary=summary,
                                 pdf_path=pdf_path,
                             )
-                            _attach_embedding_from_index(arxiv_id, db_paper_id)
+                            
+                            # 5. Summarize using RAG (auto-indexes: chunks + embedding)
+                            log_progress(f"  [{arxiv_id}] Summarizing paper...")
+                            prompt_id, prompt_hash, prompt_body = _load_prompt()
+                            summary = await rag.rag_answer_async(
+                                question=prompt_body,
+                                pdf_path=pdf_path,
+                                arxiv_id=arxiv_id,
+                                llm_client=llm_client,
+                                llm_model=model,
+                                embed_client=embed_client,
+                                embed_model=embed_model,
+                            )
+                            db.update_paper_summary(db_paper_id, summary)
+                            t_summary = _time.monotonic() - t_start
+                            log_progress(f"  [{arxiv_id}] ✓ Summary generated ({t_summary:.1f}s)")
                             
                             t_total = _time.monotonic() - t_start
                             completed_count[0] += 1
@@ -1694,16 +1548,6 @@ async def batch_ingest(payload: BatchIngestRequest) -> dict[str, Any]:
             async def ingest_local_pdf(paper_id: str, pdf_file: pathlib.Path) -> dict[str, Any]:
                 async with semaphore:
                     try:
-                        import litellm
-                        litellm.input_callback = []
-                        litellm.success_callback = []
-                        litellm.failure_callback = []
-                        litellm._async_success_callback = []
-                        litellm._async_failure_callback = []
-                    except Exception:
-                        pass
-                    
-                    try:
                         # Copy PDF to storage
                         storage_dir = pathlib.Path("storage/downloads")
                         storage_dir.mkdir(parents=True, exist_ok=True)
@@ -1711,10 +1555,10 @@ async def batch_ingest(payload: BatchIngestRequest) -> dict[str, Any]:
                         shutil.copy2(pdf_file, dest_path)
                         pdf_path = str(dest_path)
                         
-                        # Extract text
+                        # Extract text using pymupdf
                         try:
-                            extract_result = await _paperqa_extract_pdf_async(pdf_file)
-                            first_chunk = extract_result.get("text", "")[:2000]
+                            full_text = rag.extract_pdf_text(pdf_file)
+                            first_chunk = full_text[:2000]
                         except Exception as ex:
                             return {"file": pdf_file.name, "status": "error", "reason": f"PDF extract failed: {ex}"}
                         
@@ -1733,30 +1577,29 @@ async def batch_ingest(payload: BatchIngestRequest) -> dict[str, Any]:
                         )
                         abbreviation = abbrev_resp.choices[0].message.content.strip().strip('"\'')
                         
-                        # Summarize
-                        prompt_id, prompt_hash, prompt_body = _load_prompt()
-                        summary = await _paperqa_answer_async(
-                            None,
-                            pdf_path,
-                            prompt_body,
-                            base_url,
-                            embed_base_url,
-                            api_key,
-                            f"openai/{model}",
-                            f"openai/{embed_model}",
-                            arxiv_id=paper_id,
-                        )
-                        
-                        # Save to database
+                        # Create paper in DB first (without summary)
                         db_paper_id = db.create_paper(
                             arxiv_id=paper_id,
                             title=title,
                             authors=[],
                             abstract=first_chunk[:1000],
-                            summary=summary,
                             pdf_path=pdf_path,
                         )
-                        _attach_embedding_from_index(paper_id, db_paper_id)
+                        
+                        # Summarize using RAG (will auto-index chunks)
+                        prompt_id, prompt_hash, prompt_body = _load_prompt()
+                        summary = await rag.rag_answer_async(
+                            question=prompt_body,
+                            pdf_path=pdf_path,
+                            arxiv_id=paper_id,
+                            llm_client=llm_client,
+                            llm_model=model,
+                            embed_client=embed_client,
+                            embed_model=embed_model,
+                        )
+                        
+                        # Update paper with summary
+                        db.update_paper_summary(db_paper_id, summary)
                         
                         return {
                             "file": pdf_file.name,
@@ -1848,8 +1691,17 @@ async def classify_papers() -> dict[str, Any]:
     
     # Try to extract embeddings for papers that don't have them
     if papers_without_embeddings:
+        endpoint_config = _get_endpoint_config()
+        embed_base_url = endpoint_config["embedding_base_url"]
+        api_key = endpoint_config["api_key"]
+        try:
+            embed_model = _resolve_model(embed_base_url, api_key)
+            embed_client = _get_async_openai_client(embed_base_url, api_key)
+        except Exception:
+            embed_client = None
+            embed_model = None
         for arxiv_id in papers_without_embeddings:
-            await _ensure_paper_embedding(arxiv_id)
+            await rag.ensure_paper_embedding(arxiv_id, embed_client, embed_model)
     
     # Step 2: Build tree structure using clustering (run in thread to avoid blocking event loop)
     cluster_result = await asyncio.to_thread(clustering.build_tree_from_clusters)
@@ -2532,32 +2384,31 @@ async def topic_query(topic_id: int, payload: TopicQueryRequest) -> dict[str, An
     endpoint_config = _get_endpoint_config()
     base_url = endpoint_config["llm_base_url"]
     api_key = endpoint_config["api_key"]
-    raw_model = resolve_model(base_url, api_key)  # For OpenAI client
-    litellm_model = f"openai/{raw_model}"  # For PaperQA/LiteLLM (requires openai/ prefix)
-    client = _get_async_openai_client(base_url, api_key)
+    raw_model = resolve_model(base_url, api_key)
+    llm_client = _get_async_openai_client(base_url, api_key)
+    client = llm_client  # backward-compat alias for aggregation step
     
     # Get embed config once
     embed_base_url = endpoint_config["embedding_base_url"]
     embed_model_name = resolve_model(embed_base_url, api_key)
-    embed_model = f"openai/{embed_model_name}"
+    embed_client = _get_async_openai_client(embed_base_url, api_key)
     
     # Get question embedding for debug output
     question_embedding = None
     if debug_mode:
-        embed_client = _get_async_openai_client(embed_base_url, api_key)
         embed_response = await embed_client.embeddings.create(
             model=embed_model_name,
             input=payload.question,
         )
         question_embedding = embed_response.data[0].embedding
     
-    # Query each paper using PaperQA
+    # Query each paper using RAG
     paper_responses = []
     
     # Per-paper prompt template (for debug output)
     per_paper_prompt_template = f"""Question: {payload.question}
 
-[PaperQA internally retrieves relevant chunks from this paper and prompts the LLM to answer based on those chunks]"""
+[RAG retrieves relevant chunks from this paper and prompts the LLM to answer based on those chunks]"""
 
     def detect_text_quality(text: str) -> dict:
         """Detect text quality issues like font encoding problems."""
@@ -2630,20 +2481,14 @@ async def topic_query(topic_id: int, payload: TopicQueryRequest) -> dict[str, An
         title = paper.get("title", "Unknown")
         
         try:
-            # Reset litellm callbacks to prevent accumulation
-            reset_litellm_callbacks()
-            
-            # Use existing PaperQA query function (with details in debug mode)
-            result = await paperqa_answer_async(
-                text=None,
-                pdf_path=pdf_path,
+            result = await rag.rag_answer_async(
                 question=payload.question,
-                llm_base_url=base_url,
-                embed_base_url=embed_base_url,
-                api_key=api_key,
-                llm_model=litellm_model,
-                embed_model=embed_model,
+                pdf_path=pdf_path,
                 arxiv_id=arxiv_id,
+                llm_client=llm_client,
+                llm_model=raw_model,
+                embed_client=embed_client,
+                embed_model=embed_model_name,
                 return_details=debug_mode,
             )
             
@@ -3041,11 +2886,11 @@ SETTINGS_SCHEMA = {
     "branching_factor": {"category": "classification", "type": "integer", "label": "Branching Factor", "readonly": False},
     "rebuild_on_ingest": {"category": "classification", "type": "boolean", "label": "Rebuild on Ingest", "readonly": False},
     
-    # PaperQA Settings
-    "chunk_chars": {"category": "paperqa", "type": "integer", "label": "Chunk Size (chars)", "readonly": False},
-    "chunk_overlap": {"category": "paperqa", "type": "integer", "label": "Chunk Overlap (chars)", "readonly": False},
-    "evidence_k": {"category": "paperqa", "type": "integer", "label": "Evidence K", "readonly": False},
-    "evidence_summary_length": {"category": "paperqa", "type": "string", "label": "Evidence Summary Length", "readonly": False},
+    # RAG Settings
+    "chunk_chars": {"category": "rag", "type": "integer", "label": "Chunk Size (chars)", "readonly": False},
+    "chunk_overlap": {"category": "rag", "type": "integer", "label": "Chunk Overlap (chars)", "readonly": False},
+    "evidence_k": {"category": "rag", "type": "integer", "label": "Evidence K", "readonly": False},
+    "evidence_summary_length": {"category": "rag", "type": "string", "label": "Evidence Summary Length", "readonly": False},
     
     # UI Settings
     "max_similar_papers": {"category": "ui", "type": "integer", "label": "Max Similar Papers", "readonly": False},
@@ -3094,10 +2939,10 @@ def _get_effective_config() -> dict[str, Any]:
         "skip_existing": yaml_config.get("ingestion", {}).get("skip_existing", False),
         "branching_factor": yaml_config.get("classification", {}).get("branching_factor", 5),
         "rebuild_on_ingest": yaml_config.get("classification", {}).get("rebuild_on_ingest", True),
-        "chunk_chars": yaml_config.get("paperqa", {}).get("chunk_chars", 3000),
-        "chunk_overlap": yaml_config.get("paperqa", {}).get("chunk_overlap", 100),
-        "evidence_k": yaml_config.get("paperqa", {}).get("evidence_k", 10),
-        "evidence_summary_length": yaml_config.get("paperqa", {}).get("evidence_summary_length", "about 100 words"),
+        "chunk_chars": yaml_config.get("rag", yaml_config.get("paperqa", {})).get("chunk_chars", 3000),
+        "chunk_overlap": yaml_config.get("rag", yaml_config.get("paperqa", {})).get("chunk_overlap", 100),
+        "evidence_k": yaml_config.get("rag", yaml_config.get("paperqa", {})).get("evidence_k", 10),
+        "evidence_summary_length": yaml_config.get("rag", yaml_config.get("paperqa", {})).get("evidence_summary_length", "about 100 words"),
         "max_similar_papers": yaml_config.get("ui", {}).get("max_similar_papers", 5),
         "tree_auto_save_interval_ms": yaml_config.get("ui", {}).get("tree_auto_save_interval_ms", 30000),
         "max_papers_per_batch": yaml_config.get("topic_query", {}).get("max_papers_per_batch", 10),
@@ -3179,7 +3024,7 @@ def get_config() -> dict[str, Any]:
             "llm": {"label": "LLM Endpoints", "description": "Language model and embedding service URLs"},
             "ingestion": {"label": "Ingestion", "description": "Paper ingestion behavior"},
             "classification": {"label": "Classification", "description": "Tree clustering and auto-rebuild settings"},
-            "paperqa": {"label": "PaperQA", "description": "Document chunking and retrieval settings"},
+            "rag": {"label": "RAG", "description": "Document chunking and retrieval settings"},
             "ui": {"label": "UI", "description": "User interface behavior settings"},
             "topic_query": {"label": "Topic Query", "description": "Multi-paper RAG query settings"},
             "database": {"label": "Database", "description": "Active database (switch between production and test)"},

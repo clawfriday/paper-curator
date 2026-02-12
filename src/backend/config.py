@@ -135,10 +135,12 @@ def _get_endpoint_config() -> dict[str, str]:
     }
 
 
-def _get_paperqa_config() -> dict[str, Any]:
-    """Get PaperQA2 configuration. DB settings override config.yaml."""
+def _get_rag_config() -> dict[str, Any]:
+    """Get RAG configuration (chunking, retrieval). DB settings override config.yaml."""
     config = _load_config()
-    pqa = config.get("paperqa", {})
+    # Support both 'rag' and legacy 'paperqa' section names
+    pqa = config.get("rag", config.get("paperqa", {}))
+
     
     # Get defaults from config.yaml
     chunk_chars_default = int(pqa.get("chunk_chars", config.get("paperqa_chunk_chars", 5000)))
@@ -237,3 +239,7 @@ def _get_topic_query_config() -> dict[str, Any]:
         "chunks_per_paper": _get_db_setting("chunks_per_paper", chunks_default, "integer"),
         "debug_mode": _get_db_setting("topic_debug_mode", debug_default, "boolean"),
     }
+
+
+# Backward-compat alias
+_get_paperqa_config = _get_rag_config

@@ -312,6 +312,114 @@ def find_similar_papers(embedding: list[float], limit: int = 5, exclude_id: Opti
             return [dict(row) for row in cur.fetchall()]
 
 
+
+# =============================================================================
+# Paper Chunks CRUD (for custom RAG)
+# =============================================================================
+
+def store_paper_chunks(paper_id: int, chunks: list[dict]) -> None:
+    """Bulk-insert text chunks with embeddings for a paper.
+
+    Each chunk dict must have: text, chunk_index, char_start, char_end.
+    Optional: embedding (list[float]).
+    Existing chunks for the paper are deleted first.
+    """
+    import numpy as np
+
+    with get_db() as conn:
+        with conn.cursor() as cur:
+            # Remove old chunks (idempotent re-index)
+            cur.execute("DELETE FROM paper_chunks WHERE paper_id = %s", (paper_id,))
+
+            for chunk in chunks:
+                emb = chunk.get("embedding")
+                emb_arr = np.array(emb, dtype=np.float32) if emb is not None else None
+                cur.execute(
+                    """
+                    INSERT INTO paper_chunks
+                        (paper_id, chunk_index, text, embedding, char_start, char_end)
+                    VALUES (%s, %s, %s, %s, %s, %s)
+                    """,
+                    (
+                        paper_id,
+                        chunk["chunk_index"],
+                        chunk["text"],
+                        emb_arr,
+                        chunk.get("char_start"),
+                        chunk.get("char_end"),
+                    ),
+                )
+            conn.commit()
+
+
+def has_paper_chunks(paper_id: int) -> bool:
+    """Return True if the paper has indexed chunks in paper_chunks."""
+    with get_db() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT EXISTS(SELECT 1 FROM paper_chunks WHERE paper_id = %s)",
+                (paper_id,),
+            )
+            return cur.fetchone()[0]
+
+
+def get_paper_chunks(paper_id: int) -> list[dict]:
+    """Return all chunks for a paper, ordered by chunk_index."""
+    with get_db() as conn:
+        with conn.cursor(cursor_factory=RealDictCursor) as cur:
+            cur.execute(
+                """
+                SELECT id, paper_id, chunk_index, text, embedding,
+                       char_start, char_end, created_at
+                FROM paper_chunks
+                WHERE paper_id = %s
+                ORDER BY chunk_index
+                """,
+                (paper_id,),
+            )
+            return [dict(row) for row in cur.fetchall()]
+
+
+def search_paper_chunks(
+    paper_id: int,
+    query_embedding: list[float],
+    top_k: int = 10,
+) -> list[dict]:
+    """Return top-k most similar chunks for a paper via cosine distance.
+
+    Returns dicts with keys: id, text, chunk_index, similarity.
+    """
+    import numpy as np
+
+    q_arr = np.array(query_embedding, dtype=np.float32)
+    with get_db() as conn:
+        with conn.cursor(cursor_factory=RealDictCursor) as cur:
+            cur.execute(
+                """
+                SELECT id, chunk_index, text, char_start, char_end,
+                       1 - (embedding <=> %s::vector) AS similarity
+                FROM paper_chunks
+                WHERE paper_id = %s AND embedding IS NOT NULL
+                ORDER BY embedding <=> %s::vector
+                LIMIT %s
+                """,
+                (q_arr, paper_id, q_arr, top_k),
+            )
+            return [dict(row) for row in cur.fetchall()]
+
+
+def delete_paper_chunks(paper_id: int) -> int:
+    """Delete all chunks for a paper. Returns number of rows deleted."""
+    with get_db() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "DELETE FROM paper_chunks WHERE paper_id = %s", (paper_id,)
+            )
+            deleted = cur.rowcount
+            conn.commit()
+            return deleted
+
+
 # =============================================================================
 # Tree CRUD
 # =============================================================================

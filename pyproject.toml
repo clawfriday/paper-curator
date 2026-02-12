@@ -20,8 +20,6 @@ dependencies = [
     "openai",
     # PDF processing
     "pillow",
-    # PaperQA2 for RAG and document processing
-    "paper-qa",
     # HTTP client
     "httpx",
     # Database
