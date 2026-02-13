@@ -1,27 +1,32 @@
 import { NextRequest, NextResponse } from "next/server";
+import { backendPost } from "@/lib/backend-proxy";
 
-// Extended timeout for batch operations (10 minutes)
-export const maxDuration = 600;
-
-const BACKEND_URL = process.env.BACKEND_URL || "http://backend:8000";
+// Note: maxDuration is Vercel-only. Actual timeout is controlled by
+// backendPost() which uses node:http (no undici headersTimeout limit).
 
 export async function POST(request: NextRequest) {
-  const body = await request.json();
-  
-  const response = await fetch(`${BACKEND_URL}/papers/batch-ingest`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(body),
-  });
+  try {
+    const reqBody = await request.json();
 
-  if (!response.ok) {
-    const errorText = await response.text();
+    const { status, body } = await backendPost("/papers/batch-ingest", {
+      body: JSON.stringify(reqBody),
+      timeoutMs: 1_800_000, // 30 minutes — batch ingestion can be very slow
+    });
+
+    try {
+      const data = JSON.parse(body);
+      return NextResponse.json(data, { status });
+    } catch {
+      return NextResponse.json(
+        { error: "Invalid response from backend", details: body.slice(0, 500) },
+        { status: 502 }
+      );
+    }
+  } catch (error) {
+    console.error("Batch ingest request failed:", error);
     return NextResponse.json(
-      { error: `Backend error: ${response.status}`, details: errorText },
-      { status: response.status }
+      { error: "Batch ingest request failed", details: String(error) },
+      { status: 504 }
     );
   }
-
-  const data = await response.json();
-  return NextResponse.json(data);
 }

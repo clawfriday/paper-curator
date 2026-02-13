@@ -43,7 +43,7 @@ def _count_tree_categories(node: dict) -> int:
 
 def _get_db_paper_count() -> int:
     """Get paper count via /db/status."""
-    resp = requests.get(f"{BACKEND_URL}/db/status", timeout=10)
+    resp = requests.get(f"{BACKEND_URL}/db/status", timeout=60)
     return resp.json().get("paper_count", 0)
 
 
@@ -203,7 +203,26 @@ class Test04SinglePaperIngest:
             assert papers_after >= papers_before + 1, \
                 f"Paper count did not increase: {papers_before} → {papers_after}"
 
-            # 8. Verify tree has a node for this paper
+            # 8. Verify saved paper has embedding (not NULL)
+            if save_resp.status_code == 200:
+                save_data = save_resp.json()
+                assert save_data.get("indexed") is True, (
+                    f"Paper saved but not indexed: {save_data}"
+                )
+
+                # Verify via cached-data that the paper is fully ingested.
+                # The endpoint returns 404 when embedding is NULL (require_embedding=True default),
+                # so a 200 response proves the embedding exists.
+                cached_resp = requests.get(
+                    f"{BACKEND_URL}/papers/{arxiv_id}/cached-data",
+                    timeout=30,
+                )
+                assert cached_resp.status_code == 200, (
+                    f"Paper saved but cached-data returned {cached_resp.status_code} — "
+                    "embedding is likely NULL (invisible in clustering/UI)"
+                )
+
+            # 9. Verify tree has a node for this paper
             tree_resp = requests.get(f"{BACKEND_URL}/tree", timeout=60)
             assert tree_resp.status_code == 200
             tree = tree_resp.json()

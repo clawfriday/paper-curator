@@ -87,6 +87,24 @@ class TestPdfExtraction:
                     garbage_lines += 1
         assert garbage_lines < 10, f"Too many garbage lines detected: {garbage_lines}"
 
+    def test_extract_no_nul_bytes(self, backend_available, test_storage_dir):
+        """Extracted PDF text must not contain NUL bytes (PostgreSQL rejects them)."""
+        local_dir = Path(f"{test_storage_dir}/downloads/local")
+        pdfs = sorted(local_dir.glob("*.pdf"))
+        assert len(pdfs) > 0, f"No PDFs found in {local_dir}"
+
+        for pdf_path in pdfs:
+            resp = requests.post(
+                f"{BACKEND_URL}/pdf/extract",
+                json={"pdf_path": str(pdf_path)},
+                timeout=60,
+            )
+            assert resp.status_code == 200, f"Extract failed for {pdf_path.name}: {resp.text}"
+            text = resp.json().get("text", "")
+            assert "\x00" not in text, (
+                f"NUL byte found in extracted text of {pdf_path.name}"
+            )
+
 
 class TestEmbedding:
     """Test embedding operations."""
@@ -274,3 +292,78 @@ class TestReabbreviate:
         )
         
         assert resp.status_code == 200, f"Reabbreviate failed: {resp.text}"
+
+
+class TestConfigEffects:
+    """Verify configuration values have the intended effect."""
+
+    def test_rebuild_on_ingest_false(self, backend_available, test_storage_dir):
+        """With default config (rebuild_on_ingest=false), saving a paper
+        should not trigger a tree rebuild."""
+        arxiv_id = "1706.03762"
+        pdf_path = f"{test_storage_dir}/downloads/local/{arxiv_id}.pdf"
+        assert Path(pdf_path).exists(), f"PDF not found at {pdf_path}"
+
+        # Get metadata
+        resolve_resp = requests.post(
+            f"{BACKEND_URL}/arxiv/resolve",
+            json={"arxiv_id": arxiv_id},
+            timeout=30,
+        )
+        assert resolve_resp.status_code == 200
+        meta = resolve_resp.json()
+
+        # Save paper (may already exist)
+        save_resp = requests.post(
+            f"{BACKEND_URL}/papers/save",
+            json={
+                "arxiv_id": arxiv_id,
+                "title": meta["title"],
+                "authors": meta.get("authors", []),
+                "abstract": meta.get("summary", ""),
+                "pdf_path": pdf_path,
+            },
+            timeout=120,
+        )
+        assert save_resp.status_code in (200, 409), f"Save failed: {save_resp.text}"
+        if save_resp.status_code == 200:
+            data = save_resp.json()
+            assert data.get("rebuild_triggered") is False, (
+                "rebuild_triggered should be False when rebuild_on_ingest is disabled"
+            )
+
+
+class TestSaveIndexesEmbedding:
+    """Verify /papers/save indexes the paper (produces embedding)."""
+
+    def test_save_paper_returns_indexed(self, backend_available, test_storage_dir):
+        """The /papers/save response should include indexed=True when pdf_path is given."""
+        arxiv_id = "1706.03762"
+        pdf_path = f"{test_storage_dir}/downloads/local/{arxiv_id}.pdf"
+        assert Path(pdf_path).exists()
+
+        resolve_resp = requests.post(
+            f"{BACKEND_URL}/arxiv/resolve",
+            json={"arxiv_id": arxiv_id},
+            timeout=30,
+        )
+        assert resolve_resp.status_code == 200
+        meta = resolve_resp.json()
+
+        save_resp = requests.post(
+            f"{BACKEND_URL}/papers/save",
+            json={
+                "arxiv_id": arxiv_id,
+                "title": meta["title"],
+                "authors": meta.get("authors", []),
+                "abstract": meta.get("summary", ""),
+                "pdf_path": pdf_path,
+            },
+            timeout=120,
+        )
+        # Paper may already exist (409). Only check indexed for new papers.
+        if save_resp.status_code == 200:
+            data = save_resp.json()
+            assert data.get("indexed") is True, (
+                f"Paper saved but indexed={data.get('indexed')} — embedding not computed"
+            )

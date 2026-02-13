@@ -78,11 +78,14 @@ def _get_prompt(prompt_name: str, **kwargs: Any) -> str:
 class TreeIndex:
     """One-time index of tree structure for O(1) lookups."""
     
-    def __init__(self, tree: dict[str, Any]):
+    def __init__(self, tree: dict[str, Any], paper_cache: dict[int, dict[str, Any]] | None = None):
         """Build index from tree.
         
         Args:
             tree: Root node of tree structure
+            paper_cache: Pre-loaded paper data keyed by paper_id.
+                         If provided, avoids N+1 DB queries during indexing.
+                         Use db.get_papers_lightweight() to build this.
         """
         # Direct references to node dicts
         self.node_ref: dict[str, dict[str, Any]] = {}
@@ -104,6 +107,9 @@ class TreeIndex:
         
         # Paper summaries cache (paper_id -> summary)
         self.paper_summaries: dict[int, str] = {}
+        
+        # Pre-loaded paper data (avoids N+1 queries)
+        self._paper_cache = paper_cache or {}
         
         # Build index
         self._index_node(tree, parent_id=None, depth=0)
@@ -144,7 +150,7 @@ class TreeIndex:
         
         # Cache paper summary if this is a paper node
         if node.get("node_type") == "paper" and node.get("paper_id"):
-            paper = db.get_paper_by_id(node["paper_id"])
+            paper = self._paper_cache.get(node["paper_id"])
             if paper and paper.get("summary"):
                 self.paper_summaries[node["paper_id"]] = paper["summary"]
     
@@ -181,7 +187,7 @@ class TreeIndex:
     
     def get_paper_abbreviation(self, paper_id: int) -> str:
         """Get paper abbreviation from title, or fallback to paper_<id>."""
-        paper = db.get_paper_by_id(paper_id)
+        paper = self._paper_cache.get(paper_id)
         if paper and paper.get("title"):
             title = paper["title"]
             words = title.split()
@@ -211,6 +217,7 @@ class AsyncTreeNamer:
         model: str,
         max_concurrent: int = 5,
         debug: bool = False,
+        paper_cache: dict[int, dict[str, Any]] | None = None,
     ):
         """Initialize namer.
         
@@ -220,9 +227,10 @@ class AsyncTreeNamer:
             model: Model name for LLM calls
             max_concurrent: Max concurrent LLM calls
             debug: If True, save LLM calls to schemas/llm_naming.json
+            paper_cache: Pre-loaded paper data (from db.get_papers_lightweight)
         """
         self.tree = tree
-        self.index = TreeIndex(tree)
+        self.index = TreeIndex(tree, paper_cache=paper_cache)
         self.client = llm_client
         self.model = model
         self.semaphore = asyncio.Semaphore(max_concurrent)
@@ -534,6 +542,10 @@ async def name_tree_nodes(debug: bool = False) -> dict[str, Any]:
     if debug:
         print("Debug mode: LLM calls will be saved to schemas/llm_naming.json")
     
+    # Bulk-load paper data in a single query (avoids 4000+ individual DB calls)
+    paper_cache = db.get_papers_lightweight()
+    print(f"Loaded {len(paper_cache)} papers for tree naming")
+    
     # Create namer and run
     namer = AsyncTreeNamer(
         tree=tree,
@@ -541,6 +553,7 @@ async def name_tree_nodes(debug: bool = False) -> dict[str, Any]:
         model=model,
         max_concurrent=5,
         debug=debug,
+        paper_cache=paper_cache,
     )
     
     result = await namer.name_all_categories()

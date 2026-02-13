@@ -113,7 +113,6 @@ The following 10 PDFs in `tests/storage/downloads/` are committed to the reposit
 ### Dynamic Test Data (gitignored)
 
 - `tests/storage/pgdata/` - Test database files
-- `tests/storage/paperqa_index/` - Test paper indices
 - Any downloaded PDFs beyond the 10 tracked ones
 
 ## Writing New Tests
@@ -146,9 +145,24 @@ test:
         PGPORT=5433 pytest tests/integration/ -v -s
 ```
 
-# Remaining issues
-1. help me troubleshoot, do we still have timout issue during the test? if so, which tests? what's the root cause? are we using sync or async request to the vLLM endpoints (for both llm and embedding model)?
+## Recommended Additional Test Scope
 
-2.have we managed to test the ingestion for both local directory and slack channel?
+Test gaps identified from production debugging. Each item describes a failure mode not caught by the current suite.
 
-3. if 2 is true, how did we manage to pass the local directory ingestion, when we only have 2 papers in tthe `test/storage/downloads`? Why you didn't put in more papers in the first place? why there are duplicated "attention is all you need" paper their with different titles
+| # | Area | What to test | Why |
+|---|------|-------------|-----|
+| 1 | **Frontend proxy timeout** | Send requests to long-running endpoints through the frontend proxy (port 3000) and verify they succeed, not 500/504. | All existing tests hit the backend directly (port 3100). Undici's hardcoded 300s headersTimeout killed classify requests before the backend finished. |
+| 2 | **Save-then-retrieve embedding** | After calling `/papers/save` with a valid pdf_path, query the paper's cached-data and assert `embedding` is non-null and response includes `indexed: true`. | A race condition caused papers to be saved without embeddings, making them invisible in clustering and the UI. |
+| 3 | **NUL byte handling** | Extract text from every sample PDF and assert no `\x00` characters remain. | Some PDFs contain NUL bytes that PostgreSQL TEXT columns reject, silently failing the indexing step. |
+| 4 | **Classify at scale** | Run `/papers/classify` after ingesting 10+ papers and verify it completes with `papers_classified > 0` and `nodes_named > 0`. | Re-categorize took 8+ minutes; prior tests only tested with a handful of papers and did not catch timeout or N+1 query issues. |
+| 5 | **Config effect: rebuild_on_ingest** | Save a paper and assert `rebuild_triggered` matches the `rebuild_on_ingest` config value. | Setting `rebuild_on_ingest: true` caused full tree rebuilds on every save, saturating the CPU and hanging the server. |
+| 6 | **Backend responsiveness** | Start a long-running operation (classify) in a background thread, then verify `/health` still responds within 10 seconds. | Synchronous DB calls in the naming module blocked the event loop, making the entire server unresponsive. |
+| 7 | **Topic endpoint serialization** | Call `GET /topic/check`, `GET /topic/list`, and `GET /topic/{id}` and verify each returns valid JSON with HTTP 200 (or 404 for missing topics). | pgvector returns embedding columns as numpy.ndarray, which Pydantic cannot serialize. DB queries using `SELECT *` or explicitly including `embedding` cause HTTP 500 PydanticSerializationError. |
+
+### Priority
+
+| Priority | Items | Impact |
+|----------|-------|--------|
+| **P0** | 2, 7 | Silent data loss / user-facing 500 |
+| **P1** | 1, 3, 6 | Timeout errors / silent indexing failure / server hang |
+| **P2** | 4, 5 | Performance regressions / misconfiguration |

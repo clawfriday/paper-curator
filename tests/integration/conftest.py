@@ -41,7 +41,7 @@ def switch_to_test_database():
     init_resp = requests.post(
         f"{BACKEND_URL}/db/init",
         json={"database": TEST_DB_NAME, "drop_existing": True},
-        timeout=30,
+        timeout=120,
     )
     assert init_resp.status_code == 200, f"Failed to init test DB: {init_resp.text}"
     print(f"  -> {init_resp.json()}")

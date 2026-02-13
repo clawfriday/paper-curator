@@ -1682,12 +1682,8 @@ async def classify_papers() -> dict[str, Any]:
     import naming
     
     # Step 1: Ensure all papers have embeddings
-    papers = db.get_all_papers()
-    papers_without_embeddings = []
-    
-    for paper in papers:
-        if paper.get("embedding") is None:
-            papers_without_embeddings.append(paper["arxiv_id"])
+    # Use targeted query to avoid loading all 4096-float embedding vectors
+    papers_without_embeddings = db.get_papers_missing_embeddings()
     
     # Try to extract embeddings for papers that don't have them
     if papers_without_embeddings:

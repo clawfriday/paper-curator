@@ -203,6 +203,44 @@ def get_all_papers() -> list[dict[str, Any]]:
             return [dict(row) for row in cur.fetchall()]
 
 
+def get_papers_missing_embeddings() -> list[str]:
+    """Get arxiv_ids of papers that have NULL embeddings.
+
+    Much faster than get_all_papers() because it avoids loading
+    the huge 4096-float embedding vectors for all papers.
+    """
+    with get_db() as conn:
+        with conn.cursor() as cur:
+            cur.execute("SELECT arxiv_id FROM papers WHERE embedding IS NULL")
+            return [row[0] for row in cur.fetchall()]
+
+
+def get_papers_lightweight(columns: list[str] | None = None) -> dict[int, dict[str, Any]]:
+    """Bulk-load lightweight paper data (no embedding) indexed by paper ID.
+
+    This avoids the N+1 query problem in tree naming where individual
+    get_paper_by_id() calls were creating 4000+ DB connections.
+
+    Args:
+        columns: Specific columns to select. Defaults to id, title, summary,
+                 abbreviation, arxiv_id (excludes the 4096-float embedding).
+
+    Returns:
+        Dict mapping paper_id -> paper data dict.
+    """
+    if columns is None:
+        columns = ["id", "title", "summary", "abbreviation", "arxiv_id"]
+    # Always include 'id' for indexing
+    if "id" not in columns:
+        columns = ["id"] + columns
+    cols_sql = ", ".join(columns)
+    with get_db() as conn:
+        with conn.cursor(cursor_factory=RealDictCursor) as cur:
+            cur.execute(f"SELECT {cols_sql} FROM papers")
+            rows = cur.fetchall()
+            return {int(row["id"]): dict(row) for row in rows}
+
+
 def update_paper_embedding(paper_id: int, embedding: list[float]) -> None:
     """Update paper embedding."""
     import numpy as np
@@ -1021,12 +1059,16 @@ def create_topic(
 
 
 def get_topic_by_id(topic_id: int) -> Optional[dict[str, Any]]:
-    """Get topic by ID with paper and query counts."""
+    """Get topic by ID with paper and query counts.
+
+    Note: excludes the embedding column to avoid numpy.ndarray
+    serialization errors in Pydantic/FastAPI responses.
+    """
     with get_db() as conn:
         with conn.cursor(cursor_factory=RealDictCursor) as cur:
             cur.execute(
                 """
-                SELECT t.id, t.name, t.topic_query, t.embedding, t.created_at, t.updated_at,
+                SELECT t.id, t.name, t.topic_query, t.created_at, t.updated_at,
                        (SELECT COUNT(*) FROM topic_papers tp WHERE tp.topic_id = t.id) as paper_count,
                        (SELECT COUNT(*) FROM topic_queries tq WHERE tq.topic_id = t.id) as query_count
                 FROM topics t
@@ -1039,21 +1081,32 @@ def get_topic_by_id(topic_id: int) -> Optional[dict[str, Any]]:
 
 
 def get_topic_by_name(name: str) -> Optional[dict[str, Any]]:
-    """Get topic by name."""
+    """Get topic by name.
+
+    Note: excludes the embedding column to avoid numpy.ndarray
+    serialization errors in Pydantic/FastAPI responses.
+    """
     with get_db() as conn:
         with conn.cursor(cursor_factory=RealDictCursor) as cur:
-            cur.execute("SELECT * FROM topics WHERE name = %s", (name,))
+            cur.execute(
+                "SELECT id, name, topic_query, created_at, updated_at FROM topics WHERE name = %s",
+                (name,)
+            )
             row = cur.fetchone()
             return dict(row) if row else None
 
 
 def get_topics_by_query(topic_query: str) -> list[dict[str, Any]]:
-    """Get all topics matching a topic query string."""
+    """Get all topics matching a topic query string.
+
+    Note: excludes the embedding column to avoid numpy.ndarray
+    serialization errors in Pydantic/FastAPI responses.
+    """
     with get_db() as conn:
         with conn.cursor(cursor_factory=RealDictCursor) as cur:
             cur.execute(
                 """
-                SELECT t.*, 
+                SELECT t.id, t.name, t.topic_query, t.created_at, t.updated_at,
                        (SELECT COUNT(*) FROM topic_papers tp WHERE tp.topic_id = t.id) as paper_count,
                        (SELECT COUNT(*) FROM topic_queries tq WHERE tq.topic_id = t.id) as query_count
                 FROM topics t
