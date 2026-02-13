@@ -158,11 +158,13 @@ Test gaps identified from production debugging. Each item describes a failure mo
 | 5 | **Config effect: rebuild_on_ingest** | Save a paper and assert `rebuild_triggered` matches the `rebuild_on_ingest` config value. | Setting `rebuild_on_ingest: true` caused full tree rebuilds on every save, saturating the CPU and hanging the server. |
 | 6 | **Backend responsiveness** | Start a long-running operation (classify) in a background thread, then verify `/health` still responds within 10 seconds. | Synchronous DB calls in the naming module blocked the event loop, making the entire server unresponsive. |
 | 7 | **Topic endpoint serialization** | Call `GET /topic/check`, `GET /topic/list`, and `GET /topic/{id}` and verify each returns valid JSON with HTTP 200 (or 404 for missing topics). | pgvector returns embedding columns as numpy.ndarray, which Pydantic cannot serialize. DB queries using `SELECT *` or explicitly including `embedding` cause HTTP 500 PydanticSerializationError. |
+| 8 | **Short query similarity fallback** | Call `POST /topic/search` with a short/specific query like "FP8" and assert `len(papers) > 0`. Also test with a descriptive query to confirm normal threshold matching still works. | Short queries produce lower cosine similarity scores (~0.40) that fall below the default threshold (0.5), returning 0 papers. The fallback should re-query without threshold. |
+| 9 | **Topic query via frontend proxy** | Call `POST /api/topic/{id}/query` through the frontend (port 3000) with a real question, and verify it returns 200 within the extended timeout — not 500/504 from proxy timeout. | The topic query RAG pipeline takes 5-10+ minutes; the default undici rewrite proxy kills the connection at 300s with ECONNRESET. |
 
 ### Priority
 
 | Priority | Items | Impact |
 |----------|-------|--------|
-| **P0** | 2, 7 | Silent data loss / user-facing 500 |
-| **P1** | 1, 3, 6 | Timeout errors / silent indexing failure / server hang |
+| **P0** | 2, 7, 8 | Silent data loss / user-facing 500 / empty search results |
+| **P1** | 1, 3, 6, 9 | Timeout errors / silent indexing failure / server hang |
 | **P2** | 4, 5 | Performance regressions / misconfiguration |

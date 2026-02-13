@@ -205,10 +205,14 @@ class TestTopicQueryIntegration:
 
 
 class TestTopicQueryFP8:
-    """Additional test with FP8 quantization topic."""
+    """Additional test with FP8 quantization topic.
+    
+    Tests both descriptive and short/specific queries to verify the
+    similarity threshold fallback works correctly.
+    """
     
     def test_fp8_topic_search(self, enable_debug_mode):
-        """Search for FP8 quantization papers."""
+        """Search for FP8 quantization papers (descriptive query)."""
         topic = "FP8 quantization training"
         
         resp = requests.post(
@@ -225,6 +229,35 @@ class TestTopicQueryFP8:
         print(f"\n=== FP8 Topic Search ===")
         print(f"Topic: {topic}")
         print(f"Papers found: {len(papers)}")
+        
+        # With the fallback, even if threshold filters out all papers,
+        # the search should return top-K results
+        assert len(papers) > 0, (
+            f"Topic search for '{topic}' returned 0 papers — "
+            "similarity threshold fallback may not be working"
+        )
+
+    def test_short_query_returns_results(self, enable_debug_mode):
+        """Search with a very short query like 'FP8' should still return papers."""
+        resp = requests.post(
+            f"{BASE_URL}/topic/search",
+            json={"topic": "FP8", "limit": 10, "offset": 0},
+            timeout=60
+        )
+        assert resp.status_code == 200
+        data = resp.json()
+        papers = data.get("papers", [])
+        
+        print(f"\n=== Short Query Search ===")
+        print(f"Topic: FP8")
+        print(f"Papers found: {len(papers)}")
+        if papers:
+            print(f"Top result: {papers[0].get('similarity', 0):.4f}  {papers[0].get('title', '')[:50]}")
+        
+        assert len(papers) > 0, (
+            "Short query 'FP8' returned 0 papers — "
+            "similarity threshold fallback is not working"
+        )
 
 
 if __name__ == "__main__":

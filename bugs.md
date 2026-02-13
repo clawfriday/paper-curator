@@ -51,3 +51,23 @@
 **Root cause**: `db.get_topics_by_query()` used `SELECT t.*` which includes the `embedding` column. pgvector registers a custom type adapter that returns embeddings as `numpy.ndarray`. Pydantic/FastAPI cannot serialize numpy arrays to JSON. Same issue in `db.get_topic_by_id()` which explicitly selected `t.embedding`.
 
 **Fix**: Changed `get_topics_by_query()`, `get_topic_by_id()`, and `get_topic_by_name()` in `src/backend/db.py` to use explicit column lists excluding `embedding`. The embedding vector is not needed for any topic metadata response.
+
+---
+
+## 6. Topic search returns 0 papers for short queries (similarity threshold too strict)
+
+**Symptom**: Searching for topic "FP8" returned 0 papers despite many FP8-related papers in the database (2000+ papers total).
+
+**Root cause**: `search_papers_by_embedding()` applies `similarity_threshold` (default 0.5) as a hard SQL `WHERE` filter. Short or specific queries like "FP8" (3 characters) produce lower cosine similarity scores (~0.40) because the embedding of a brief term is less semantically aligned with full paper abstracts. All papers were filtered out.
+
+**Fix**: Added a fallback in `search_papers_by_embedding()`: if `min_similarity > 0` and the filtered query returns 0 results on the first page (`offset == 0`), automatically re-query with `threshold = 0.0` to return the top-K results ranked by similarity. This ensures users always see results while preserving the threshold for well-matched queries.
+
+---
+
+## 7. Topic query fails with ECONNRESET through frontend proxy
+
+**Symptom**: Querying the "agentic RL" topic with a question returned "Query failed: Internal Server Error". Frontend log showed `Failed to proxy http://localhost:3100/topic/30/query Error: socket hang up` with `ECONNRESET`.
+
+**Root cause**: The topic query endpoint `POST /topic/{id}/query` runs multi-paper RAG (per-paper evidence retrieval via chunk embedding search + per-paper LLM summarization + cross-paper LLM aggregation), which can take 5-10+ minutes. The frontend proxied this through `next.config.js` rewrites, which use `fetch` (undici) with its hardcoded 300-second `headersTimeout`. The backend connection was killed before the RAG pipeline finished.
+
+**Fix**: Created a custom Next.js API route at `src/frontend/src/app/api/topic/[topicId]/query/route.ts` using the `backendPost()` utility (node:http) with a 15-minute timeout. Custom API routes take priority over `next.config.js` rewrites for the same path.

@@ -1255,6 +1255,12 @@ def search_papers_by_embedding(
     exclude_paper_ids: Optional[list[int]] = None,
 ) -> tuple[list[dict[str, Any]], bool]:
     """Search papers by embedding similarity.
+
+    If min_similarity > 0 and the threshold filters out ALL papers,
+    automatically falls back to returning the top-K results without
+    threshold filtering. This prevents empty results for short or
+    specific queries (e.g. "FP8") whose embeddings produce lower
+    cosine similarity scores.
     
     Returns:
         Tuple of (papers list, has_more bool)
@@ -1262,19 +1268,22 @@ def search_papers_by_embedding(
     import numpy as np
     embedding_arr = np.array(embedding, dtype=np.float32)
     
-    with get_db() as conn:
+    def _run_query(conn, threshold: float) -> list[dict[str, Any]]:
+        """Run the similarity search with given threshold."""
         with conn.cursor(cursor_factory=RealDictCursor) as cur:
             # Build exclusion clause
             exclusion_clause = ""
-            params = [embedding_arr, embedding_arr, min_similarity]
+            base_params: list = [embedding_arr, embedding_arr, threshold]
             
             if exclude_paper_ids:
                 placeholders = ",".join(["%s"] * len(exclude_paper_ids))
                 exclusion_clause = f"AND p.id NOT IN ({placeholders})"
-                params.extend(exclude_paper_ids)
+                base_params.extend(exclude_paper_ids)
             
-            # Fetch one more than limit to check if there are more results
-            params.extend([limit + 1, offset])
+            base_params.extend([limit + 1, offset])
+            
+            # Build final params: embed, embed, threshold, [exclusions], embed, limit, offset
+            final_params = base_params[:3] + (base_params[3:-2] if exclude_paper_ids else []) + [embedding_arr] + base_params[-2:]
             
             cur.execute(
                 f"""
@@ -1288,16 +1297,22 @@ def search_papers_by_embedding(
                 ORDER BY p.embedding <=> %s::vector
                 LIMIT %s OFFSET %s
                 """,
-                params[:3] + (params[3:-2] if exclude_paper_ids else []) + [embedding_arr] + params[-2:]
+                final_params,
             )
-            
-            results = [dict(row) for row in cur.fetchall()]
-            
-            has_more = len(results) > limit
-            if has_more:
-                results = results[:limit]
-            
-            return results, has_more
+            return [dict(row) for row in cur.fetchall()]
+    
+    with get_db() as conn:
+        results = _run_query(conn, min_similarity)
+        
+        # Fallback: if threshold filtered out everything, retry without threshold
+        if not results and min_similarity > 0 and offset == 0:
+            results = _run_query(conn, 0.0)
+        
+        has_more = len(results) > limit
+        if has_more:
+            results = results[:limit]
+        
+        return results, has_more
 
 
 # =============================================================================
