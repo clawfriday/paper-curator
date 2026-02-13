@@ -72,9 +72,30 @@ const nextConfig = {
         destination: `${backendUrl}/categories/:path*`,
       },
       // Topic Query endpoints
+      // Note: /api/topic/:topicId/query is handled by custom API route with extended timeout
       {
-        source: "/api/topic/:path*",
-        destination: `${backendUrl}/topic/:path*`,
+        source: "/api/topic/check",
+        destination: `${backendUrl}/topic/check`,
+      },
+      {
+        source: "/api/topic/list",
+        destination: `${backendUrl}/topic/list`,
+      },
+      {
+        source: "/api/topic/search",
+        destination: `${backendUrl}/topic/search`,
+      },
+      {
+        source: "/api/topic/create",
+        destination: `${backendUrl}/topic/create`,
+      },
+      {
+        source: "/api/topic/:topicId",
+        destination: `${backendUrl}/topic/:topicId`,
+      },
+      {
+        source: "/api/topic/:topicId/papers",
+        destination: `${backendUrl}/topic/:topicId/papers`,
       },
       // Feature endpoints
       {
