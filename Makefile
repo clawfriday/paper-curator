@@ -87,6 +87,15 @@ run:
 run-local:
 	cd src/backend && uvicorn app:app --reload --host 0.0.0.0 --port 8000
 
+run-host:
+	./scripts/host-services.sh start
+
+stop-host:
+	./scripts/host-services.sh stop
+
+status-host:
+	./scripts/host-services.sh status
+
 docker-build:
 	docker compose -f src/compose.yml build --no-cache
 

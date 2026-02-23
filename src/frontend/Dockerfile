@@ -14,7 +14,8 @@ FROM base AS builder
 WORKDIR /app
 COPY --from=deps /app/node_modules ./node_modules
 COPY . .
-RUN npm run build
+# Some checkouts don't include /public; keep Docker build robust
+RUN mkdir -p public && npm run build
 
 # Production stage
 FROM base AS runner
