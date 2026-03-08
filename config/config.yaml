@@ -38,9 +38,9 @@ slack:
 # NOTE: You can use localhost URLs - they auto-convert to host.docker.internal in Docker
 # =============================================================================
 endpoints:
-  llm_base_url: "http://localhost:8001/v1"  # LLM requests go here (affects all LLM features)
-  embedding_base_url: "http://localhost:8004/v1"  # Embedding requests go here (affects clustering + similarity)
-  api_key: "local-key"  # Shared key for the endpoints above
+  llm_base_url: "https://restrainable-victor-nonosmotically.ngrok-free.dev/deepseek/v1"  # DeepSeek OpenAI-compatible relay
+  embedding_base_url: "https://restrainable-victor-nonosmotically.ngrok-free.dev/embed/v1"  # Embedding relay (Qwen3-VL-Embedding)
+  api_key: "none"  # Shared key for the endpoints above
 
 # =============================================================================
 # RAG settings (chunking, retrieval, evidence)

@@ -98,6 +98,7 @@ class QaRequest(BaseModel):
     context: Optional[str] = Field(default=None, description="Context text to answer from")
     question: str = Field(description="Question to answer")
     pdf_path: Optional[str] = Field(default=None, description="Local PDF file path")
+    rag_mode: Optional[str] = Field(default="improved", description="Retrieval mode: baseline or improved")
 
 
 class StructuredQaRequest(BaseModel):
@@ -183,6 +184,7 @@ class TopicAddPapersRequest(BaseModel):
 
 class TopicQueryRequest(BaseModel):
     question: str = Field(description="Question to ask across all papers in the topic pool")
+    rag_mode: Optional[str] = Field(default="improved", description="Retrieval mode: baseline or improved")
 
 
 # =============================================================================
@@ -515,6 +517,7 @@ async def qa(payload: QaRequest) -> dict[str, Any]:
         llm_model=model,
         embed_client=embed_client,
         embed_model=embed_model,
+        rag_mode=payload.rag_mode or rag.RAG_MODE_IMPROVED,
     )
     
     # Persist query to database if arxiv_id provided
@@ -523,7 +526,55 @@ async def qa(payload: QaRequest) -> dict[str, Any]:
         if paper:
             db.add_query(paper["id"], payload.question, answer, f"openai/{model}")
     
-    return {"answer": answer, "used_cache": has_cache}
+    return {"answer": answer, "used_cache": has_cache, "rag_mode": payload.rag_mode or rag.RAG_MODE_IMPROVED}
+
+
+@app.post("/qa/compare")
+async def qa_compare(payload: QaRequest) -> dict[str, Any]:
+    """Run baseline vs improved RAG on the same question for side-by-side comparison."""
+    endpoint_config = _get_endpoint_config()
+    base_url = endpoint_config["llm_base_url"]
+    embed_base_url = endpoint_config["embedding_base_url"]
+    api_key = endpoint_config["api_key"]
+    model = _resolve_model(base_url, api_key)
+    embed_model = _resolve_model(embed_base_url, api_key)
+
+    llm_client = _get_async_openai_client(base_url, api_key)
+    embed_client = _get_async_openai_client(embed_base_url, api_key)
+
+    baseline, improved = await asyncio.gather(
+        rag.rag_answer_async(
+            question=payload.question,
+            text=payload.context,
+            pdf_path=payload.pdf_path,
+            arxiv_id=payload.arxiv_id,
+            llm_client=llm_client,
+            llm_model=model,
+            embed_client=embed_client,
+            embed_model=embed_model,
+            return_details=True,
+            rag_mode=rag.RAG_MODE_BASELINE,
+        ),
+        rag.rag_answer_async(
+            question=payload.question,
+            text=payload.context,
+            pdf_path=payload.pdf_path,
+            arxiv_id=payload.arxiv_id,
+            llm_client=llm_client,
+            llm_model=model,
+            embed_client=embed_client,
+            embed_model=embed_model,
+            return_details=True,
+            rag_mode=rag.RAG_MODE_IMPROVED,
+        ),
+    )
+
+    return {
+        "question": payload.question,
+        "baseline": baseline,
+        "improved": improved,
+        "model": f"openai/{model}",
+    }
 
 
 @app.post("/qa/structured")
@@ -2486,6 +2537,7 @@ async def topic_query(topic_id: int, payload: TopicQueryRequest) -> dict[str, An
                 embed_client=embed_client,
                 embed_model=embed_model_name,
                 return_details=debug_mode,
+                rag_mode=payload.rag_mode or rag.RAG_MODE_IMPROVED,
             )
             
             if debug_mode and isinstance(result, dict):
@@ -2583,6 +2635,8 @@ Please synthesize these responses into a coherent, comprehensive answer.
 - Prioritize findings that appear across multiple papers
 - Be concise but thorough
 """
+    if (payload.rag_mode or rag.RAG_MODE_IMPROVED) == rag.RAG_MODE_IMPROVED:
+        aggregation_prompt += "\nPrefer evidence with explicit source lines/chunk citations when available."
     
     # Generate final summary
     response = await client.chat.completions.create(
@@ -2700,12 +2754,32 @@ Please synthesize these responses into a coherent, comprehensive answer.
         "answer": final_answer,
         "papers_queried": len(papers),
         "successful_queries": len(successful_responses),
+        "rag_mode": payload.rag_mode or rag.RAG_MODE_IMPROVED,
     }
     
     if debug_mode:
         result["paper_responses"] = paper_responses
     
     return result
+
+
+@app.post("/topic/{topic_id}/query/compare")
+async def topic_query_compare(topic_id: int, payload: TopicQueryRequest) -> dict[str, Any]:
+    """Run baseline vs improved topic query for side-by-side comparison."""
+    baseline_payload = TopicQueryRequest(question=payload.question, rag_mode=rag.RAG_MODE_BASELINE)
+    improved_payload = TopicQueryRequest(question=payload.question, rag_mode=rag.RAG_MODE_IMPROVED)
+
+    baseline, improved = await asyncio.gather(
+        topic_query(topic_id, baseline_payload),
+        topic_query(topic_id, improved_payload),
+    )
+
+    return {
+        "topic_id": topic_id,
+        "question": payload.question,
+        "baseline": baseline,
+        "improved": improved,
+    }
 
 
 # =============================================================================
